@@ -30,11 +30,33 @@ function sslFor(connectionString: string): { rejectUnauthorized: boolean } | fal
 
 let pool: Pool | null = null;
 
+/**
+ * أسماء رابط الاتصال التي قد يضبطها المزوّد.
+ *
+ * تكامل Neon مع Vercel يضبط `DATABASE_URL`، وتكاملات أخرى تضبط `POSTGRES_URL` أو
+ * `POSTGRES_PRISMA_URL`. القراءة من اسم واحد كانت تعني أن يربط المالك القاعدة بنجاح
+ * ثم تبقى اللوحة معطّلة بلا سبب ظاهر — فتُقرأ الأسماء المعروفة كلها بالترتيب.
+ */
+const CONNECTION_ENV_NAMES = [
+  "DATABASE_URL",
+  "POSTGRES_URL",
+  "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NON_POOLING",
+] as const;
+
+export function connectionStringFromEnv(): string | null {
+  for (const name of CONNECTION_ENV_NAMES) {
+    const value = process.env[name];
+    if (value && value.trim()) return value.trim();
+  }
+  return null;
+}
+
 export function getPool(): Pool {
   if (pool) return pool;
-  const connectionString = process.env.DATABASE_URL;
+  const connectionString = connectionStringFromEnv();
   if (!connectionString) {
-    throw new Error("DATABASE_URL غير مضبوط — أضف رابط قاعدة البيانات في إعدادات النشر.");
+    throw new Error("رابط قاعدة البيانات غير مضبوط — أضف DATABASE_URL في إعدادات النشر.");
   }
   pool = new Pool({ connectionString, ssl: sslFor(connectionString), max: 3 });
   return pool;

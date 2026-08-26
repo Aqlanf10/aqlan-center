@@ -61,7 +61,17 @@ export async function POST(request: Request) {
       maxAge: Math.floor(SESSION_DURATION_MS / 1000),
     });
     return response;
-  } catch {
-    return NextResponse.json({ message: "تعذّر تسجيل الدخول. أعد المحاولة." }, { status: 500 });
+  } catch (error) {
+    // إعدادٌ ناقص وعطلٌ عابر يبدوان متطابقين من الخارج، وعلاجهما مختلف تمامًا: الأول
+    // يحتاج متغيّرًا في لوحة النشر، والثاني يحتاج إعادة محاولة. الرسالة تفرّق بينهما.
+    const missingSecret = error instanceof Error && error.message.includes("SESSION_SECRET");
+    return NextResponse.json(
+      {
+        message: missingSecret
+          ? "الأداة غير مكتملة الإعداد: SESSION_SECRET ناقص في إعدادات النشر."
+          : "تعذّر تسجيل الدخول. أعد المحاولة.",
+      },
+      { status: missingSecret ? 503 : 500 },
+    );
   }
 }

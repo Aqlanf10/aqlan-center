@@ -12,7 +12,13 @@ import { SESSION_COOKIE } from "@/lib/sessionCookie";
  * لأن middleware يعمل على Edge حيث `node:crypto` غير متاح.
  */
 const PUBLIC_PATHS = new Set(["/login", "/setup"]);
-const PUBLIC_API = new Set(["/api/auth/login", "/api/auth/setup", "/api/auth/logout"]);
+const PUBLIC_API = new Set([
+  "/api/auth/login",
+  "/api/auth/setup",
+  "/api/auth/logout",
+  // فحص الإعداد: من يحتاجه هو من لا يستطيع الدخول بعد.
+  "/api/health",
+]);
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
