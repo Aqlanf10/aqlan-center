@@ -92,6 +92,12 @@ export default function FlowBoard() {
     }
   }, [load]);
 
+  const signOut = useCallback(async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    // تحميل كامل حتى يرى الحارس غياب الكوكي فورًا.
+    window.location.href = "/login";
+  }, []);
+
   const addPatient = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
     const trimmed = name.trim();
@@ -119,9 +125,17 @@ export default function FlowBoard() {
 
   return (
     <main className="mx-auto max-w-5xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold">انسياب العيادة</h1>
-        <p className="text-xs text-slate-500">مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان</p>
+      <header className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-extrabold">انسياب العيادة</h1>
+          <p className="text-xs text-slate-500">مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان</p>
+        </div>
+        <button
+          onClick={signOut}
+          className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600"
+        >
+          خروج
+        </button>
       </header>
 
       <section className="mb-4 grid grid-cols-3 gap-2" aria-label="ملخص اليوم">

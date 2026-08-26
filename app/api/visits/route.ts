@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireSession } from "@/lib/session";
 import { addVisit, listTodayVisits } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,9 @@ function failed(message: string, status = 500) {
 }
 
 export async function GET() {
+  if (!(await requireSession())) {
+    return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
+  }
   try {
     return NextResponse.json(await listTodayVisits());
   } catch {
@@ -18,6 +22,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (!(await requireSession())) {
+    return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
+  }
   let body: unknown;
   try {
     body = await request.json();
