@@ -125,11 +125,17 @@ export default function FlowBoard() {
 
   return (
     <main className="mx-auto max-w-5xl p-4 pb-24">
-      <header className="mb-4 flex items-start justify-between gap-3">
+      <header className="mb-4 flex items-start justify-between gap-2">
         <div>
           <h1 className="text-xl font-extrabold">انسياب العيادة</h1>
           <p className="text-xs text-slate-500">مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان</p>
         </div>
+        <a
+          href="/appointments"
+          className="shrink-0 rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-bold text-white"
+        >
+          المواعيد
+        </a>
         <button
           onClick={signOut}
           className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600"

@@ -87,6 +87,37 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS visits_arrived_at_idx ON visits (arrived_at);
 
+      -- المرضى والمواعيد بأسماء حقول تحاكي النظام الأساسي عمدًا، ليكون الترحيل لاحقًا
+      -- نسخًا مباشرًا لا إعادة كتابة. حالات الموعد هي نفس مفردات AppointmentStatus هناك.
+      CREATE TABLE IF NOT EXISTS patients (
+        id             SERIAL PRIMARY KEY,
+        patient_number TEXT        NOT NULL UNIQUE,
+        full_name      TEXT        NOT NULL,
+        phone          TEXT,
+        note           TEXT,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS patients_name_idx ON patients (full_name);
+
+      CREATE TABLE IF NOT EXISTS appointments (
+        id               SERIAL PRIMARY KEY,
+        patient_id       INTEGER     NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        scheduled_date   DATE        NOT NULL,
+        scheduled_time   TIME        NOT NULL,
+        duration_minutes INTEGER     NOT NULL DEFAULT 30,
+        appointment_type TEXT,
+        note             TEXT,
+        status           TEXT        NOT NULL DEFAULT 'booked',
+        arrived_at       TIMESTAMPTZ,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS appointments_date_idx ON appointments (scheduled_date);
+      ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
+
+      -- الزيارة تعرف موعدها ومريضها حين يأتي من حجز، وتبقى مستقلة للمريض المشي.
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS patient_id INTEGER REFERENCES patients(id);
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS appointment_id INTEGER REFERENCES appointments(id);
+
       CREATE TABLE IF NOT EXISTS users (
         id            SERIAL PRIMARY KEY,
         username      TEXT        NOT NULL UNIQUE,
@@ -285,4 +316,192 @@ export async function createStaffUser(input: {
     [input.username, input.displayName, input.passwordHash, input.role],
   );
   return toUser(rows[0]);
+}
+
+// ─── المرضى والمواعيد ────────────────────────────────────────────────────────
+
+import type { Appointment, AppointmentStatus } from "./schedule";
+
+export interface Patient {
+  id: number;
+  patientNumber: string;
+  fullName: string;
+  phone: string | null;
+}
+
+interface PatientRow {
+  id: number;
+  patient_number: string;
+  full_name: string;
+  phone: string | null;
+}
+
+const toPatient = (row: PatientRow): Patient => ({
+  id: row.id,
+  patientNumber: row.patient_number,
+  fullName: row.full_name,
+  phone: row.phone,
+});
+
+/**
+ * يبحث بالاسم أو الهاتف.
+ *
+ * البحث بالجزء لا بالبداية: الاستقبال تتذكر «محمد» من «عبدالله محمد سالم»، والبحث
+ * بالبداية وحده كان سيعيد لا شيء فتُنشئ سجلًا مكررًا لمريض موجود.
+ */
+export async function searchPatients(term: string, limit = 8): Promise<Patient[]> {
+  await ensureSchema();
+  const trimmed = term.trim();
+  if (!trimmed) return [];
+  const { rows } = await getPool().query<PatientRow>(
+    `SELECT id, patient_number, full_name, phone FROM patients
+      WHERE full_name ILIKE $1 OR phone ILIKE $1
+      ORDER BY full_name LIMIT $2`,
+    [`%${trimmed}%`, limit],
+  );
+  return rows.map(toPatient);
+}
+
+/**
+ * ينشئ مريضًا برقم متسلسل.
+ *
+ * الرقم يُولَّد داخل الاستعلام من أكبر رقم موجود، لا من عدّ السجلات: العدّ يعيد استخدام
+ * رقم مريض محذوف فيصير لمريضين الرقم نفسه في سجلات مطبوعة قديمة.
+ */
+export async function createPatient(input: {
+  fullName: string;
+  phone: string | null;
+  note: string | null;
+}): Promise<Patient> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PatientRow>(
+    `INSERT INTO patients (patient_number, full_name, phone, note)
+     VALUES (
+       'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
+       $1, $2, $3)
+     RETURNING id, patient_number, full_name, phone`,
+    [input.fullName, input.phone, input.note],
+  );
+  return toPatient(rows[0]);
+}
+
+interface AppointmentRow {
+  id: number;
+  patient_id: number;
+  full_name: string;
+  phone: string | null;
+  scheduled_date: Date;
+  scheduled_time: string;
+  duration_minutes: number;
+  appointment_type: string | null;
+  note: string | null;
+  status: string;
+  reminder_sent_at: Date | null;
+}
+
+function toAppointment(row: AppointmentRow): Appointment {
+  const date = row.scheduled_date;
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    patientName: row.full_name,
+    patientPhone: row.phone,
+    // التاريخ يُنسّق من مكوّناته المحلية لا بـ toISOString: الأخيرة تحوّل إلى UTC فتُرجع
+    // اليوم السابق لكل موعد مسائي — وهو نفس الفخ الذي أسقط لوحة اليوم لولا الانتباه.
+    scheduledDate: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+    scheduledTime: String(row.scheduled_time).slice(0, 5),
+    durationMinutes: row.duration_minutes,
+    note: row.note,
+    status: row.status as AppointmentStatus,
+    reminderSentAt: row.reminder_sent_at ? row.reminder_sent_at.toISOString() : null,
+  };
+}
+
+const APPOINTMENT_SELECT = `
+  SELECT a.id, a.patient_id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time,
+         a.duration_minutes, a.appointment_type, a.note, a.status, a.reminder_sent_at
+    FROM appointments a JOIN patients p ON p.id = a.patient_id`;
+
+export async function listAppointmentsByDate(date: string): Promise<Appointment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<AppointmentRow>(
+    `${APPOINTMENT_SELECT} WHERE a.scheduled_date = $1 ORDER BY a.scheduled_time`,
+    [date],
+  );
+  return rows.map(toAppointment);
+}
+
+export async function createAppointment(input: {
+  patientId: number;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  note: string | null;
+}): Promise<Appointment | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO appointments (patient_id, scheduled_date, scheduled_time, duration_minutes, note)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [input.patientId, input.date, input.time, input.durationMinutes, input.note],
+  );
+  const { rows: full } = await getPool().query<AppointmentRow>(
+    `${APPOINTMENT_SELECT} WHERE a.id = $1`, [rows[0].id],
+  );
+  return full[0] ? toAppointment(full[0]) : null;
+}
+
+export async function setAppointmentStatus(
+  id: number,
+  status: AppointmentStatus,
+): Promise<Appointment | null> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE appointments SET status = $2,
+            arrived_at = CASE WHEN $2 = 'arrived' THEN NOW() ELSE arrived_at END
+      WHERE id = $1`,
+    [id, status],
+  );
+  const { rows } = await getPool().query<AppointmentRow>(`${APPOINTMENT_SELECT} WHERE a.id = $1`, [id]);
+  return rows[0] ? toAppointment(rows[0]) : null;
+}
+
+/**
+ * وصول مريض محجوز: يصير الموعد «وصل» وتُفتح له زيارة في قائمة الانتظار — في معاملة
+ * واحدة، فلا يبقى موعد معلّم كواصل بلا صفٍّ في اللوحة إن انقطع الاتصال بينهما.
+ */
+export async function arriveAppointment(id: number): Promise<boolean> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ patient_id: number; full_name: string; phone: string | null }>(
+      `UPDATE appointments a SET status = 'arrived', arrived_at = NOW()
+         FROM patients p
+        WHERE a.id = $1 AND p.id = a.patient_id AND a.status = 'booked'
+       RETURNING a.patient_id, p.full_name, p.phone`,
+      [id],
+    );
+    if (!rows[0]) { await client.query("ROLLBACK"); return false; }
+    await client.query(
+      `INSERT INTO visits (patient_name, patient_phone, patient_id, appointment_id)
+       VALUES ($1, $2, $3, $4)`,
+      [rows[0].full_name, rows[0].phone, rows[0].patient_id, id],
+    );
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** يسجّل أن التذكير أُرسل — حتى لا يُذكَّر مريض مرتين ويُنسى آخر. */
+export async function markReminderSent(id: number): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE appointments SET reminder_sent_at = NOW() WHERE id = $1`, [id],
+  );
+  return (rowCount ?? 0) > 0;
 }
