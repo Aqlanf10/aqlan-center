@@ -64,7 +64,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: "تم الإعداد مسبقًا. سجّل الدخول بحسابك." }, { status: 409 });
     }
     return NextResponse.json({ username: admin.username, displayName: admin.displayName }, { status: 201 });
-  } catch {
-    return NextResponse.json({ message: "تعذّر إنشاء الحساب. أعد المحاولة." }, { status: 500 });
+  } catch (error) {
+    // «أعد المحاولة» كانت نصيحة خاطئة حين تكون قاعدة البيانات غير مضبوطة: التكرار لن
+    // يصنع قاعدة. ظهر هذا لمالك العيادة فعلًا وهو ينشئ حسابه الأول، فوقف بلا سبب معروف.
+    const message = error instanceof Error && error.message.includes("قاعدة البيانات")
+      ? "قاعدة البيانات غير مضبوطة بعد. افتح /api/health لمعرفة الناقص."
+      : "تعذّر إنشاء الحساب. أعد المحاولة.";
+    return NextResponse.json({ message }, { status: 503 });
   }
 }
