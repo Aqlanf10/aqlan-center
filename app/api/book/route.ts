@@ -5,9 +5,17 @@ import { clinicDateString, validateBookingRequest } from "@/lib/booking";
 
 export const dynamic = "force-dynamic";
 
-/** حدّان يوميّان: أحدهما للرقم والآخر للمصدر. تجاوز أيهما يعني عبثًا لا مريضًا. */
+/**
+ * حدّان يوميّان: أحدهما للرقم والآخر للمصدر.
+ *
+ * حدّ الرقم هو الحدّ الحقيقي — ثلاثة طلبات في يوم من رقم واحد تكفي أكثر من الحاجة.
+ * أما حدّ المصدر فمرفوع عمدًا: مشغّلو الجوال في اليمن يشاركون عنوانًا واحدًا بين آلاف
+ * المشتركين (CGNAT)، فحدٌّ ضيّق عليه كان سيمنع مريضة لم ترسل شيئًا لأن غريبًا على
+ * نفس الشبكة أرسل قبلها — وهو بالضبط «العيادة لا تهتم» الذي نعالجه. يبقى الحدّ
+ * موجودًا ليوقف من يرسل ألفًا في دقيقة، لا ليحكم على مريض.
+ */
 const MAX_PER_PHONE_PER_DAY = 3;
-const MAX_PER_SOURCE_PER_DAY = 12;
+const MAX_PER_SOURCE_PER_DAY = 60;
 
 /**
  * بصمة مصدر الطلب — لا عنوانه.
@@ -53,9 +61,18 @@ export async function POST(request: Request) {
   try {
     const hash = sourceHash(request);
     const recent = await countRecentRequests(validation.value.phone, hash);
-    if (recent.byPhone >= MAX_PER_PHONE_PER_DAY || recent.bySource >= MAX_PER_SOURCE_PER_DAY) {
+    // رسالتان مختلفتان: من أرسل ثلاثة طلبات اليوم يُقال له إنها وصلت، ومن مُنع بسبب
+    // مصدرٍ مزدحم لم يرسل شيئًا — فإخباره «وصلتنا طلباتكم» كذبٌ يجعله ينتظر ردًّا
+    // لن يأتي. لكلٍّ رسالته، وكلتاهما تعطيه طريقًا آخر إلى العيادة.
+    if (recent.byPhone >= MAX_PER_PHONE_PER_DAY) {
       return NextResponse.json(
         { message: "وصلتنا طلباتكم اليوم وسنتصل بكم. للحالات المستعجلة اتصلوا بالمركز مباشرة." },
+        { status: 429 },
+      );
+    }
+    if (recent.bySource >= MAX_PER_SOURCE_PER_DAY) {
+      return NextResponse.json(
+        { message: "تعذّر استقبال الطلب الآن. اتصلوا بالمركز مباشرة لحجز موعدكم." },
         { status: 429 },
       );
     }
