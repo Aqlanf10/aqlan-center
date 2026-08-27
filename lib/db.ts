@@ -237,6 +237,10 @@ export function ensureSchema(): Promise<void> {
         total_minor      BIGINT  NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS invoice_items_invoice_idx ON invoice_items (invoice_id);
+      -- الطبيب على مستوى البند لا الفاتورة: فاتورة واحدة قد تحمل عمل طبيبين — كشف
+      -- من الأول وحشوة من الثانية — وعمولة كلٍّ على عمله وحده.
+      ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS doctor_id INTEGER REFERENCES parties(id);
+      CREATE INDEX IF NOT EXISTS invoice_items_doctor_idx ON invoice_items (doctor_id);
 
       -- الدفعة تحمل سعر صرفها لحظة الدفع. لو حُسبت بسعر اليوم لتغيّر رصيد كل مريض
       -- كلما حُدِّث السعر — وهو ما يجعل السجل كله بلا معنى.
@@ -1761,6 +1765,7 @@ export async function listShifts(limit = 30): Promise<CashierShift[]> {
 export interface InvoiceItem {
   id: number;
   serviceId: number | null;
+  doctorId: number | null;
   description: string;
   quantity: number;
   unitPriceMinor: number;
@@ -1862,10 +1867,10 @@ async function itemsFor(invoiceIds: number[]): Promise<Map<number, InvoiceItem[]
   const map = new Map<number, InvoiceItem[]>();
   if (invoiceIds.length === 0) return map;
   const { rows } = await getPool().query<{
-    id: number; invoice_id: number; service_id: number | null; description: string;
-    quantity: number; unit_price_minor: string; total_minor: string;
+    id: number; invoice_id: number; service_id: number | null; doctor_id: number | null;
+    description: string; quantity: number; unit_price_minor: string; total_minor: string;
   }>(
-    `SELECT id, invoice_id, service_id, description, quantity, unit_price_minor, total_minor
+    `SELECT id, invoice_id, service_id, doctor_id, description, quantity, unit_price_minor, total_minor
        FROM invoice_items WHERE invoice_id = ANY($1::int[]) ORDER BY id`,
     [invoiceIds],
   );
@@ -1874,6 +1879,7 @@ async function itemsFor(invoiceIds: number[]): Promise<Map<number, InvoiceItem[]
     list.push({
       id: row.id,
       serviceId: row.service_id,
+      doctorId: row.doctor_id,
       description: row.description,
       quantity: row.quantity,
       unitPriceMinor: toMinor(row.unit_price_minor),
@@ -1896,7 +1902,10 @@ export async function createInvoice(input: {
   discountMinor: number;
   note: string | null;
   createdBy: string;
-  items: { serviceId: number | null; description: string; quantity: number; unitPriceMinor: number }[];
+  items: {
+    serviceId: number | null; doctorId: number | null;
+    description: string; quantity: number; unitPriceMinor: number;
+  }[];
 }): Promise<Invoice | null> {
   await ensureSchema();
   const client = await getPool().connect();
@@ -1921,9 +1930,9 @@ export async function createInvoice(input: {
       const quantity = Math.max(1, Math.round(item.quantity));
       const unit = Math.max(0, Math.round(item.unitPriceMinor));
       await client.query(
-        `INSERT INTO invoice_items (invoice_id, service_id, description, quantity, unit_price_minor, total_minor)
-         VALUES ($1, $2::int, $3, $4, $5, $6)`,
-        [invoiceId, item.serviceId, item.description, quantity, unit, quantity * unit],
+        `INSERT INTO invoice_items (invoice_id, service_id, doctor_id, description, quantity, unit_price_minor, total_minor)
+         VALUES ($1, $2::int, $3::int, $4, $5, $6, $7)`,
+        [invoiceId, item.serviceId, item.doctorId, item.description, quantity, unit, quantity * unit],
       );
     }
     await client.query("COMMIT");
@@ -2283,4 +2292,301 @@ export async function recordExpense(input: {
 
   if (!rows[0]) return { expense: null, reason: "no_shift" };
   return { expense: await getExpense(rows[0].id), reason: null };
+}
+
+// ─── تقرير العمولات ──────────────────────────────────────────────────────────
+
+import { commissionForPatient, summarizeCommissions, type CommissionInvoice } from "./commission";
+import { invoiceNet } from "./money";
+
+export interface CommissionRow {
+  doctorId: number;
+  doctorName: string;
+  commissionPercent: number;
+  accruedMinor: number;
+  earnedMinor: number;
+  paidMinor: number;
+  dueMinor: number;
+}
+
+/**
+ * عمولات الأطباء عن مدى تاريخي.
+ *
+ * التوزيع يجري على **كل** فواتير المريض ودفعاته — لا على المدى وحده — ثم تُحسب
+ * فواتير المدى. لو قُصر التوزيع على المدى لبدت دفعةٌ قديمة كأنها تغطّي فاتورة الشهر
+ * الحالي، فتُصرف عمولة مرتين على مالٍ واحد.
+ */
+export async function commissionReport(from: string, to: string): Promise<CommissionRow[]> {
+  await ensureSchema();
+  const pool = getPool();
+
+  const [{ rows: doctorRows }, { rows: invoiceRows }, { rows: paidRows }] = await Promise.all([
+    pool.query<{ id: number; name: string; commission_percent: string }>(
+      `SELECT id, name, commission_percent FROM parties WHERE kind = 'doctor'`,
+    ),
+    pool.query<{
+      patient_id: number; invoice_id: number; net_minor: string; created_at: Date;
+      doctor_id: number | null; share_minor: string;
+    }>(
+      `SELECT i.patient_id,
+              i.id AS invoice_id,
+              GREATEST(0, i.total_minor - i.discount_minor) AS net_minor,
+              i.created_at,
+              it.doctor_id,
+              COALESCE(SUM(it.total_minor), 0) AS share_minor
+         FROM invoices i
+         LEFT JOIN invoice_items it ON it.invoice_id = i.id
+        WHERE i.status <> 'cancelled'
+          AND i.patient_id IN (
+                SELECT patient_id FROM invoices
+                 WHERE status <> 'cancelled'
+                   AND (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
+              )
+        GROUP BY i.patient_id, i.id, i.total_minor, i.discount_minor, i.created_at, it.doctor_id`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{ party_id: number; paid: string }>(
+      `SELECT party_id, COALESCE(SUM(base_amount_minor), 0) AS paid
+         FROM expenses
+        WHERE category = 'commission' AND party_id IS NOT NULL
+          AND (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
+        GROUP BY party_id`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+  ]);
+
+  const percentByDoctor = new Map(doctorRows.map((row) => [row.id, Number(row.commission_percent)]));
+  const nameByDoctor = new Map(doctorRows.map((row) => [row.id, row.name]));
+
+  // تجميع الفواتير لكل مريض مع حصص الأطباء فيها.
+  const byPatient = new Map<number, Map<number, CommissionInvoice>>();
+  for (const row of invoiceRows) {
+    const patientInvoices = byPatient.get(row.patient_id) ?? new Map<number, CommissionInvoice>();
+    const invoice = patientInvoices.get(row.invoice_id) ?? {
+      id: row.invoice_id,
+      netMinor: toMinor(row.net_minor),
+      createdAt: row.created_at.toISOString(),
+      doctorShares: [],
+    };
+    if (row.doctor_id) {
+      invoice.doctorShares.push({ doctorId: row.doctor_id, amountMinor: toMinor(row.share_minor) });
+    }
+    patientInvoices.set(row.invoice_id, invoice);
+    byPatient.set(row.patient_id, patientInvoices);
+  }
+
+  const patientIds = [...byPatient.keys()];
+  const collectedByPatient = new Map<number, number>();
+  if (patientIds.length > 0) {
+    const { rows } = await pool.query<{ patient_id: number; collected: string }>(
+      `SELECT patient_id,
+              COALESCE(SUM(CASE WHEN kind = 'refund' THEN -base_amount_minor ELSE base_amount_minor END), 0) AS collected
+         FROM payments WHERE patient_id = ANY($1::int[]) GROUP BY patient_id`,
+      [patientIds],
+    );
+    for (const row of rows) collectedByPatient.set(row.patient_id, toMinor(row.collected));
+  }
+
+  const fromStamp = `${from}T00:00:00.000Z`;
+  const toStamp = `${to}T23:59:59.999Z`;
+  const perPatient = patientIds.map((patientId) =>
+    commissionForPatient(
+      [...(byPatient.get(patientId) ?? new Map()).values()],
+      collectedByPatient.get(patientId) ?? 0,
+      percentByDoctor,
+      (invoice) => invoice.createdAt >= fromStamp && invoice.createdAt <= toStamp,
+    ),
+  );
+
+  const paidByDoctor = new Map(paidRows.map((row) => [row.party_id, toMinor(row.paid)]));
+
+  return summarizeCommissions(perPatient, paidByDoctor).map((row) => ({
+    doctorId: row.doctorId,
+    doctorName: nameByDoctor.get(row.doctorId) ?? "—",
+    commissionPercent: percentByDoctor.get(row.doctorId) ?? 0,
+    accruedMinor: row.accruedMinor,
+    earnedMinor: row.earnedMinor,
+    paidMinor: row.paidMinor,
+    dueMinor: row.dueMinor,
+  }));
+}
+
+/** يُبقي `invoiceNet` مستعملًا في هذا الملف — يُستخدم في تقرير المديونية أدناه. */
+export const netOfInvoice = invoiceNet;
+
+// ─── تقارير مالية ────────────────────────────────────────────────────────────
+
+export interface DebtRow {
+  patientId: number;
+  patientName: string;
+  phone: string | null;
+  billedMinor: number;
+  collectedMinor: number;
+  dueMinor: number;
+  /** أقدم فاتورة غير مغطّاة — عليها يقوم عمر الدين. */
+  oldestUnpaidDate: string | null;
+  ageDays: number;
+}
+
+/**
+ * مديونية المرضى.
+ *
+ * الرقم الذي يعرف به صاحب العيادة كم من ماله عند الناس. ومعه **عمر الدين**: مئة ألف
+ * عمرها أسبوع شيء، ومئة ألف عمرها سنة شيء آخر تمامًا — الأولى تُحصَّل بمكالمة،
+ * والثانية غالبًا لن تعود. وبلا العمر تبدو المديونية رقمًا واحدًا لا يُتصرَّف فيه.
+ */
+export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    patient_id: number; full_name: string; phone: string | null;
+    billed: string; collected: string; oldest: Date | null;
+  }>(
+    `WITH billed AS (
+       SELECT patient_id,
+              COALESCE(SUM(GREATEST(0, total_minor - discount_minor)), 0) AS amount,
+              MIN(created_at) AS oldest
+         FROM invoices WHERE status <> 'cancelled' GROUP BY patient_id
+     ), collected AS (
+       SELECT patient_id,
+              COALESCE(SUM(CASE WHEN kind = 'refund' THEN -base_amount_minor ELSE base_amount_minor END), 0) AS amount
+         FROM payments GROUP BY patient_id
+     )
+     SELECT p.id AS patient_id, p.full_name, p.phone,
+            COALESCE(b.amount, 0) AS billed,
+            COALESCE(c.amount, 0) AS collected,
+            b.oldest
+       FROM patients p
+       LEFT JOIN billed b ON b.patient_id = p.id
+       LEFT JOIN collected c ON c.patient_id = p.id
+      WHERE COALESCE(b.amount, 0) - COALESCE(c.amount, 0) >= $1
+      ORDER BY (COALESCE(b.amount, 0) - COALESCE(c.amount, 0)) DESC
+      LIMIT 500`,
+    [minDueMinor],
+  );
+
+  const now = Date.now();
+  return rows.map((row) => {
+    const oldest = row.oldest ? row.oldest.toISOString() : null;
+    return {
+      patientId: row.patient_id,
+      patientName: row.full_name,
+      phone: row.phone,
+      billedMinor: toMinor(row.billed),
+      collectedMinor: toMinor(row.collected),
+      dueMinor: toMinor(row.billed) - toMinor(row.collected),
+      oldestUnpaidDate: oldest,
+      ageDays: oldest ? Math.max(0, Math.floor((now - Date.parse(oldest)) / 86_400_000)) : 0,
+    };
+  });
+}
+
+export interface FinanceSummary {
+  from: string;
+  to: string;
+  income: { byCurrency: Record<Currency, number>; baseTotalMinor: number; count: number };
+  refunds: { baseTotalMinor: number; count: number };
+  expenses: { byCategory: Record<string, number>; baseTotalMinor: number; count: number };
+  netMinor: number;
+  invoicedMinor: number;
+  invoiceCount: number;
+  patientCount: number;
+  topServices: { name: string; count: number; totalMinor: number }[];
+}
+
+/**
+ * ملخص مالي لمدى تاريخي — يخدم التقرير اليومي والشهري معًا.
+ *
+ * الفرق بينهما تاريخان لا منطقان، وبناء تقريرين منفصلين كان يعني رقمين مختلفين
+ * لنفس اليوم حين يختلف الحسابان بسطر.
+ */
+export async function financeSummary(from: string, to: string): Promise<FinanceSummary> {
+  await ensureSchema();
+  const pool = getPool();
+
+  const [payments, expenses, invoices, services] = await Promise.all([
+    pool.query<{ currency: string; kind: string; amount: string; base: string; count: string }>(
+      `SELECT currency, kind,
+              COALESCE(SUM(amount_minor), 0) AS amount,
+              COALESCE(SUM(base_amount_minor), 0) AS base,
+              COUNT(*)::int AS count
+         FROM payments
+        WHERE (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
+        GROUP BY currency, kind`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{ category: string; base: string; count: string }>(
+      `SELECT category, COALESCE(SUM(base_amount_minor), 0) AS base, COUNT(*)::int AS count
+         FROM expenses
+        WHERE (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
+        GROUP BY category`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{ invoiced: string; count: string; patients: string }>(
+      `SELECT COALESCE(SUM(GREATEST(0, total_minor - discount_minor)), 0) AS invoiced,
+              COUNT(*)::int AS count,
+              COUNT(DISTINCT patient_id)::int AS patients
+         FROM invoices
+        WHERE status <> 'cancelled'
+          AND (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{ description: string; count: string; total: string }>(
+      `SELECT it.description, COUNT(*)::int AS count, COALESCE(SUM(it.total_minor), 0) AS total
+         FROM invoice_items it JOIN invoices i ON i.id = it.invoice_id
+        WHERE i.status <> 'cancelled'
+          AND (i.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
+        GROUP BY it.description
+        ORDER BY total DESC
+        LIMIT 10`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+  ]);
+
+  const byCurrency: Record<Currency, number> = { YER: 0, SAR: 0, USD: 0 };
+  let incomeBase = 0;
+  let incomeCount = 0;
+  let refundBase = 0;
+  let refundCount = 0;
+  for (const row of payments.rows) {
+    const currency = row.currency as Currency;
+    const sign = row.kind === "refund" ? -1 : 1;
+    byCurrency[currency] += sign * toMinor(row.amount);
+    if (row.kind === "refund") {
+      refundBase += toMinor(row.base);
+      refundCount += Number(row.count);
+    } else {
+      incomeBase += toMinor(row.base);
+      incomeCount += Number(row.count);
+    }
+  }
+
+  const byCategory: Record<string, number> = {};
+  let expenseBase = 0;
+  let expenseCount = 0;
+  for (const row of expenses.rows) {
+    byCategory[row.category] = toMinor(row.base);
+    expenseBase += toMinor(row.base);
+    expenseCount += Number(row.count);
+  }
+
+  const invoiceRow = invoices.rows[0];
+
+  return {
+    from,
+    to,
+    income: { byCurrency, baseTotalMinor: incomeBase, count: incomeCount },
+    refunds: { baseTotalMinor: refundBase, count: refundCount },
+    expenses: { byCategory, baseTotalMinor: expenseBase, count: expenseCount },
+    // الصافي = المقبوض − المسترد − المصروف. هذا ما بقي في الصندوق فعلًا، لا
+    // «الدخل» الذي يظنّه من يقرأ المقبوض وحده.
+    netMinor: incomeBase - refundBase - expenseBase,
+    invoicedMinor: toMinor(invoiceRow?.invoiced ?? 0),
+    invoiceCount: Number(invoiceRow?.count ?? 0),
+    patientCount: Number(invoiceRow?.patients ?? 0),
+    topServices: services.rows.map((row) => ({
+      name: row.description,
+      count: Number(row.count),
+      totalMinor: toMinor(row.total),
+    })),
+  };
 }

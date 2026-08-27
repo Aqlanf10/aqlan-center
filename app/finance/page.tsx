@@ -204,6 +204,9 @@ export default function FinancePage() {
           <a href="/finance/parties" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
             الجهات
           </a>
+          <a href="/finance/reports" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
+            التقارير
+          </a>
         </div>
       </header>
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createInvoice, getSettings, listPatientInvoices, listServices } from "@/lib/db";
+import { createInvoice, getSettings, listPatientInvoices, listParties, listServices } from "@/lib/db";
 import { isCurrency, parseAmount } from "@/lib/money";
 import { requireSession } from "@/lib/session";
 
@@ -52,7 +52,14 @@ export async function POST(request: Request) {
   // وسعرِ أخرى.
   const services = new Map((await listServices(true)).map((service) => [service.id, service]));
 
-  const items: { serviceId: number | null; description: string; quantity: number; unitPriceMinor: number }[] = [];
+  // الأطباء المسجّلون: بندٌ يشير إلى جهةٍ ليست طبيبًا يُرفض، وإلا نُسبت عمولة إلى
+  // مختبر أو مورّد.
+  const doctors = new Set((await listParties("doctor")).map((party) => party.id));
+
+  const items: {
+    serviceId: number | null; doctorId: number | null;
+    description: string; quantity: number; unitPriceMinor: number;
+  }[] = [];
   for (const raw of rawItems as Record<string, unknown>[]) {
     const quantity = Math.max(1, Math.round(Number(raw.quantity ?? 1)));
     if (!Number.isFinite(quantity) || quantity > 999) {
@@ -80,7 +87,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: `اكتب سعرًا صحيحًا لبند «${description}».` }, { status: 400 });
     }
 
-    items.push({ serviceId: service ? service.id : null, description, quantity, unitPriceMinor });
+    const doctorIdRaw = Number(raw.doctorId);
+    const doctorId = Number.isInteger(doctorIdRaw) && doctors.has(doctorIdRaw) ? doctorIdRaw : null;
+    if (raw.doctorId !== undefined && String(raw.doctorId).trim() !== "" && doctorId === null) {
+      return NextResponse.json({ message: "الطبيب المختار غير مسجّل." }, { status: 400 });
+    }
+
+    items.push({ serviceId: service ? service.id : null, doctorId, description, quantity, unitPriceMinor });
   }
 
   const discountMinor = source.discount === undefined || String(source.discount).trim() === ""
