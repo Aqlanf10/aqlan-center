@@ -351,6 +351,39 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS journal_manual_lines_entry_idx ON journal_manual_lines (entry_id);
 
+      -- خطط العلاج والأقساط: نموذج عمل عيادة التقويم. الخطة **اتفاق**، والقسط
+      -- **استحقاق**، والدفعة **تحصيل** — ثلاثة أشياء مختلفة كان خلطها هو ما يجعل
+      -- مرضى التقويم أصعب ملفات العيادة.
+      CREATE TABLE IF NOT EXISTS treatment_plans (
+        id            SERIAL PRIMARY KEY,
+        patient_id    INTEGER     NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        title         TEXT        NOT NULL,
+        total_minor   BIGINT      NOT NULL,
+        base_currency TEXT        NOT NULL DEFAULT 'YER',
+        status        TEXT        NOT NULL DEFAULT 'active',
+        start_date    DATE        NOT NULL DEFAULT CURRENT_DATE,
+        note          TEXT,
+        created_by    TEXT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS treatment_plans_patient_idx ON treatment_plans (patient_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS treatment_plans_status_idx ON treatment_plans (status);
+
+      CREATE TABLE IF NOT EXISTS plan_installments (
+        id           SERIAL PRIMARY KEY,
+        plan_id      INTEGER NOT NULL REFERENCES treatment_plans(id) ON DELETE CASCADE,
+        number       INTEGER NOT NULL,
+        due_date     DATE    NOT NULL,
+        amount_minor BIGINT  NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS plan_installments_uniq ON plan_installments (plan_id, number);
+      CREATE INDEX IF NOT EXISTS plan_installments_due_idx ON plan_installments (due_date);
+
+      -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
+      ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
+      CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
+      ALTER TABLE invoices ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -3115,4 +3148,242 @@ export async function isPeriodLocked(date: string): Promise<boolean> {
   const lockedBefore = (settings["finance.locked_before"] ?? "").trim();
   if (!lockedBefore) return false;
   return date < lockedBefore;
+}
+
+// ─── خطط العلاج والأقساط ─────────────────────────────────────────────────────
+
+import { planProgress, type PlanStatus, type PlanProgress } from "./plans";
+
+export interface TreatmentPlan {
+  id: number;
+  patientId: number;
+  patientName: string;
+  patientPhone: string | null;
+  title: string;
+  totalMinor: number;
+  baseCurrency: Currency;
+  status: PlanStatus;
+  startDate: string;
+  note: string | null;
+  createdAt: string;
+  installments: { id: number; number: number; dueDate: string; amountMinor: number }[];
+  paidMinor: number;
+  progress: PlanProgress;
+}
+
+interface PlanRow {
+  id: number; patient_id: number; full_name: string; phone: string | null;
+  title: string; total_minor: string; base_currency: string; status: string;
+  start_date: Date; note: string | null; created_at: Date; paid_minor: string;
+}
+
+const PLAN_SELECT = `
+  SELECT t.id, t.patient_id, p.full_name, p.phone, t.title, t.total_minor, t.base_currency,
+         t.status, t.start_date, t.note, t.created_at,
+         COALESCE((SELECT SUM(CASE WHEN y.kind = 'refund' THEN -y.base_amount_minor ELSE y.base_amount_minor END)
+                     FROM payments y WHERE y.plan_id = t.id), 0) AS paid_minor
+    FROM treatment_plans t JOIN patients p ON p.id = t.patient_id`;
+
+async function hydratePlans(rows: PlanRow[], today: string): Promise<TreatmentPlan[]> {
+  if (rows.length === 0) return [];
+  const { rows: installmentRows } = await getPool().query<{
+    id: number; plan_id: number; number: number; due_date: Date; amount_minor: string;
+  }>(
+    `SELECT id, plan_id, number, due_date, amount_minor FROM plan_installments
+      WHERE plan_id = ANY($1::int[]) ORDER BY plan_id, number`,
+    [rows.map((row) => row.id)],
+  );
+
+  const byPlan = new Map<number, { id: number; number: number; dueDate: string; amountMinor: number }[]>();
+  for (const row of installmentRows) {
+    const list = byPlan.get(row.plan_id) ?? [];
+    list.push({
+      id: row.id, number: row.number,
+      dueDate: dateText(row.due_date), amountMinor: toMinor(row.amount_minor),
+    });
+    byPlan.set(row.plan_id, list);
+  }
+
+  return rows.map((row) => {
+    const installments = byPlan.get(row.id) ?? [];
+    const paidMinor = toMinor(row.paid_minor);
+    return {
+      id: row.id,
+      patientId: row.patient_id,
+      patientName: row.full_name,
+      patientPhone: row.phone,
+      title: row.title,
+      totalMinor: toMinor(row.total_minor),
+      baseCurrency: row.base_currency as Currency,
+      status: row.status as PlanStatus,
+      startDate: dateText(row.start_date),
+      note: row.note,
+      createdAt: row.created_at.toISOString(),
+      installments,
+      paidMinor,
+      progress: planProgress(
+        { totalMinor: toMinor(row.total_minor), status: row.status as PlanStatus, installments },
+        paidMinor,
+        today,
+      ),
+    };
+  });
+}
+
+export async function listPatientPlans(patientId: number, today: string): Promise<TreatmentPlan[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PlanRow>(
+    `${PLAN_SELECT} WHERE t.patient_id = $1 ORDER BY t.created_at DESC`, [patientId],
+  );
+  return hydratePlans(rows, today);
+}
+
+export async function getPlan(id: number, today: string): Promise<TreatmentPlan | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PlanRow>(`${PLAN_SELECT} WHERE t.id = $1`, [id]);
+  const plans = await hydratePlans(rows, today);
+  return plans[0] ?? null;
+}
+
+/** الخطط الجارية — لقائمة الأقساط المستحقة والمتأخرة. */
+export async function listActivePlans(today: string): Promise<TreatmentPlan[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PlanRow>(
+    `${PLAN_SELECT} WHERE t.status = 'active' ORDER BY t.created_at DESC LIMIT 300`,
+  );
+  return hydratePlans(rows, today);
+}
+
+/**
+ * ينشئ خطة بجدول أقساطها في معاملة واحدة.
+ *
+ * الخطة بلا أقساط اتفاقٌ بلا مواعيد — وهو ما كان يحدث على الورق: سعرٌ متفق عليه ولا
+ * أحد يعرف متى يُدفع، فيُسأل المريض في كل زيارة «كم تدفع اليوم؟».
+ */
+export async function createPlan(input: {
+  patientId: number;
+  title: string;
+  totalMinor: number;
+  baseCurrency: Currency;
+  startDate: string;
+  note: string | null;
+  createdBy: string;
+  installments: { number: number; dueDate: string; amountMinor: number }[];
+}): Promise<number | null> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO treatment_plans (patient_id, title, total_minor, base_currency, start_date, note, created_by)
+       VALUES ($1, $2, $3, $4, $5::date, $6::text, $7) RETURNING id`,
+      [input.patientId, input.title, input.totalMinor, input.baseCurrency,
+       input.startDate, input.note, input.createdBy],
+    );
+    for (const installment of input.installments) {
+      await client.query(
+        `INSERT INTO plan_installments (plan_id, number, due_date, amount_minor)
+         VALUES ($1, $2, $3::date, $4)`,
+        [rows[0].id, installment.number, installment.dueDate, installment.amountMinor],
+      );
+    }
+    await client.query("COMMIT");
+    return rows[0].id;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function setPlanStatus(id: number, status: PlanStatus): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE treatment_plans SET status = $2 WHERE id = $1`, [id, status],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * يسجّل قسطًا: فاتورة بقيمته ودفعة عليها، في معاملة واحدة داخل الوردية المفتوحة.
+ *
+ * **الإيراد يُثبت مع القسط لا مع الاتفاق.** فوترةُ الخطة كاملة يوم توقيعها تجعل
+ * المريض «مدينًا بمليون» من أول يوم وتُثبت إيرادًا لعلاج لم يُقدَّم بعد — وهو مخالف
+ * لمعيار إثبات الإيراد على مدى تقديم الخدمة. فكل قسط فاتورته يوم يُقبض.
+ *
+ * والاثنان في معاملة واحدة: فاتورةٌ بلا دفعتها تجعل المريض مدينًا بمبلغ دفعه للتو،
+ * ودفعةٌ بلا فاتورتها تجعل له رصيدًا عندنا بلا سبب.
+ */
+export async function recordPlanInstallment(input: {
+  planId: number;
+  patientId: number;
+  installmentNumber: number;
+  planTitle: string;
+  amountMinor: number;
+  currency: Currency;
+  baseCurrency: Currency;
+  exchangeRate: number;
+  method: string;
+  note: string | null;
+  createdBy: string;
+}): Promise<{ invoiceId: number; paymentId: number } | { reason: "no_shift" }> {
+  await ensureSchema();
+  const baseAmount = toBaseAmount(
+    input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
+  );
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: shifts } = await client.query<{ id: number }>(
+      `SELECT id FROM cashier_shifts WHERE status = 'open' LIMIT 1 FOR UPDATE`,
+    );
+    if (!shifts[0]) { await client.query("ROLLBACK"); return { reason: "no_shift" }; }
+
+    const description = `${input.planTitle} — قسط ${input.installmentNumber}`;
+    const { rows: invoices } = await client.query<{ id: number }>(
+      `INSERT INTO invoices (invoice_number, patient_id, total_minor, discount_minor, base_currency, note, created_by, plan_id)
+       VALUES (
+         'INV-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(invoice_number, '\\D', '', 'g'), '')::bigint) FROM invoices), 0) + 1)::text, 5, '0'),
+         $1, $2, 0, $3, $4::text, $5, $6)
+       RETURNING id`,
+      [input.patientId, baseAmount, input.baseCurrency, input.note, input.createdBy, input.planId],
+    );
+    const invoiceId = invoices[0].id;
+
+    await client.query(
+      `INSERT INTO invoice_items (invoice_id, description, quantity, unit_price_minor, total_minor)
+       VALUES ($1, $2, 1, $3, $3)`,
+      [invoiceId, description, baseAmount],
+    );
+
+    const { rows: payments } = await client.query<{ id: number }>(
+      `INSERT INTO payments (
+         receipt_number, patient_id, invoice_id, shift_id, kind, amount_minor, currency,
+         exchange_rate, base_amount_minor, base_currency, method, note, created_by, plan_id)
+       VALUES (
+         'R-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(receipt_number, '\\D', '', 'g'), '')::bigint) FROM payments), 0) + 1)::text, 5, '0'),
+         $1, $2, $3, 'payment', $4, $5, $6, $7, $8, $9, $10::text, $11, $12)
+       RETURNING id`,
+      [
+        input.patientId, invoiceId, shifts[0].id, input.amountMinor, input.currency,
+        input.exchangeRate, baseAmount, input.baseCurrency, input.method, input.note,
+        input.createdBy, input.planId,
+      ],
+    );
+
+    await client.query(
+      `UPDATE invoices SET status = 'paid' WHERE id = $1`, [invoiceId],
+    );
+
+    await client.query("COMMIT");
+    return { invoiceId, paymentId: payments[0].id };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }

@@ -7,6 +7,7 @@ import { GENDER_LABEL, ageFromBirthYear, ageText, type Gender, type Patient } fr
 import { friendlyDate, friendlyDateLong, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import { PatientLedger } from "@/components/PatientLedger";
+import { PatientPlans } from "@/components/PatientPlans";
 
 /**
  * ملف المريض.
@@ -31,7 +32,7 @@ function dateOnly(iso: string): string {
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 }
 
-type Tab = "overview" | "ledger" | "appointments" | "visits";
+type Tab = "overview" | "plans" | "ledger" | "appointments" | "visits";
 
 export default function PatientFilePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -138,7 +139,7 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
       </section>
 
       <div className="mb-3 flex flex-wrap gap-1.5">
-        {([["overview", "نظرة عامة"], ["ledger", "الحساب"], ["appointments", `المواعيد (${file.appointments.length})`], ["visits", `الزيارات (${file.visits.length})`]] as [Tab, string][]).map(([key, label]) => (
+        {([["overview", "نظرة عامة"], ["plans", "خطة العلاج"], ["ledger", "الحساب"], ["appointments", `المواعيد (${file.appointments.length})`], ["visits", `الزيارات (${file.visits.length})`]] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -160,6 +161,8 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
           <Row label="مسجّل منذ" value={friendlyDateLong(dateOnly(patient.createdAt))} />
           <Row label="ملاحظة" value={patient.note} />
         </section>
+      ) : tab === "plans" ? (
+        <PatientPlans patientId={patient.id} />
       ) : tab === "ledger" ? (
         <PatientLedger patientId={patient.id} />
       ) : tab === "appointments" ? (
