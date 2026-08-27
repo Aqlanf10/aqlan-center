@@ -1137,6 +1137,36 @@ export async function setLabOrderDueDate(id: number, dueDate: string): Promise<L
   return full[0] ? toLabOrder(full[0]) : null;
 }
 
+/**
+ * أرقام المختبر معدودة في Postgres لا في الذاكرة.
+ *
+ * اللوحة تسأل عنها كل عشرين ثانية. جلبُ الصفوف كلها ثم عدّها في الخادم يعمل اليوم
+ * وثلاثون صفًّا في الجدول، ويصير حِملًا بلا سبب بعد سنة — والعدّ هنا لا يحتاج صفًّا
+ * واحدًا في الذاكرة. «اليوم» بتوقيت العيادة لا بـUTC، وإلا حُسب عمل يستحق غدًا متأخرًا.
+ */
+export async function labCounts(): Promise<{
+  outstanding: number; late: number; dueToday: number; waitingFitting: number;
+}> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    outstanding: string; late: string; due_today: string; waiting_fitting: string;
+  }>(
+    `SELECT
+       count(*) FILTER (WHERE status = 'sent')::int AS outstanding,
+       count(*) FILTER (WHERE status = 'sent' AND due_date < (NOW() AT TIME ZONE $1)::date)::int AS late,
+       count(*) FILTER (WHERE status = 'sent' AND due_date = (NOW() AT TIME ZONE $1)::date)::int AS due_today,
+       count(*) FILTER (WHERE status = 'received')::int AS waiting_fitting
+     FROM lab_orders`,
+    [CLINIC_TIME_ZONE],
+  );
+  return {
+    outstanding: Number(rows[0].outstanding),
+    late: Number(rows[0].late),
+    dueToday: Number(rows[0].due_today),
+    waitingFitting: Number(rows[0].waiting_fitting),
+  };
+}
+
 /** أسماء المختبرات المستخدمة سابقًا — تُختصر الكتابة وتمنع «النور» و«مختبر النور». */
 export async function listLabNames(): Promise<{ labName: string; labPhone: string | null }[]> {
   await ensureSchema();

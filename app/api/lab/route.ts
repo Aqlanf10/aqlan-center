@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { CLINIC_TIME_ZONE, createLabOrder, listLabNames, listLabOrders } from "@/lib/db";
-import { labSummary } from "@/lib/lab";
-import { clinicDateString } from "@/lib/schedule";
+import { createLabOrder, labCounts, listLabNames, listLabOrders } from "@/lib/db";
 import { toWhatsAppNumber } from "@/lib/reminders";
 import { requireSession } from "@/lib/session";
 
@@ -13,13 +11,11 @@ const denied = () =>
 
 export async function GET(request: Request) {
   if (!(await requireSession())) return denied();
-  // اللوحة تسأل عن الأرقام وحدها كل عشرين ثانية: تحميل ثلاثمئة صف في كل نبضة على
-  // هاتف الاستقبال هو الفرق بين لوحة تعمل ولوحة تُقفَل بعد يوم.
+  // اللوحة تسأل عن الأرقام وحدها كل عشرين ثانية، فتُعدّ في Postgres بلا جلب صفوف.
   const summaryOnly = new URL(request.url).searchParams.get("summary") === "1";
   try {
     if (summaryOnly) {
-      const orders = await listLabOrders();
-      return NextResponse.json(labSummary(orders, clinicDateString(new Date(), CLINIC_TIME_ZONE)));
+      return NextResponse.json(await labCounts());
     }
     const [orders, labs] = await Promise.all([listLabOrders(), listLabNames()]);
     return NextResponse.json({ orders, labs });
