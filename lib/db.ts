@@ -331,6 +331,26 @@ export function ensureSchema(): Promise<void> {
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_minor BIGINT;
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_currency TEXT;
 
+      -- القيود اليدوية: التسويات وإعادة تقييم العملات والأرصدة الافتتاحية. قيود
+      -- المستندات تُشتقّ من المستندات نفسها ولا تُخزَّن — فلا مصدرين للحقيقة.
+      CREATE TABLE IF NOT EXISTS journal_manual (
+        id          SERIAL PRIMARY KEY,
+        entry_date  DATE        NOT NULL,
+        description TEXT        NOT NULL,
+        created_by  TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS journal_manual_date_idx ON journal_manual (entry_date);
+
+      CREATE TABLE IF NOT EXISTS journal_manual_lines (
+        id           SERIAL PRIMARY KEY,
+        entry_id     INTEGER NOT NULL REFERENCES journal_manual(id) ON DELETE CASCADE,
+        account_code TEXT    NOT NULL,
+        amount_minor BIGINT  NOT NULL,
+        side         TEXT    NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS journal_manual_lines_entry_idx ON journal_manual_lines (entry_id);
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -2868,4 +2888,231 @@ export async function countActiveAdmins(): Promise<number> {
     `SELECT count(*)::int AS c FROM users WHERE role = 'admin' AND is_active`,
   );
   return Number(rows[0].c);
+}
+
+// ─── الدفاتر المحاسبية ───────────────────────────────────────────────────────
+
+import {
+  cashDifferenceEntry,
+  expenseEntry,
+  invoiceEntry,
+  isBalanced,
+  payableEntry,
+  paymentEntry,
+  type JournalEntry,
+} from "./accounting";
+
+/** التاريخ المحلي لطابع زمني بتوقيت العيادة — كل القيود تُؤرَّخ به. */
+function clinicDayOf(iso: string): string {
+  const local = new Date(new Date(iso).toLocaleString("en-US", { timeZone: CLINIC_TIME_ZONE }));
+  return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * دفتر اليومية عن مدى تاريخي — مشتقًّا من المستندات.
+ *
+ * لا جدول قيود للمستندات: الفاتورة تُنتج قيدها كلما قُرئت، فلا تعارض ممكن بين
+ * الدفاتر والمستندات، ولا ترحيل خلفي للبيانات القائمة، ولا قيد يتيم. وما لا يُشتقّ
+ * من مستند — التسويات وإعادة التقييم — يأتي من `journal_manual` ويُدمج هنا.
+ */
+export async function journalEntries(from: string, to: string): Promise<JournalEntry[]> {
+  await ensureSchema();
+  const pool = getPool();
+
+  const [invoices, payments, expenses, payables, shifts, manual] = await Promise.all([
+    pool.query<{
+      invoice_number: string; created_at: Date; full_name: string;
+      total_minor: string; discount_minor: string; status: string;
+    }>(
+      `SELECT i.invoice_number, i.created_at, p.full_name, i.total_minor, i.discount_minor, i.status
+         FROM invoices i JOIN patients p ON p.id = i.patient_id
+        WHERE (i.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{
+      receipt_number: string; created_at: Date; full_name: string;
+      currency: string; base_amount_minor: string; kind: string;
+    }>(
+      `SELECT y.receipt_number, y.created_at, p.full_name, y.currency, y.base_amount_minor, y.kind
+         FROM payments y JOIN patients p ON p.id = y.patient_id
+        WHERE (y.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{
+      voucher_number: string; created_at: Date; category: string; currency: string;
+      base_amount_minor: string; party_id: number | null; party_kind: string | null;
+      party_name: string | null; payee_text: string | null;
+    }>(
+      `SELECT e.voucher_number, e.created_at, e.category, e.currency, e.base_amount_minor,
+              e.party_id, t.kind AS party_kind, t.name AS party_name, e.payee_text
+         FROM expenses e LEFT JOIN parties t ON t.id = e.party_id
+        WHERE (e.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{
+      id: number; created_at: Date; category: string; base_amount_minor: string; party_name: string;
+    }>(
+      `SELECT b.id, b.created_at, b.category, b.base_amount_minor, t.name AS party_name
+         FROM payables b JOIN parties t ON t.id = b.party_id
+        WHERE (b.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<ShiftRow>(
+      `SELECT * FROM cashier_shifts
+        WHERE status = 'closed'
+          AND (closed_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date`,
+      [CLINIC_TIME_ZONE, from, to],
+    ),
+    pool.query<{
+      id: number; entry_date: Date; description: string;
+      account_code: string; amount_minor: string; side: string;
+    }>(
+      `SELECT m.id, m.entry_date, m.description, l.account_code, l.amount_minor, l.side
+         FROM journal_manual m JOIN journal_manual_lines l ON l.entry_id = m.id
+        WHERE m.entry_date BETWEEN $1::date AND $2::date
+        ORDER BY m.id, l.id`,
+      [from, to],
+    ),
+  ]);
+
+  const entries: (JournalEntry | null)[] = [];
+
+  for (const row of invoices.rows) {
+    entries.push(invoiceEntry({
+      invoiceNumber: row.invoice_number,
+      date: clinicDayOf(row.created_at.toISOString()),
+      patientName: row.full_name,
+      totalMinor: toMinor(row.total_minor),
+      discountMinor: toMinor(row.discount_minor),
+      cancelled: row.status === "cancelled",
+    }));
+  }
+
+  for (const row of payments.rows) {
+    entries.push(paymentEntry({
+      receiptNumber: row.receipt_number,
+      date: clinicDayOf(row.created_at.toISOString()),
+      patientName: row.full_name,
+      currency: row.currency as Currency,
+      baseAmountMinor: toMinor(row.base_amount_minor),
+      kind: row.kind === "refund" ? "refund" : "payment",
+    }));
+  }
+
+  for (const row of payables.rows) {
+    entries.push(payableEntry({
+      reference: `PB-${row.id}`,
+      date: clinicDayOf(row.created_at.toISOString()),
+      partyName: row.party_name,
+      category: row.category,
+      baseAmountMinor: toMinor(row.base_amount_minor),
+    }));
+  }
+
+  for (const row of expenses.rows) {
+    entries.push(expenseEntry({
+      voucherNumber: row.voucher_number,
+      date: clinicDayOf(row.created_at.toISOString()),
+      payeeName: row.party_name ?? row.payee_text ?? "—",
+      category: row.category,
+      currency: row.currency as Currency,
+      baseAmountMinor: toMinor(row.base_amount_minor),
+      // السداد لجهة مسجّلة (مختبر أو مورّد) يُنقص الذمم؛ وغيره مصروف مباشر.
+      settlesPayable: row.party_kind === "lab" || row.party_kind === "supplier",
+    }));
+  }
+
+  // فروق جرد الورديات المغلقة: المعدود ناقص (الافتتاحي + المقبوض − المصروف).
+  for (const row of shifts.rows) {
+    const shift = toShift(row);
+    if (!shift.counted || !shift.closedAt) continue;
+    const [shiftPayments, shiftExpenses] = await Promise.all([
+      listShiftPayments(shift.id),
+      listShiftExpenses(shift.id),
+    ]);
+    for (const currency of ["YER", "SAR", "USD"] as Currency[]) {
+      const collected = shiftPayments.reduce(
+        (sum, payment) => payment.currency === currency
+          ? sum + (payment.kind === "refund" ? -payment.amountMinor : payment.amountMinor)
+          : sum, 0);
+      const spent = shiftExpenses.reduce(
+        (sum, expense) => expense.currency === currency ? sum + expense.amountMinor : sum, 0);
+      const expected = shift.opening[currency] + collected - spent;
+      entries.push(cashDifferenceEntry({
+        shiftId: shift.id,
+        date: clinicDayOf(shift.closedAt),
+        currency,
+        differenceMinor: shift.counted[currency] - expected,
+      }));
+    }
+  }
+
+  // القيود اليدوية.
+  const manualById = new Map<number, JournalEntry>();
+  for (const row of manual.rows) {
+    const entry = manualById.get(row.id) ?? {
+      source: "manual",
+      reference: `JM-${row.id}`,
+      date: dateText(row.entry_date),
+      description: row.description,
+      lines: [],
+    };
+    entry.lines.push({
+      accountCode: row.account_code,
+      amountMinor: toMinor(row.amount_minor),
+      side: row.side === "credit" ? "credit" : "debit",
+    });
+    manualById.set(row.id, entry);
+  }
+  entries.push(...manualById.values());
+
+  // قيدٌ لا يتوازن لا يدخل الدفاتر: وجوده يُفسد ميزان المراجعة كله ويجعل تتبّع
+  // الخلل مستحيلًا بعد شهور. وهو مستحيل من قواعد الترحيل، لكنه ممكن من قيد يدوي.
+  return entries.filter((entry): entry is JournalEntry => entry !== null && isBalanced(entry));
+}
+
+export async function createManualEntry(input: {
+  date: string;
+  description: string;
+  lines: { accountCode: string; amountMinor: number; side: "debit" | "credit" }[];
+  createdBy: string;
+}): Promise<number | null> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO journal_manual (entry_date, description, created_by)
+       VALUES ($1::date, $2, $3) RETURNING id`,
+      [input.date, input.description, input.createdBy],
+    );
+    for (const line of input.lines) {
+      await client.query(
+        `INSERT INTO journal_manual_lines (entry_id, account_code, amount_minor, side)
+         VALUES ($1, $2, $3, $4)`,
+        [rows[0].id, line.accountCode, line.amountMinor, line.side],
+      );
+    }
+    await client.query("COMMIT");
+    return rows[0].id;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * هل الفترة مقفلة عند هذا التاريخ؟
+ *
+ * الإقفال هو ما يجعل التقارير الشهرية قابلة للاعتماد: شهرٌ أُقفل لا يتغيّر رقمه بعد
+ * أن قُرئ وصُدّق. وبلا قفل يستطيع قيدٌ يُكتب اليوم أن يغيّر ربح مارس الذي بُنيت عليه
+ * قرارات — وهو ما يجعل أي محاسب يرفض النظام كله.
+ */
+export async function isPeriodLocked(date: string): Promise<boolean> {
+  const settings = await getSettings();
+  const lockedBefore = (settings["finance.locked_before"] ?? "").trim();
+  if (!lockedBefore) return false;
+  return date < lockedBefore;
 }

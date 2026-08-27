@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getInvoice, setInvoiceStatus } from "@/lib/db";
+import { getInvoice, isPeriodLocked, setInvoiceStatus } from "@/lib/db";
 import { canHandleMoney, isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -55,6 +55,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 
   try {
+    // إلغاء فاتورة من فترة مقفلة يغيّر إيراد شهرٍ صُدّق عليه. التصحيح يكون بقيد في
+    // الفترة المفتوحة لا بتعديل الماضي.
+    const existing = await getInvoice(id);
+    if (existing && await isPeriodLocked(existing.createdAt.slice(0, 10))) {
+      return NextResponse.json(
+        { message: "الفاتورة في فترة مقفلة. صحّحها بفاتورة أو قيد في الفترة المفتوحة." },
+        { status: 409 },
+      );
+    }
+
     const updated = await setInvoiceStatus(id, status);
     if (!updated) {
       return NextResponse.json(

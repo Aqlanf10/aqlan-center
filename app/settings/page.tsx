@@ -135,7 +135,7 @@ export default function SettingsPage() {
                     <label key={field.key} className="block">
                       <span className="mb-1 block text-[11px] font-bold text-slate-500">{field.label}</span>
                       <input
-                        type={field.kind === "time" ? "time" : field.kind === "number" ? "number" : "text"}
+                        type={field.kind === "time" ? "time" : field.kind === "date" ? "date" : field.kind === "number" ? "number" : "text"}
                         value={value}
                         onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))}
                         className={`w-full rounded-xl border px-3 py-2 text-sm outline-none ${

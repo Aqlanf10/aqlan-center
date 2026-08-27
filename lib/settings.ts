@@ -23,6 +23,7 @@ export type SettingKey =
   | "finance.base_currency"
   | "finance.rate.SAR"
   | "finance.rate.USD"
+  | "finance.locked_before"
   | "lab.default_days"
   | "recall.lapse_weeks";
 
@@ -47,6 +48,8 @@ export const SETTING_DEFAULTS: Record<SettingKey, string> = {
   // تُصحَّح من الشاشة في أول يوم عمل — ولا تُستخدم في حساب دفعة سابقة إطلاقًا.
   "finance.rate.SAR": "140",
   "finance.rate.USD": "530",
+  // فارغ = لا قفل. يُملأ بتاريخ فيصير كل ما قبله مقفلًا لا يُعدَّل.
+  "finance.locked_before": "",
   "lab.default_days": "7",
   "recall.lapse_weeks": "6",
 };
@@ -128,6 +131,13 @@ export function validateSetting(key: SettingKey, value: string): string | null {
     if (!Number.isFinite(rate) || rate <= 0) return "سعر الصرف رقم أكبر من صفر.";
     if (rate > 1_000_000) return "سعر الصرف غير منطقي.";
   }
+  if (key === "finance.locked_before") {
+    // الفراغ مقبول: هو حالة «لا قفل». وتاريخ بصيغة أخرى يُقفل الدفاتر كلها أو لا
+    // يُقفل شيئًا، وكلاهما خطأ صامت.
+    if (trimmed && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return "تاريخ القفل بصيغة 2026-08-31 أو اتركه فارغًا.";
+    }
+  }
   if (key === "lab.default_days") {
     const days = Number(trimmed);
     if (!Number.isInteger(days) || days < 1 || days > 120) return "المهلة بين 1 و120 يومًا.";
@@ -144,7 +154,7 @@ export interface SettingField {
   key: SettingKey;
   label: string;
   hint?: string;
-  kind: "text" | "number" | "time";
+  kind: "text" | "number" | "time" | "date";
   group: "clinic" | "finance" | "operations";
 }
 
@@ -160,6 +170,7 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: "finance.base_currency", label: "العملة الأساسية", hint: "كل التقارير تُحسب بها", kind: "text", group: "finance" },
   { key: "finance.rate.SAR", label: "سعر الريال السعودي", hint: "كم ريالًا يمنيًا يساوي ريالًا سعوديًا اليوم", kind: "number", group: "finance" },
   { key: "finance.rate.USD", label: "سعر الدولار", hint: "كم ريالًا يمنيًا يساوي دولارًا اليوم", kind: "number", group: "finance" },
+  { key: "finance.locked_before", label: "قفل الدفاتر قبل تاريخ", hint: "لا يُقبل قيد أو تعديل قبل هذا التاريخ. اتركه فارغًا لإلغاء القفل.", kind: "date", group: "finance" },
 
   { key: "clinic.chairs", label: "عدد الكراسي", hint: "يحكم الحجز والانتظار وشاشة الصالة", kind: "number", group: "operations" },
   { key: "clinic.day_start", label: "بداية الدوام", kind: "time", group: "operations" },
