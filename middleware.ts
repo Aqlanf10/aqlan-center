@@ -11,13 +11,23 @@ import { SESSION_COOKIE } from "@/lib/sessionCookie";
  * التحقق هنا من وجود الكوكي وشكلها فقط؛ التحقق من التوقيع يجري في مسارات API نفسها،
  * لأن middleware يعمل على Edge حيث `node:crypto` غير متاح.
  */
-const PUBLIC_PATHS = new Set(["/login", "/setup"]);
+const PUBLIC_PATHS = new Set([
+  "/login",
+  "/setup",
+  // شاشة الصالة: تلفاز معلّق على الحائط لا لوحة مفاتيح معه. الجلسة تنتهي بعد اثنتي
+  // عشرة ساعة، وربطها بها كان يعني شاشة سوداء كل صباح إلى أن يفتحها أحد ويسجّل الدخول.
+  // ما يُسرّب مقابل ذلك محدود عمدًا: الاسم الأول ورقم الكرسي وعدد المنتظرين — أي ما
+  // يراه ويسمعه كل جالس في الصالة أصلًا. لا هاتف ولا اسم كامل ولا رقم مريض.
+  "/display",
+]);
 const PUBLIC_API = new Set([
   "/api/auth/login",
   "/api/auth/setup",
   "/api/auth/logout",
   // فحص الإعداد: من يحتاجه هو من لا يستطيع الدخول بعد.
   "/api/health",
+  // تغذية شاشة الصالة — تُبنى استجابتها على الخادم بما يُعرض فقط.
+  "/api/display",
 ]);
 
 export function middleware(request: NextRequest) {

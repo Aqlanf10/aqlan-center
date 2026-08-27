@@ -86,6 +86,7 @@ export function ensureSchema(): Promise<void> {
         finished_at   TIMESTAMPTZ
       );
       CREATE INDEX IF NOT EXISTS visits_arrived_at_idx ON visits (arrived_at);
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS called_at TIMESTAMPTZ;
 
       -- المرضى والمواعيد بأسماء حقول تحاكي النظام الأساسي عمدًا، ليكون الترحيل لاحقًا
       -- نسخًا مباشرًا لا إعادة كتابة. حالات الموعد هي نفس مفردات AppointmentStatus هناك.
@@ -145,6 +146,7 @@ interface VisitRow {
   chair: number | null;
   arrived_at: Date;
   seated_at: Date | null;
+  called_at: Date | null;
   finished_at: Date | null;
 }
 
@@ -158,6 +160,7 @@ function toVisit(row: VisitRow): Visit {
     chair: row.chair,
     arrivedAt: row.arrived_at.toISOString(),
     seatedAt: row.seated_at ? row.seated_at.toISOString() : null,
+    calledAt: row.called_at ? row.called_at.toISOString() : null,
     finishedAt: row.finished_at ? row.finished_at.toISOString() : null,
   };
 }
@@ -204,18 +207,22 @@ export async function addVisit(input: {
  * على كرسي واحد. الفحص هنا ذرّي، فيفوز واحد ويُخبَر الثاني.
  */
 export async function seatVisit(id: number, chair: number): Promise<Visit | null> {
+  // الحراسة محدودة بيوم العيادة عمدًا: زيارة أمس لم يضغط أحد «انتهى» عليها تبقى
+  // `in_chair` في الجدول، وهي غير ظاهرة في لوحة اليوم — فلو شملها الفحص لظلّ الكرسي
+  // مرفوضًا كل صباح برسالة «الكرسي شُغل للتو» بلا أحد عليه وبلا طريقة لتحريره.
   await ensureSchema();
   const { rows } = await getPool().query<VisitRow>(
     `UPDATE visits
         SET status = 'in_chair', chair = $2, seated_at = NOW()
       WHERE id = $1
-        AND status = 'waiting'
+        AND status IN ('waiting', 'called')
         AND NOT EXISTS (
           SELECT 1 FROM visits busy
            WHERE busy.status = 'in_chair' AND busy.chair = $2
+             AND (busy.arrived_at AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date
         )
       RETURNING *`,
-    [id, chair],
+    [id, chair, CLINIC_TIME_ZONE],
   );
   return rows[0] ? toVisit(rows[0]) : null;
 }
@@ -504,4 +511,46 @@ export async function markReminderSent(id: number): Promise<boolean> {
     `UPDATE appointments SET reminder_sent_at = NOW() WHERE id = $1`, [id],
   );
   return (rowCount ?? 0) > 0;
+}
+
+/**
+ * يعيد مريضًا نُودي عليه إلى الانتظار.
+ *
+ * المريض لا يسمع النداء دائمًا: خرج إلى الصيدلية، أو لم ينتبه للشاشة. بلا هذا الإجراء
+ * يبقى الكرسي محجوزًا له إلى آخر اليوم ولا سبيل لتحريره من الشاشة — وهو بالضبط نوع
+ * «الميزة الناقصة» التي تجعل الاستقبال تترك النظام وتعود إلى الورقة.
+ */
+export async function returnVisitToWaiting(id: number): Promise<Visit | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<VisitRow>(
+    `UPDATE visits SET status = 'waiting', chair = NULL, called_at = NULL
+      WHERE id = $1 AND status = 'called' RETURNING *`,
+    [id],
+  );
+  return rows[0] ? toVisit(rows[0]) : null;
+}
+
+/**
+ * ينادي مريضًا إلى كرسي.
+ *
+ * نفس الحراسة الذرّية التي يستخدمها الإجلاس: الكرسي لا يُنادى إليه مريضان. الفرق أن
+ * النداء يحجز الكرسي قبل أن يصل المريض إليه فعلًا — وهو المقصود: بين النداء والجلوس
+ * دقيقة يمشي فيها المريض، ولو لم يُحجز الكرسي لنودي عليه مريض آخر في تلك الدقيقة.
+ */
+export async function callVisit(id: number, chair: number): Promise<Visit | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<VisitRow>(
+    `UPDATE visits
+        SET status = 'called', chair = $2, called_at = NOW()
+      WHERE id = $1
+        AND status = 'waiting'
+        AND NOT EXISTS (
+          SELECT 1 FROM visits busy
+           WHERE busy.status IN ('called', 'in_chair') AND busy.chair = $2
+             AND (busy.arrived_at AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date
+        )
+      RETURNING *`,
+    [id, chair, CLINIC_TIME_ZONE],
+  );
+  return rows[0] ? toVisit(rows[0]) : null;
 }

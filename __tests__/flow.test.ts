@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  calledVisits,
   chairRows,
   daySummary,
   firstFreeChair,
+  firstNameOnly,
   minutesSince,
   waitingRows,
   waitLevel,
@@ -20,6 +22,7 @@ function visit(over: Partial<Visit> & { id: number }): Visit {
     chair: null,
     arrivedAt: NOW.toISOString(),
     seatedAt: null,
+    calledAt: null,
     finishedAt: null,
     ...over,
   };
@@ -103,5 +106,46 @@ describe("ملخص اليوم", () => {
     expect(summary.done).toBe(1);
     expect(summary.longestWaitMinutes).toBe(45);
     expect(summary.freeChairs).toBe(1);
+  });
+});
+
+describe("النداء وشاشة الصالة", () => {
+  it("تحجز الكرسي لمن نُودي عليه فلا يُنادى إليه ثانٍ", () => {
+    const visits = [
+      visit({ id: 1, status: "called", chair: 1, calledAt: "2026-08-24T09:58:00.000Z" }),
+      visit({ id: 2 }),
+    ];
+    const rows = chairRows(2, visits, NOW);
+    expect(rows[0].occupant).toBeNull();
+    expect(rows[0].calledFor?.id).toBe(1);
+    // الكرسي محجوز لا فارغ: هذا ما يمنع نداءين إلى كرسي واحد، وما يمنع تنبيه
+    // «كرسي فارغ ومريض ينتظر» من الظهور كذبًا بعد كل نداء.
+    expect(firstFreeChair(2, visits)).toBe(2);
+    expect(daySummary(2, visits, NOW).freeChairs).toBe(1);
+    expect(daySummary(2, visits, NOW).called).toBe(1);
+  });
+
+  it("تُخرج المنادى عليه من قائمة الانتظار", () => {
+    const rows = waitingRows([
+      visit({ id: 1, status: "called", chair: 1 }),
+      visit({ id: 2 }),
+    ], NOW);
+    expect(rows.map((row) => row.visit.id)).toEqual([2]);
+  });
+
+  it("ترتّب النداءات بالأحدث أولًا", () => {
+    const rows = calledVisits([
+      visit({ id: 1, status: "called", chair: 1, calledAt: "2026-08-24T09:40:00.000Z" }),
+      visit({ id: 2, status: "called", chair: 2, calledAt: "2026-08-24T09:55:00.000Z" }),
+      visit({ id: 3 }),
+    ]);
+    expect(rows.map((row) => row.id)).toEqual([2, 1]);
+  });
+
+  it("تعرض الاسم الأول وحده على شاشة الصالة", () => {
+    expect(firstNameOnly("عبدالله محمد سالم")).toBe("عبدالله");
+    expect(firstNameOnly("  فاطمة   علي  ")).toBe("فاطمة");
+    // اسم من كلمة واحدة يبقى كما هو بدل أن يصير فراغًا على الشاشة.
+    expect(firstNameOnly("عبدالله")).toBe("عبدالله");
   });
 });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/session";
-import { finishVisit, seatVisit } from "@/lib/db";
+import { callVisit, finishVisit, returnVisitToWaiting, seatVisit } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +25,21 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const action = typeof source.action === "string" ? source.action : "";
 
   try {
+    if (action === "call") {
+      const chair = Number(source.chair);
+      if (!Number.isInteger(chair) || chair <= 0) {
+        return NextResponse.json({ message: "رقم الكرسي غير صالح." }, { status: 400 });
+      }
+      const called = await callVisit(id, chair);
+      if (!called) {
+        return NextResponse.json(
+          { message: "الكرسي محجوز لمريض آخر أو تغيّرت حالة المريض. حدّثت اللوحة — راجعها." },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json(called);
+    }
+
     if (action === "seat") {
       const chair = Number(source.chair);
       if (!Number.isInteger(chair) || chair <= 0) {
@@ -40,6 +55,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         );
       }
       return NextResponse.json(seated);
+    }
+
+    if (action === "return") {
+      const returned = await returnVisitToWaiting(id);
+      if (!returned) {
+        return NextResponse.json({ message: "المريض لم يعد في حالة نداء." }, { status: 409 });
+      }
+      return NextResponse.json(returned);
     }
 
     if (action === "finish") {

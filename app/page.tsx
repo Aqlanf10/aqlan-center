@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  calledVisits,
   chairRows,
   daySummary,
   firstFreeChair,
+  minutesSince,
   waitingRows,
   type Visit,
   type WaitLevel,
 } from "@/lib/flow";
+import { CLINIC_NAME } from "@/lib/clinic";
 
 /**
  * شاشة واحدة، عمدًا.
@@ -70,6 +73,7 @@ export default function FlowBoard() {
   const waiting = useMemo(() => waitingRows(visits, now), [visits, now]);
   const chairs = useMemo(() => chairRows(CHAIR_COUNT, visits, now), [visits, now]);
   const summary = useMemo(() => daySummary(CHAIR_COUNT, visits, now), [visits, now]);
+  const called = useMemo(() => calledVisits(visits), [visits]);
   const freeChair = useMemo(() => firstFreeChair(CHAIR_COUNT, visits), [visits]);
 
   // كل إجراء يمرّ من هنا: قفل واحد يمنع الضغط المزدوج على جهاز، والخادم يمنع
@@ -111,6 +115,18 @@ export default function FlowBoard() {
     setPhone("");
   }, [act, name, phone]);
 
+  const call = useCallback((id: number, chair: number) => act(() => fetch(`/api/visits/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "call", chair }),
+  })), [act]);
+
+  const unCall = useCallback((id: number) => act(() => fetch(`/api/visits/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "return" }),
+  })), [act]);
+
   const seat = useCallback((id: number, chair: number) => act(() => fetch(`/api/visits/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -128,13 +144,21 @@ export default function FlowBoard() {
       <header className="mb-4 flex items-start justify-between gap-2">
         <div>
           <h1 className="text-xl font-extrabold">انسياب العيادة</h1>
-          <p className="text-xs text-slate-500">مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان</p>
+          <p className="text-xs text-slate-500">{CLINIC_NAME}</p>
         </div>
         <a
           href="/appointments"
           className="shrink-0 rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-bold text-white"
         >
           المواعيد
+        </a>
+        <a
+          href="/display"
+          target="_blank"
+          rel="noopener"
+          className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+        >
+          شاشة الصالة
         </a>
         <button
           onClick={signOut}
@@ -201,6 +225,8 @@ export default function FlowBoard() {
                 <span className="text-xs font-bold text-slate-500">كرسي {chair.chair}</span>
                 {chair.occupant ? (
                   <span className="rounded-full bg-brand-blue px-2 py-0.5 text-[11px] font-bold text-white">{chair.busyMinutes} د</span>
+                ) : chair.calledFor ? (
+                  <span className="text-[11px] font-bold text-brand-orange">محجوز بالنداء</span>
                 ) : (
                   <span className="text-[11px] font-bold text-emerald-600">فارغ</span>
                 )}
@@ -216,6 +242,10 @@ export default function FlowBoard() {
                     انتهى
                   </button>
                 </>
+              ) : chair.calledFor ? (
+                <p className="mt-1 truncate text-sm font-bold text-brand-orange">
+                  نُودي على {chair.calledFor.patientName} — في الطريق
+                </p>
               ) : (
                 <p className="mt-1 text-sm text-slate-400">لا أحد على هذا الكرسي</p>
               )}
@@ -223,6 +253,53 @@ export default function FlowBoard() {
           ))}
         </div>
       </section>
+
+      {/*
+        من نُودي عليه ولم يجلس بعد.
+        قسم مستقل عمدًا: هؤلاء ليسوا منتظرين — الشاشة نادت أسماءهم والصالة سمعت — ولا
+        هم على الكراسي. تركهم في قائمة الانتظار كان يعني نداءً ثانيًا على من هو في الطريق.
+      */}
+      {called.length > 0 ? (
+        <section className="mb-5" aria-label="نُودي عليهم">
+          <h2 className="mb-2 text-sm font-bold">نُودي عليهم ({called.length})</h2>
+          <ul className="space-y-2">
+            {called.map((visit) => {
+              const sinceCall = minutesSince(visit.calledAt, now);
+              return (
+                <li key={visit.id} className="rounded-2xl border border-brand-orange bg-orange-50 p-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="rounded-full bg-brand-orange px-2.5 py-1 text-xs font-extrabold text-white">
+                      كرسي {visit.chair}
+                    </span>
+                    <div className="min-w-[9rem] flex-1">
+                      <p className="truncate text-base font-extrabold">{visit.patientName}</p>
+                      <p className="text-xs text-slate-500">
+                        {sinceCall === 0 ? "نُودي الآن" : `مضى على النداء ${sinceCall} د`}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      <button
+                        onClick={() => seat(visit.id, visit.chair ?? 0)}
+                        disabled={busy || !visit.chair}
+                        className="rounded-xl bg-navy-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-30"
+                      >
+                        دخل الكرسي
+                      </button>
+                      <button
+                        onClick={() => unCall(visit.id)}
+                        disabled={busy}
+                        className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-600 disabled:opacity-30"
+                      >
+                        لم يحضر
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
 
       <section aria-label="قائمة الانتظار">
         <h2 className="mb-2 text-sm font-bold">قائمة الانتظار ({waiting.length})</h2>
@@ -236,25 +313,27 @@ export default function FlowBoard() {
           <ul className="space-y-2">
             {waiting.map((row) => (
               <li key={row.visit.id} className={`rounded-2xl border p-3 ${LEVEL_STYLES[row.level]}`}>
-                <div className="flex items-center gap-3">
+                {/* يلتف على الهاتف: أزرار النداء بجانب الاسم كانت تقصّ «محمد أحمد الشرعبي»
+                    إلى «محمد أح…»، والاستقبال تنادي على اسم لا تراه كاملًا. */}
+                <div className="flex flex-wrap items-center gap-3">
                   <span className={`rounded-full px-2.5 py-1 text-xs font-extrabold ${LEVEL_BADGE[row.level]}`}>
                     {row.waitedMinutes} د
                   </span>
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-[9rem] flex-1">
                     <p className="truncate text-base font-extrabold">{row.visit.patientName}</p>
                     {row.visit.patientPhone ? (
                       <p className="text-xs text-slate-500" dir="ltr">{row.visit.patientPhone}</p>
                     ) : null}
                   </div>
-                  <div className="flex gap-1.5">
+                  <div className="flex shrink-0 gap-1.5">
                     {chairs.map((chair) => (
                       <button
                         key={chair.chair}
-                        onClick={() => seat(row.visit.id, chair.chair)}
-                        disabled={busy || Boolean(chair.occupant)}
-                        className="rounded-xl bg-navy-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-30"
+                        onClick={() => call(row.visit.id, chair.chair)}
+                        disabled={busy || Boolean(chair.occupant) || Boolean(chair.calledFor)}
+                        className="rounded-xl bg-brand-orange px-3 py-2 text-xs font-bold text-white disabled:opacity-30"
                       >
-                        كرسي {chair.chair}
+                        نادِ · كرسي {chair.chair}
                       </button>
                     ))}
                   </div>

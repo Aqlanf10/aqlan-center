@@ -10,7 +10,14 @@
  * الجالس أمامها ليس منتظرًا فعلًا.
  */
 
-export type VisitStatus = "waiting" | "in_chair" | "done";
+/**
+ * حالات الزيارة.
+ *
+ * `called` أُضيفت لأجل شاشة النداء: كان المريض ينتقل من الانتظار إلى الكرسي مباشرة،
+ * فلحظة النداء — وهي بالضبط ما تعرضه الشاشة في الصالة — لم تكن مسجّلة في أي مكان.
+ * المفردات نفسها الموجودة في النظام الأساسي (Waiting / Called / InRoom) ليطابق الترحيل.
+ */
+export type VisitStatus = "waiting" | "called" | "in_chair" | "done";
 
 export interface Visit {
   id: number;
@@ -21,6 +28,7 @@ export interface Visit {
   chair: number | null;
   arrivedAt: string;
   seatedAt: string | null;
+  calledAt: string | null;
   finishedAt: string | null;
 }
 
@@ -77,6 +85,8 @@ export function waitingRows(visits: Visit[], now: Date): WaitingRow[] {
 export interface ChairRow {
   chair: number;
   occupant: Visit | null;
+  /** من نُودي عليه إلى هذا الكرسي ولم يجلس بعد. */
+  calledFor: Visit | null;
   busyMinutes: number;
 }
 
@@ -89,18 +99,39 @@ export interface ChairRow {
  */
 export function chairRows(chairCount: number, visits: Visit[], now: Date): ChairRow[] {
   const seated = visits.filter((visit) => visit.status === "in_chair");
+  const called = visits.filter((visit) => visit.status === "called");
   return Array.from({ length: chairCount }, (_, index) => {
     const chair = index + 1;
     const occupant = seated.find((visit) => visit.chair === chair) ?? null;
-    return { chair, occupant, busyMinutes: occupant ? minutesSince(occupant.seatedAt, now) : 0 };
+    const calledFor = occupant ? null : called.find((visit) => visit.chair === chair) ?? null;
+    return {
+      chair,
+      occupant,
+      calledFor,
+      busyMinutes: occupant ? minutesSince(occupant.seatedAt, now) : 0,
+    };
   });
+}
+
+/**
+ * الكراسي غير المتاحة للنداء: المشغولة، والمحجوزة لمريض نُودي عليه ولم يصل بعد.
+ *
+ * حجز الكرسي لحظةَ النداء هو الفرق بين «نظام نداء» و«شاشة تعرض أسماء»: بين نداء
+ * المريض وجلوسه دقيقة يمشي فيها من الصالة، ولو بقي الكرسي محسوبًا فارغًا لنودي عليه
+ * مريض ثانٍ في تلك الدقيقة — فيصل اثنان إلى كرسي واحد أمام الجميع.
+ */
+function heldChairs(visits: Visit[]): Set<number> {
+  const held = new Set<number>();
+  for (const visit of visits) {
+    if (visit.chair === null) continue;
+    if (visit.status === "in_chair" || visit.status === "called") held.add(visit.chair);
+  }
+  return held;
 }
 
 /** أول كرسي فارغ، أو null إن كان الكرسيان مشغولين. */
 export function firstFreeChair(chairCount: number, visits: Visit[]): number | null {
-  const taken = new Set(
-    visits.filter((visit) => visit.status === "in_chair").map((visit) => visit.chair),
-  );
+  const taken = heldChairs(visits);
   for (let chair = 1; chair <= chairCount; chair += 1) {
     if (!taken.has(chair)) return chair;
   }
@@ -109,6 +140,7 @@ export function firstFreeChair(chairCount: number, visits: Visit[]): number | nu
 
 export interface DaySummary {
   waiting: number;
+  called: number;
   inChair: number;
   done: number;
   longestWaitMinutes: number;
@@ -118,11 +150,40 @@ export interface DaySummary {
 export function daySummary(chairCount: number, visits: Visit[], now: Date): DaySummary {
   const waiting = waitingRows(visits, now);
   const inChair = visits.filter((visit) => visit.status === "in_chair").length;
+  // الكرسي المحجوز لمريض نُودي عليه ليس فارغًا: لو حُسب فارغًا لظهر تنبيه «كرسي فارغ
+  // ومريض ينتظر» في كل مرة يُنادى فيها مريض — والتنبيه الذي يكذب يُتجاهَل ثم يُطفَأ.
+  const held = heldChairs(visits);
   return {
     waiting: waiting.length,
+    called: visits.filter((visit) => visit.status === "called").length,
     inChair,
     done: visits.filter((visit) => visit.status === "done").length,
     longestWaitMinutes: waiting[0]?.waitedMinutes ?? 0,
-    freeChairs: Math.max(0, chairCount - inChair),
+    freeChairs: Math.max(0, chairCount - held.size),
   };
+}
+
+
+/**
+ * من نُودي عليه ولم يجلس بعد — وهو ما تعرضه شاشة الصالة.
+ *
+ * الأحدث أولًا: المريض الذي نُودي عليه الآن هو من يبحث عن اسمه على الشاشة، لا من
+ * نُودي عليه قبل ربع ساعة.
+ */
+export function calledVisits(visits: Visit[]): Visit[] {
+  return visits
+    .filter((visit) => visit.status === "called")
+    .sort((a, b) => (b.calledAt ?? "").localeCompare(a.calledAt ?? ""));
+}
+
+/**
+ * الاسم الأول وحده.
+ *
+ * الشاشة معلّقة في صالة يراها كل مريض ومرافق. الاسم الكامل مع رقم الهاتف في النظام
+ * يجعل الشاشة سجلًا عامًا لمرضى العيادة؛ والاسم الأول يكفي ليعرف صاحبه أنه المقصود،
+ * وهو ما يُنادى به صوتًا في الصالة أصلًا.
+ */
+export function firstNameOnly(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/);
+  return parts[0] || fullName;
 }
