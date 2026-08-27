@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { toWhatsAppNumber } from "./reminders";
 import type { Visit, VisitStatus } from "./flow";
 
 /**
@@ -168,6 +169,8 @@ interface VisitRow {
   seated_at: Date | null;
   called_at: Date | null;
   finished_at: Date | null;
+  patient_id: number | null;
+  appointment_id: number | null;
 }
 
 function toVisit(row: VisitRow): Visit {
@@ -247,14 +250,129 @@ export async function seatVisit(id: number, chair: number): Promise<Visit | null
   return rows[0] ? toVisit(rows[0]) : null;
 }
 
+/**
+ * ينهي الزيارة، ويغلق معها موعدها إن جاءت من حجز.
+ *
+ * قبل هذا كان الموعد يبقى «وصل» إلى الأبد: لا شيء في النظام ينقله إلى «تم». فيفتح
+ * الطبيب جدول الأمس فيرى مرضى يبدون كأنهم ما زالوا في العيادة، وتصير أرقام اليوم
+ * السابق بلا معنى — وسجلٌّ لا يُصدَّق يُهجَر، وهو ما حدث للنظام الأساسي بالضبط.
+ *
+ * الاثنان في معاملة واحدة: زيارة منتهية وموعدها ما زال مفتوحًا حالةٌ لا يستطيع أحد
+ * تصحيحها من الشاشة.
+ */
 export async function finishVisit(id: number): Promise<Visit | null> {
   await ensureSchema();
-  const { rows } = await getPool().query<VisitRow>(
-    `UPDATE visits SET status = 'done', finished_at = NOW(), chair = NULL
-      WHERE id = $1 AND status <> 'done' RETURNING *`,
-    [id],
-  );
-  return rows[0] ? toVisit(rows[0]) : null;
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<VisitRow>(
+      `UPDATE visits SET status = 'done', finished_at = NOW(), chair = NULL
+        WHERE id = $1 AND status <> 'done' RETURNING *`,
+      [id],
+    );
+    if (!rows[0]) { await client.query("ROLLBACK"); return null; }
+    if (rows[0].appointment_id) {
+      await client.query(
+        `UPDATE appointments SET status = 'done'
+          WHERE id = $1 AND status IN ('booked', 'arrived')`,
+        [rows[0].appointment_id],
+      );
+    }
+    await client.query("COMMIT");
+    return toVisit(rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * يحجز جلسة قادمة للمريض الذي انتهت زيارته للتو.
+ *
+ * هذه هي اللحظة الوحيدة التي يكون فيها المريض واقفًا أمام الاستقبال ومعه قراره. تأجيلها
+ * إلى «سنتصل بك» يعني — في عيادة تقويم تحتاج زيارة كل ثلاثة أو أربعة أسابيع — مريضًا
+ * يختفي شهرين ثم يعود وقد تأخّر علاجه، ثم يشكو أن العيادة لم تتابعه.
+ *
+ * المريض يُحلّ من الزيارة: سجلّه إن كانت مرتبطة به، وإلا بحث بالرقم، وإلا سجلّ جديد.
+ * البحث بالرقم لا بالاسم لأن «عبدالله محمد» و«عبد الله محمد» شخص واحد بسجلّين.
+ * ويُثبَّت المريض في الزيارة بعدها، فلا تتكرر العملية إن حُجزت جلسة أخرى.
+ */
+export async function createNextSession(input: {
+  visitId: number;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  phone: string | null;
+  note: string | null;
+}): Promise<{ appointmentId: number; patientId: number; patientName: string; phone: string | null } | null> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: visits } = await client.query<{
+      id: number; patient_name: string; patient_phone: string | null; patient_id: number | null;
+    }>(
+      `SELECT id, patient_name, patient_phone, patient_id FROM visits WHERE id = $1 FOR UPDATE`,
+      [input.visitId],
+    );
+    if (!visits[0]) { await client.query("ROLLBACK"); return null; }
+    const visit = visits[0];
+    // الرقم يُوحَّد قبل أن يُكتب في سجل المريض: المريض المشي يكتب رقمه محليًا،
+    // ولو حُفظ كما هو لصار له سجلّ ثانٍ حين يحجز يومًا من صفحة الحجز بنفس الرقم.
+    const phone = normalizePatientPhone(input.phone ?? visit.patient_phone);
+
+    let patientId = visit.patient_id;
+    if (!patientId && phone) {
+      const { rows } = await client.query<{ id: number }>(
+        `SELECT id FROM patients WHERE phone = ANY($1::text[]) ORDER BY id LIMIT 1`,
+        [phoneLookupForms(input.phone ?? visit.patient_phone)],
+      );
+      patientId = rows[0]?.id ?? null;
+    }
+    if (!patientId) {
+      const { rows } = await client.query<{ id: number }>(
+        `INSERT INTO patients (patient_number, full_name, phone)
+         VALUES (
+           'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
+           $1, $2)
+         RETURNING id`,
+        [visit.patient_name, phone],
+      );
+      patientId = rows[0].id;
+    } else if (phone) {
+      // رقم وصل مع الحجز ولم يكن في السجل: يُملأ ولا يُستبدل رقمٌ قائم.
+      await client.query(
+        `UPDATE patients SET phone = $2 WHERE id = $1 AND (phone IS NULL OR phone = '')`,
+        [patientId, phone],
+      );
+    }
+
+    const { rows: created } = await client.query<{ id: number }>(
+      `INSERT INTO appointments (patient_id, scheduled_date, scheduled_time, duration_minutes, note)
+       VALUES ($1, $2, $3, $4, $5::text) RETURNING id`,
+      [patientId, input.date, input.time, input.durationMinutes, input.note],
+    );
+
+    await client.query(
+      `UPDATE visits SET patient_id = $2 WHERE id = $1 AND patient_id IS NULL`,
+      [input.visitId, patientId],
+    );
+
+    await client.query("COMMIT");
+    return {
+      appointmentId: created[0].id,
+      patientId,
+      patientName: visit.patient_name,
+      phone,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 
@@ -371,6 +489,35 @@ const toPatient = (row: PatientRow): Patient => ({
 });
 
 /**
+ * صيغة موحّدة لرقم المريض في سجلّه.
+ *
+ * الرقم هو المُعرّف الوحيد الذي يكتبه المريض بنفسه، وعليه يعتمد منع تكرار السجلات.
+ * ولأنه يصل من ثلاثة أبواب — طلب حجز من المريض، ومريض مشي تكتبه الاستقبال، وحجز
+ * جلسة قادمة — كان يُخزَّن `770245745` من باب و`967770245745` من آخر، فيصير للشخص
+ * الواحد سجلّان لا يعرف أحدهما الآخر. الصيغة الدولية هي المخزَّنة لأنها القاطعة.
+ *
+ * وما لا يصلح للجوال — رقم أرضي مثلًا — يُحفظ كما كُتب لا يُرمى: رقم أرضي يُتصل به.
+ */
+function normalizePatientPhone(raw: string | null | undefined): string | null {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return null;
+  return toWhatsAppNumber(trimmed) ?? trimmed;
+}
+
+/**
+ * الصيغ التي قد يكون الرقم مخزّنًا بها.
+ *
+ * السجلات التي أُنشئت قبل توحيد الصيغة تحمل الرقم المحلي، والبحث بالصيغة الدولية
+ * وحدها كان سيعتبرها مرضى جددًا وينشئ لهم سجلات ثانية.
+ */
+function phoneLookupForms(raw: string | null | undefined): string[] {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return [];
+  const normalized = toWhatsAppNumber(trimmed);
+  return normalized && normalized !== trimmed ? [normalized, trimmed] : [trimmed];
+}
+
+/**
  * يبحث بالاسم أو الهاتف.
  *
  * البحث بالجزء لا بالبداية: الاستقبال تتذكر «محمد» من «عبدالله محمد سالم»، والبحث
@@ -407,7 +554,7 @@ export async function createPatient(input: {
        'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
        $1, $2, $3)
      RETURNING id, patient_number, full_name, phone`,
-    [input.fullName, input.phone, input.note],
+    [input.fullName, normalizePatientPhone(input.phone), input.note],
   );
   return toPatient(rows[0]);
 }
@@ -696,8 +843,8 @@ export async function confirmBookingRequest(input: {
     const request = requests[0];
 
     const { rows: existing } = await client.query<{ id: number }>(
-      `SELECT id FROM patients WHERE phone = $1 ORDER BY id LIMIT 1`,
-      [request.phone],
+      `SELECT id FROM patients WHERE phone = ANY($1::text[]) ORDER BY id LIMIT 1`,
+      [phoneLookupForms(request.phone)],
     );
     let patientId = existing[0]?.id;
     if (!patientId) {

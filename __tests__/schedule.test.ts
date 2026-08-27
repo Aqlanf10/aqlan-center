@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  checkSlot, dayLoad, nextFreeTime, overlappingCount, toMinutes, toTime,
+  addDays, checkSlot, dayLoad, nextFreeTime, overlappingCount, sessionAfterWeeks, toMinutes, toTime,
   type Appointment,
 } from "../lib/schedule";
 
@@ -98,5 +98,21 @@ describe("حِمل اليوم", () => {
     expect(load.bookedMinutes).toBe(120);
     expect(load.booked).toBe(2);
     expect(load.percent).toBe(8);
+  });
+});
+
+describe("الجلسة القادمة", () => {
+  it("تحفظ يوم الأسبوع نفسه — من جاء الخميس يعود الخميس", () => {
+    // 2026-08-27 خميس. أربعة أسابيع بعده خميس أيضًا، وهو أسهل ما يتذكره المريض.
+    const from = "2026-08-27";
+    const after = sessionAfterWeeks(from, 4);
+    expect(after).toBe("2026-09-24");
+    expect(new Date(`${after}T12:00:00`).getDay()).toBe(new Date(`${from}T12:00:00`).getDay());
+  });
+
+  it("تعبر حدود الشهر والسنة بلا انزياح يوم", () => {
+    expect(sessionAfterWeeks("2026-12-24", 2)).toBe("2027-01-07");
+    expect(addDays("2026-02-27", 2)).toBe("2026-03-01"); // 2026 ليست كبيسة
+    expect(addDays("2028-02-27", 2)).toBe("2028-02-29"); // 2028 كبيسة
   });
 });

@@ -1,4 +1,5 @@
 import { toWhatsAppNumber } from "./reminders";
+import { addDays } from "./schedule";
 
 /**
  * طلبات الحجز من المرضى — المنطق الخالص.
@@ -58,13 +59,6 @@ export function clinicDateString(now: Date, timeZone: string): string {
     month: "2-digit",
     day: "2-digit",
   }).format(now);
-}
-
-/** يضيف أيامًا إلى تاريخ YYYY-MM-DD بلا منطقة زمنية — حساب تقويمي بحت. */
-export function addDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number);
-  const shifted = new Date(Date.UTC(year, month - 1, day + days));
-  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
 }
 
 export type Validation =

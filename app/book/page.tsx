@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { CLINIC_NAME } from "@/lib/clinic";
-import { PERIOD_LABELS, addDays, type PreferredPeriod } from "@/lib/booking";
+import { PERIOD_LABELS, type PreferredPeriod } from "@/lib/booking";
+import { addDays } from "@/lib/schedule";
 
 /**
  * صفحة المريض — الوحيدة التي يراها من خارج العيادة.

@@ -12,6 +12,9 @@ import {
   type WaitLevel,
 } from "@/lib/flow";
 import { CLINIC_NAME } from "@/lib/clinic";
+import { sessionAfterWeeks } from "@/lib/schedule";
+import { DEFAULT_CLINIC, friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
+import { confirmationText } from "@/lib/booking";
 
 /**
  * شاشة واحدة، عمدًا.
@@ -22,6 +25,25 @@ import { CLINIC_NAME } from "@/lib/clinic";
  */
 
 const CHAIR_COUNT = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
+
+/** تاريخ اليوم من ساعة الجهاز — والجهاز في العيادة، فتوقيته توقيت العيادة. */
+function localToday(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * دورات المتابعة كما ينطقها الطبيب: «بعد أربعة أسابيع».
+ *
+ * النص مكتوب لكل خيار لا مُركَّب من رقم: العربية تثنّي — «أسبوعين» لا «2 أسابيع» —
+ * وشاشة يستخدمها الطبيب أمام مريضه لا تكتب عربية مكسورة.
+ */
+const FOLLOW_UP_WEEKS: { weeks: number; label: string }[] = [
+  { weeks: 2, label: "بعد أسبوعين" },
+  { weeks: 3, label: "بعد ٣ أسابيع" },
+  { weeks: 4, label: "بعد ٤ أسابيع" },
+  { weeks: 6, label: "بعد ٦ أسابيع" },
+];
 const REFRESH_MS = 20_000;
 
 const LEVEL_STYLES: Record<WaitLevel, string> = {
@@ -44,6 +66,13 @@ export default function FlowBoard() {
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingRequests, setPendingRequests] = useState(0);
+  // الزيارة التي انتهت للتو، معروضة لحجز جلستها القادمة والمريض ما زال واقفًا.
+  const [justFinished, setJustFinished] = useState<Visit | null>(null);
+  const [nextDate, setNextDate] = useState("");
+  const [nextTime, setNextTime] = useState("10:00");
+  const [nextDuration, setNextDuration] = useState(30);
+  const [nextPhone, setNextPhone] = useState("");
+  const [nextBooked, setNextBooked] = useState<{ link: string | null; whenText: string } | null>(null);
   const inFlight = useRef(false);
 
   const load = useCallback(async (showSpinner = false) => {
@@ -142,50 +171,109 @@ export default function FlowBoard() {
     body: JSON.stringify({ action: "seat", chair }),
   })), [act]);
 
-  const finish = useCallback((id: number) => act(() => fetch(`/api/visits/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "finish" }),
-  })), [act]);
+  /**
+   * إنهاء الزيارة يفتح فورًا حجز الجلسة القادمة.
+   *
+   * هذه اللحظة — والمريض ما زال واقفًا أمام الاستقبال ومعه قراره — هي الفرق بين
+   * مريض تقويم يعود بعد أربعة أسابيع ومريضٍ يختفي شهرين ثم يشكو أن العيادة لم تتابعه.
+   * «سنتصل بك» ليست خطة: هي مكالمة لن تُجرى في يوم مزدحم.
+   */
+  const finish = useCallback(async (visit: Visit) => {
+    await act(() => fetch(`/api/visits/${visit.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "finish" }),
+    }));
+    setNextBooked(null);
+    setJustFinished(visit);
+    setNextPhone(visit.patientPhone ?? "");
+    // أربعة أسابيع هي دورة متابعة التقويم المعتادة، وهي الاختيار الأكثر تكرارًا.
+    setNextDate(sessionAfterWeeks(localToday(), 4));
+    setNextTime("10:00");
+    setNextDuration(30);
+  }, [act]);
+
+  const bookNextSession = useCallback(async () => {
+    if (!justFinished || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/visits/${justFinished.id}/next`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date: nextDate, time: nextTime, durationMinutes: nextDuration, phone: nextPhone,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError([payload?.message, payload?.suggestionMessage].filter(Boolean).join(" ") || "تعذّر الحجز.");
+        if (typeof payload?.suggestion === "string") setNextTime(payload.suggestion);
+        return;
+      }
+      const whenText = `${friendlyDate(nextDate)} الساعة ${friendlyTime(nextTime)}`;
+      const number = toWhatsAppNumber(payload?.phone ?? nextPhone);
+      const text = confirmationText({
+        patientName: justFinished.patientName,
+        whenText,
+        clinicName: CLINIC_NAME,
+        clinicPhone: DEFAULT_CLINIC.phone,
+      });
+      setNextBooked({ whenText, link: number ? `https://wa.me/${number}?text=${encodeURIComponent(text)}` : null });
+      setJustFinished(null);
+      setError(null);
+    } catch {
+      setError("تعذّر الاتصال بالخادم.");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }, [justFinished, nextDate, nextTime, nextDuration, nextPhone]);
 
   return (
     <main className="mx-auto max-w-5xl p-4 pb-24">
-      <header className="mb-4 flex items-start justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-extrabold">انسياب العيادة</h1>
-          <p className="text-xs text-slate-500">{CLINIC_NAME}</p>
-        </div>
-        <a
-          href="/appointments"
-          className="shrink-0 rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-bold text-white"
-        >
-          المواعيد
-        </a>
-        <a
-          href="/requests"
-          className="relative shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-        >
-          الطلبات
-          {pendingRequests > 0 ? (
-            <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
-              {pendingRequests}
-            </span>
-          ) : null}
-        </a>
-        <a
-          href="/display"
-          target="_blank"
-          rel="noopener"
-          className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-        >
-          شاشة الصالة
-        </a>
-        <button
-          onClick={signOut}
-          className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600"
-        >
-          خروج
-        </button>
+      {/*
+        العنوان سطرًا والروابط سطرًا تحته.
+        كانت الروابط بجانب العنوان، فلمّا صارت أربعة انكسر اسم المركز إلى أربعة أسطر
+        على شاشة الهاتف — والاستقبال تعمل على الهاتف. كل رابط يُضاف لاحقًا يقع في
+        السطر السفلي ولا يزاحم العنوان.
+      */}
+      <header className="mb-4">
+        <h1 className="text-xl font-extrabold leading-tight">انسياب العيادة</h1>
+        <p className="truncate text-xs text-slate-500">{CLINIC_NAME}</p>
+        <nav className="mt-2 flex flex-wrap items-center gap-1.5">
+          <a
+            href="/appointments"
+            className="rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-bold text-white"
+          >
+            المواعيد
+          </a>
+          <a
+            href="/requests"
+            className="relative rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+          >
+            الطلبات
+            {pendingRequests > 0 ? (
+              <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                {pendingRequests}
+              </span>
+            ) : null}
+          </a>
+          <a
+            href="/display"
+            target="_blank"
+            rel="noopener"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+          >
+            شاشة الصالة
+          </a>
+          <button
+            onClick={signOut}
+            className="mr-auto rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600"
+          >
+            خروج
+          </button>
+        </nav>
       </header>
 
       <section className="mb-4 grid grid-cols-3 gap-2" aria-label="ملخص اليوم">
@@ -236,6 +324,118 @@ export default function FlowBoard() {
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
       ) : null}
 
+      {/*
+        الجلسة القادمة — تُفتح لحظة الانتهاء لا في شاشة أخرى.
+        مريض التقويم يحتاج زيارة كل ثلاثة أو أربعة أسابيع، وتأجيل الحجز إلى «سنتصل بك»
+        يعني اختفاءه شهرين ثم شكواه أن العيادة لا تتابع. النافذة الوحيدة التي يُحجز
+        فيها فعلًا هي وهو واقف أمام الاستقبال.
+      */}
+      {justFinished ? (
+        <section className="mb-5 rounded-2xl border-2 border-brand-blue bg-white p-4" aria-label="الجلسة القادمة">
+          <h2 className="text-sm font-bold">الجلسة القادمة لـ {justFinished.patientName}</h2>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {FOLLOW_UP_WEEKS.map((option) => {
+              const candidate = sessionAfterWeeks(localToday(), option.weeks);
+              return (
+                <button
+                  key={option.weeks}
+                  onClick={() => setNextDate(candidate)}
+                  className={`rounded-xl border px-3 py-2 text-xs font-bold ${
+                    nextDate === candidate
+                      ? "border-brand-blue bg-brand-blue text-white"
+                      : "border-slate-200 bg-white text-slate-600"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <label className="min-w-[9rem] flex-1">
+              <span className="mb-1 block text-[11px] font-bold text-slate-500">اليوم</span>
+              <input
+                type="date"
+                value={nextDate}
+                onChange={(event) => setNextDate(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="w-28">
+              <span className="mb-1 block text-[11px] font-bold text-slate-500">الساعة</span>
+              <input
+                type="time"
+                value={nextTime}
+                onChange={(event) => setNextTime(event.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="w-24">
+              <span className="mb-1 block text-[11px] font-bold text-slate-500">دقيقة</span>
+              <input
+                type="number"
+                min={5}
+                max={480}
+                step={5}
+                value={nextDuration}
+                onChange={(event) => setNextDuration(Number(event.target.value))}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
+          {!justFinished.patientPhone ? (
+            <label className="mt-2 block">
+              <span className="mb-1 block text-[11px] font-bold text-slate-500">
+                رقم الجوال — بلا رقم لا يمكن تذكيره بالموعد
+              </span>
+              <input
+                value={nextPhone}
+                onChange={(event) => setNextPhone(event.target.value)}
+                inputMode="tel"
+                dir="ltr"
+                placeholder="7XXXXXXXX"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              />
+            </label>
+          ) : null}
+          <div className="mt-3 flex gap-2">
+            <button
+              onClick={bookNextSession}
+              disabled={busy || !nextDate}
+              className="flex-1 rounded-xl bg-brand-orange py-2.5 text-sm font-extrabold text-white disabled:opacity-50"
+            >
+              احجز الجلسة القادمة
+            </button>
+            <button
+              onClick={() => setJustFinished(null)}
+              disabled={busy}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-600"
+            >
+              ليس الآن
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {nextBooked ? (
+        <div className="mb-5 rounded-2xl border border-emerald-300 bg-emerald-50 p-4">
+          <p className="text-sm font-bold text-emerald-800">حُجزت الجلسة: {nextBooked.whenText}</p>
+          {nextBooked.link ? (
+            <a
+              href={nextBooked.link}
+              target="_blank"
+              rel="noopener"
+              onClick={() => setNextBooked(null)}
+              className="mt-2 inline-block rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white"
+            >
+              أرسل الموعد بواتساب
+            </a>
+          ) : (
+            <p className="mt-1 text-sm text-emerald-700">لا يوجد رقم صالح — ذكّره هاتفيًا.</p>
+          )}
+        </div>
+      ) : null}
+
       <section className="mb-5" aria-label="الكراسي">
         <h2 className="mb-2 text-sm font-bold">الكراسي</h2>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -255,7 +455,7 @@ export default function FlowBoard() {
                 <>
                   <p className="mt-1 truncate text-base font-extrabold">{chair.occupant.patientName}</p>
                   <button
-                    onClick={() => finish(chair.occupant!.id)}
+                    onClick={() => finish(chair.occupant!)}
                     disabled={busy}
                     className="mt-3 w-full rounded-xl border border-slate-200 py-2 text-sm font-bold disabled:opacity-50"
                   >

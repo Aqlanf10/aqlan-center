@@ -40,6 +40,29 @@ export function toMinutes(time: string): number | null {
   return hours * 60 + minutes;
 }
 
+/**
+ * يضيف أيامًا إلى تاريخ YYYY-MM-DD بحساب تقويمي بحت.
+ *
+ * الحساب بـ`Date.UTC` لا بتاريخ محلي: الجمع المحلي عبر حدود التوقيت الصيفي يعيد
+ * اليوم نفسه أو يقفز يومين في بعض المناطق. والتاريخ هنا نصّ لا لحظة زمنية.
+ */
+export function addDays(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
+}
+
+/**
+ * موعد الجلسة القادمة بعد عدد من الأسابيع.
+ *
+ * أسابيع لا أيام لأن هكذا يفكّر أخصائي التقويم ويقول للمريض: «بعد أربعة أسابيع».
+ * والأسبوع يحفظ يوم الأسبوع نفسه — من جاء الخميس يعود الخميس — وهو أسهل ما يتذكره
+ * المريض وأقلّ ما يتعارض مع بقية أيامه.
+ */
+export function sessionAfterWeeks(fromDate: string, weeks: number): string {
+  return addDays(fromDate, Math.round(weeks) * 7);
+}
+
 export function toTime(minutes: number): string {
   const h = Math.floor(minutes / 60) % 24;
   const m = minutes % 60;
