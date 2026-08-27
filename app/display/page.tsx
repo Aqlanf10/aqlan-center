@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CLINIC_NAME } from "@/lib/clinic";
+import { useClinicName } from "@/components/SettingsProvider";
 
 /**
  * شاشة الصالة.
@@ -24,6 +24,7 @@ interface DisplayFeed { called: CalledEntry[]; chairs: ChairEntry[]; waiting: nu
 const REFRESH_MS = 5_000;
 
 export default function DisplayScreen() {
+  const clinicName = useClinicName();
   const [feed, setFeed] = useState<DisplayFeed | null>(null);
   const [stale, setStale] = useState(false);
   const [clock, setClock] = useState("");
@@ -121,7 +122,7 @@ export default function DisplayScreen() {
   return (
     <div className="fixed inset-0 flex flex-col bg-navy-900 text-white">
       <header className="flex items-center justify-between gap-4 border-b border-white/10 px-8 py-4">
-        <h1 className="truncate text-2xl font-extrabold text-white/90 lg:text-3xl">{CLINIC_NAME}</h1>
+        <h1 className="truncate text-2xl font-extrabold text-white/90 lg:text-3xl">{clinicName}</h1>
         <div className="flex shrink-0 items-center gap-4">
           {stale ? (
             <span className="rounded-full bg-amber-400/20 px-3 py-1 text-sm font-bold text-amber-300">

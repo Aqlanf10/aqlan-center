@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CLINIC_NAME } from "@/lib/clinic";
-import { DEFAULT_CLINIC, friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
+import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import {
   LAPSE_LABEL,
@@ -26,6 +26,8 @@ import {
 interface RecallFeed { missed: RecallRow[]; lapsed: RecallRow[]; weeks: number }
 
 export default function RecallPage() {
+  const clinicName = useClinicName();
+  const clinicPhone = useSetting("clinic.phone");
   const [feed, setFeed] = useState<RecallFeed>({ missed: [], lapsed: [], weeks: 6 });
   const [weeks, setWeeks] = useState<LapseWeeks>(6);
   const [loading, setLoading] = useState(true);
@@ -81,11 +83,6 @@ export default function RecallPage() {
       <header className="mb-4">
         <h1 className="text-xl font-extrabold leading-tight">المتابعة والاستدعاء</h1>
         <p className="text-xs text-slate-500">من يجب الاتصال به — الأقدم أولًا</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">اللوحة</a>
-          <a href="/appointments" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المواعيد</a>
-          <a href="/patients" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المرضى</a>
-        </nav>
       </header>
 
       {error ? (
@@ -107,7 +104,8 @@ export default function RecallPage() {
             ) : (
               <ul className="space-y-2">
                 {feed.missed.map((row) => (
-                  <RecallCard key={`missed-${row.id}`} row={row} today={today} busy={busy} onDone={markDone} />
+                  <RecallCard key={`missed-${row.id}`} row={row} today={today} busy={busy} onDone={markDone}
+                    clinicName={clinicName} clinicPhone={clinicPhone} />
                 ))}
               </ul>
             )}
@@ -137,7 +135,8 @@ export default function RecallPage() {
             ) : (
               <ul className="space-y-2">
                 {feed.lapsed.map((row) => (
-                  <RecallCard key={`lapsed-${row.id}`} row={row} today={today} busy={busy} onDone={markDone} />
+                  <RecallCard key={`lapsed-${row.id}`} row={row} today={today} busy={busy} onDone={markDone}
+                    clinicName={clinicName} clinicPhone={clinicPhone} />
                 ))}
               </ul>
             )}
@@ -154,11 +153,13 @@ export default function RecallPage() {
   );
 }
 
-function RecallCard({ row, today, busy, onDone }: {
+function RecallCard({ row, today, busy, onDone, clinicName, clinicPhone }: {
   row: RecallRow;
   today: string;
   busy: boolean;
   onDone: (row: RecallRow) => void;
+  clinicName: string;
+  clinicPhone: string;
 }) {
   const number = toWhatsAppNumber(row.patientPhone);
   const since = sinceText(row.referenceDate, today);
@@ -168,16 +169,16 @@ function RecallCard({ row, today, busy, onDone }: {
     ? [
         `السلام عليكم ${row.patientName}،`,
         ``,
-        `افتقدناكم في موعدكم ${friendlyDateLong(row.referenceDate)} في ${CLINIC_NAME}.`,
+        `افتقدناكم في موعدكم ${friendlyDateLong(row.referenceDate)} في ${clinicName}.`,
         `نأمل أن يكون المانع خيرًا، ونودّ ترتيب موعد جديد يناسبكم.`,
         ``,
-        `للتواصل: ${DEFAULT_CLINIC.phone}`,
+        `للتواصل: ${clinicPhone}`,
       ].join("\n")
     : recallText({
         patientName: row.patientName,
         sinceText: since,
-        clinicName: CLINIC_NAME,
-        clinicPhone: DEFAULT_CLINIC.phone,
+        clinicName,
+        clinicPhone,
       });
 
   return (

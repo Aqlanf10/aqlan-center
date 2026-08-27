@@ -11,9 +11,9 @@ import {
   type Visit,
   type WaitLevel,
 } from "@/lib/flow";
-import { CLINIC_NAME } from "@/lib/clinic";
+import { useChairCount, useClinicName, useSetting } from "@/components/SettingsProvider";
 import { sessionAfterWeeks } from "@/lib/schedule";
-import { DEFAULT_CLINIC, friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
+import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { confirmationText } from "@/lib/booking";
 
 /**
@@ -23,8 +23,6 @@ import { confirmationText } from "@/lib/booking";
  * السبب المعلن: ميزات ناقصة وتضارب. فالرهان هنا معاكس تمامًا — شاشة واحدة تُتعلَّم في
  * دقيقة: اكتب اسمًا، اضغط «وصل»، ثم اضغط كرسيًا. لا قوائم ولا إعدادات ولا تدريب.
  */
-
-const CHAIR_COUNT = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
 
 /** تاريخ اليوم من ساعة الجهاز — والجهاز في العيادة، فتوقيته توقيت العيادة. */
 function localToday(): string {
@@ -58,6 +56,9 @@ const LEVEL_BADGE: Record<WaitLevel, string> = {
 };
 
 export default function FlowBoard() {
+  const CHAIR_COUNT = useChairCount();
+  const CLINIC_NAME = useClinicName();
+  const clinicPhone = useSetting("clinic.phone");
   const [visits, setVisits] = useState<Visit[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
@@ -65,8 +66,6 @@ export default function FlowBoard() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
-  const [pendingRequests, setPendingRequests] = useState(0);
-  const [lateLabOrders, setLateLabOrders] = useState(0);
   // الزيارة التي انتهت للتو، معروضة لحجز جلستها القادمة والمريض ما زال واقفًا.
   const [justFinished, setJustFinished] = useState<Visit | null>(null);
   const [nextDate, setNextDate] = useState("");
@@ -88,18 +87,6 @@ export default function FlowBoard() {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
     } finally {
       setLoading(false);
-    }
-    // عدّاد طلبات المرضى منفصل عن اللوحة ولا يُفشلها: طلب لم يصل عدده لا يمنع
-    // الاستقبال من إدارة يومها، لكن طلبًا لا يراه أحد هو سبب الشكوى التي نعالجها.
-    try {
-      const [requests, lab] = await Promise.all([
-        fetch("/api/booking-requests?status=new", { cache: "no-store" }),
-        fetch("/api/lab?summary=1", { cache: "no-store" }),
-      ]);
-      if (requests.ok) setPendingRequests(((await requests.json()) as unknown[]).length);
-      if (lab.ok) setLateLabOrders(Number(((await lab.json()) as { late?: number }).late ?? 0));
-    } catch {
-      // لا شيء: العدّادان يبقيان على آخر قيمة.
     }
   }, []);
 
@@ -138,12 +125,6 @@ export default function FlowBoard() {
       setBusy(false);
     }
   }, [load]);
-
-  const signOut = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-    // تحميل كامل حتى يرى الحارس غياب الكوكي فورًا.
-    window.location.href = "/login";
-  }, []);
 
   const addPatient = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -222,7 +203,7 @@ export default function FlowBoard() {
         patientName: justFinished.patientName,
         whenText,
         clinicName: CLINIC_NAME,
-        clinicPhone: DEFAULT_CLINIC.phone,
+        clinicPhone,
       });
       setNextBooked({ whenText, link: number ? `https://wa.me/${number}?text=${encodeURIComponent(text)}` : null });
       setJustFinished(null);
@@ -233,7 +214,7 @@ export default function FlowBoard() {
       inFlight.current = false;
       setBusy(false);
     }
-  }, [justFinished, nextDate, nextTime, nextDuration, nextPhone]);
+  }, [justFinished, nextDate, nextTime, nextDuration, nextPhone, CLINIC_NAME, clinicPhone]);
 
   return (
     <main className="mx-auto max-w-5xl p-4 pb-24">
@@ -244,70 +225,8 @@ export default function FlowBoard() {
         السطر السفلي ولا يزاحم العنوان.
       */}
       <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">انسياب العيادة</h1>
-        <p className="truncate text-xs text-slate-500">{CLINIC_NAME}</p>
-        <nav className="mt-2 flex flex-wrap items-center gap-1.5">
-          <a
-            href="/appointments"
-            className="rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-bold text-white"
-          >
-            المواعيد
-          </a>
-          <a
-            href="/requests"
-            className="relative rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-          >
-            الطلبات
-            {pendingRequests > 0 ? (
-              <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
-                {pendingRequests}
-              </span>
-            ) : null}
-          </a>
-          <a
-            href="/report"
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-          >
-            تقرير اليوم
-          </a>
-          <a
-            href="/recall"
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-          >
-            المتابعة
-          </a>
-          <a
-            href="/lab"
-            className="relative rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-          >
-            المختبر
-            {lateLabOrders > 0 ? (
-              <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
-                {lateLabOrders}
-              </span>
-            ) : null}
-          </a>
-          <a
-            href="/patients"
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-          >
-            المرضى
-          </a>
-          <a
-            href="/display"
-            target="_blank"
-            rel="noopener"
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
-          >
-            شاشة الصالة
-          </a>
-          <button
-            onClick={signOut}
-            className="mr-auto rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600"
-          >
-            خروج
-          </button>
-        </nav>
+        <h1 className="text-xl font-extrabold leading-tight">اليوم</h1>
+        <p className="text-xs text-slate-500">من ينتظر، ومنذ متى، وهل الكرسي فارغ</p>
       </header>
 
       <section className="mb-4 grid grid-cols-3 gap-2" aria-label="ملخص اليوم">

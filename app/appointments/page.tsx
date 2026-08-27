@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dayLoad, type Appointment } from "@/lib/schedule";
 import { whatsAppLink } from "@/lib/reminders";
+import { useChairCount } from "@/components/SettingsProvider";
 
 /**
  * المواعيد — الشاشة التي تعالج «ينتظرون أيامًا».
@@ -11,8 +12,6 @@ import { whatsAppLink } from "@/lib/reminders";
  * والمدة ليست تفصيلًا: شدّ السلك عشر دقائق واللصق ستون، وحجزهما كأنهما نصف ساعة هو
  * السبب المباشر لانهيار يوم عيادة التقويم قبل الظهر.
  */
-
-const CHAIRS = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
 
 /** مدد واقعية لعيادة تقويم تعمل عامًا أيضًا — تُختصر النقر وتجعل الطاقة صادقة. */
 const DURATIONS = [
@@ -36,6 +35,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function AppointmentsPage() {
+  const CHAIRS = useChairCount();
   const [date, setDate] = useState(todayLocal);
   const [items, setItems] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -137,11 +137,6 @@ export default function AppointmentsPage() {
       <header className="mb-4">
         <h1 className="text-xl font-extrabold leading-tight">المواعيد</h1>
         <p className="text-xs text-slate-500">الحجز محكوم بعدد الكراسي — لا يُوعَد بما لا يتسع له اليوم.</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">لوحة اليوم</a>
-          <a href="/patients" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المرضى</a>
-          <a href="/requests" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الطلبات</a>
-        </nav>
       </header>
 
       <div className="mb-4 flex items-center gap-2">

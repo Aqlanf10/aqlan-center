@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CLINIC_NAME } from "@/lib/clinic";
+import { useClinicName } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString, type DayLoad } from "@/lib/schedule";
 import { appointmentsCountText, reportText, type DayReport } from "@/lib/report";
@@ -27,6 +27,7 @@ interface ReportFeed {
 }
 
 export default function ReportPage() {
+  const clinicName = useClinicName();
   const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
   const [date, setDate] = useState(today);
   const [feed, setFeed] = useState<ReportFeed | null>(null);
@@ -53,7 +54,7 @@ export default function ReportPage() {
   const shareLink = useMemo(() => {
     if (!feed) return null;
     const text = reportText({
-      clinicName: CLINIC_NAME,
+      clinicName,
       dateText: friendlyDateLong(feed.date),
       report: feed.report,
       tomorrowPercent: feed.tomorrow.percent,
@@ -61,18 +62,13 @@ export default function ReportPage() {
     });
     // بلا رقم: واتساب يفتح قائمة جهات الاتصال ليختار المرسِل من يُرسل له.
     return `https://wa.me/?text=${encodeURIComponent(text)}`;
-  }, [feed]);
+  }, [feed, clinicName]);
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
       <header className="mb-4">
         <h1 className="text-xl font-extrabold leading-tight">تقرير اليوم</h1>
-        <p className="text-xs text-slate-500">{CLINIC_NAME}</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">اللوحة</a>
-          <a href="/appointments" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المواعيد</a>
-          <a href="/recall" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المتابعة</a>
-        </nav>
+        <p className="text-xs text-slate-500">أرقام اليوم وحِمل الغد</p>
       </header>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">

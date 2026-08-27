@@ -46,12 +46,8 @@ export default function PatientsPage() {
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
       <header className="mb-4">
-        <h1 className="text-xl font-extrabold">المرضى</h1>
+        <h1 className="text-xl font-extrabold leading-tight">المرضى</h1>
         <p className="text-xs text-slate-500">ابحث بالاسم أو رقم الجوال</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">اللوحة</a>
-          <a href="/appointments" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المواعيد</a>
-        </nav>
       </header>
 
       <input

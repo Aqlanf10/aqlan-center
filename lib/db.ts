@@ -165,6 +165,14 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS lab_orders_status_idx ON lab_orders (status, due_date);
       CREATE INDEX IF NOT EXISTS lab_orders_patient_idx ON lab_orders (patient_id);
 
+      -- الإعدادات: مفتاح وقيمة. لا أعمدة لكل إعداد، لأن كل إعداد جديد كان سيعني
+      -- تعديل جدول في قاعدة إنتاج تعمل عليها عيادة.
+      CREATE TABLE IF NOT EXISTS settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT        NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS users (
         id            SERIAL PRIMARY KEY,
         username      TEXT        NOT NULL UNIQUE,
@@ -1290,4 +1298,83 @@ export async function markPatientRecalled(id: number): Promise<boolean> {
     `UPDATE patients SET recalled_at = NOW() WHERE id = $1`, [id],
   );
   return (rowCount ?? 0) > 0;
+}
+
+// ─── الإعدادات ───────────────────────────────────────────────────────────────
+
+import {
+  ALL_SETTING_KEYS,
+  SETTING_DEFAULTS,
+  withDefaults,
+  type SettingKey,
+  type SettingsMap,
+} from "./settings";
+
+/**
+ * ذاكرة قصيرة للإعدادات.
+ *
+ * الإعدادات تُقرأ في كل طلب تقريبًا — كل صفحة تحتاج اسم المركز، وكل حساب يحتاج عدد
+ * الكراسي أو سعر الصرف — وقراءتها من القاعدة في كل مرة استعلامٌ زائد على كل نقرة.
+ * وخمس ثوانٍ من التقادم مقبولة هنا: أسوأ ما يحدث أن يرى من غيّر السعر قيمته القديمة
+ * لثوانٍ. والحفظ يُبطل الذاكرة فورًا فلا ينتظر حتى ذلك.
+ */
+const SETTINGS_TTL_MS = 5_000;
+let settingsCache: { value: SettingsMap; at: number } | null = null;
+
+export function invalidateSettingsCache(): void {
+  settingsCache = null;
+}
+
+export async function getSettings(): Promise<SettingsMap> {
+  const now = Date.now();
+  if (settingsCache && now - settingsCache.at < SETTINGS_TTL_MS) return settingsCache.value;
+
+  await ensureSchema();
+  const { rows } = await getPool().query<{ key: string; value: string }>(
+    `SELECT key, value FROM settings`,
+  );
+  const stored: Record<string, string> = {};
+  for (const row of rows) stored[row.key] = row.value;
+  const value = withDefaults(stored);
+  settingsCache = { value, at: now };
+  return value;
+}
+
+/**
+ * الإعدادات بلا انهيار.
+ *
+ * تُستدعى من التخطيط الجذري الذي يُصيّر **كل** صفحة، بما فيها صفحة تسجيل الدخول.
+ * ولو رمت عند انقطاع القاعدة لصارت شاشة بيضاء في كل مسار بلا رسالة — بينما البرنامج
+ * يستطيع أن يعمل بالافتراضيات حتى تعود القاعدة.
+ */
+export async function getSettingsSafe(): Promise<SettingsMap> {
+  try {
+    return await getSettings();
+  } catch {
+    return withDefaults({});
+  }
+}
+
+/**
+ * يحفظ المفاتيح المُرسَلة وحدها.
+ *
+ * `ON CONFLICT` بدل حذف وإدراج: الحفظ الجزئي من شاشة مفتوحة على قسم واحد يجب ألا
+ * يمسح أقسامًا أخرى. والمفاتيح المجهولة تُرفض قبل الوصول إلى هنا.
+ */
+export async function saveSettings(values: Partial<Record<SettingKey, string>>): Promise<SettingsMap> {
+  await ensureSchema();
+  const entries = ALL_SETTING_KEYS
+    .filter((key) => values[key] !== undefined)
+    .map((key) => [key, String(values[key] ?? SETTING_DEFAULTS[key]).trim()] as const);
+
+  if (entries.length > 0) {
+    await getPool().query(
+      `INSERT INTO settings (key, value)
+       SELECT key, value FROM UNNEST($1::text[], $2::text[]) AS t(key, value)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [entries.map(([key]) => key), entries.map(([, value]) => value)],
+    );
+  }
+  invalidateSettingsCache();
+  return getSettings();
 }

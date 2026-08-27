@@ -1,15 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CLINIC_NAME } from "@/lib/clinic";
-import { DEFAULT_CLINIC, friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
+import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import {
   LAB_FILTER_LABEL,
   LAB_STATUS_LABEL,
   WORK_TYPES,
   daysLate,
-  defaultDueDate,
   filterOrders,
   labFollowUpText,
   labSummary,
@@ -34,6 +33,9 @@ interface LabFeed { orders: LabOrder[]; labs: { labName: string; labPhone: strin
 const FILTERS: LabFilter[] = ["late", "outstanding", "received", "all"];
 
 export default function LabPage() {
+  const clinicName = useClinicName();
+  const clinicPhone = useSetting("clinic.phone");
+  const labDays = Number(useSetting("lab.default_days")) || 7;
   const [feed, setFeed] = useState<LabFeed>({ orders: [], labs: [] });
   const [filter, setFilter] = useState<LabFilter>("late");
   const [loading, setLoading] = useState(true);
@@ -54,7 +56,7 @@ export default function LabPage() {
   const [workType, setWorkType] = useState(WORK_TYPES[0]);
   const [details, setDetails] = useState("");
   const [sentDate, setSentDate] = useState(today);
-  const [dueDate, setDueDate] = useState(() => defaultDueDate(today));
+  const [dueDate, setDueDate] = useState(() => addDays(today, labDays));
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
@@ -116,11 +118,11 @@ export default function LabPage() {
     }));
     if (ok) {
       setPatient(null); setQuery(""); setDetails("");
-      setSentDate(today); setDueDate(defaultDueDate(today));
+      setSentDate(today); setDueDate(addDays(today, labDays));
       setAdding(false);
       setFilter("outstanding");
     }
-  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today]);
+  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays]);
 
   const summary = useMemo(() => labSummary(feed.orders, today), [feed.orders, today]);
   const visible = useMemo(
@@ -133,11 +135,6 @@ export default function LabPage() {
       <header className="mb-4">
         <h1 className="text-xl font-extrabold leading-tight">أعمال المختبر</h1>
         <p className="text-xs text-slate-500">التراكيب والأجهزة — ما تأخّر أولًا</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">اللوحة</a>
-          <a href="/appointments" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المواعيد</a>
-          <a href="/patients" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المرضى</a>
-        </nav>
       </header>
 
       <section className="mb-4 grid grid-cols-3 gap-2" aria-label="ملخص المختبر">
@@ -236,7 +233,7 @@ export default function LabPage() {
               <input
                 type="date"
                 value={sentDate}
-                onChange={(event) => { setSentDate(event.target.value); setDueDate(defaultDueDate(event.target.value)); }}
+                onChange={(event) => { setSentDate(event.target.value); setDueDate(addDays(event.target.value, labDays)); }}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
             </label>
@@ -293,7 +290,8 @@ export default function LabPage() {
       ) : (
         <ul className="space-y-2">
           {visible.map((order) => (
-            <OrderCard key={order.id} order={order} today={today} busy={busy} act={act} />
+            <OrderCard key={order.id} order={order} today={today} busy={busy} act={act}
+              clinicName={clinicName} clinicPhone={clinicPhone} />
           ))}
         </ul>
       )}
@@ -301,11 +299,13 @@ export default function LabPage() {
   );
 }
 
-function OrderCard({ order, today, busy, act }: {
+function OrderCard({ order, today, busy, act, clinicName, clinicPhone }: {
   order: LabOrder;
   today: string;
   busy: boolean;
   act: (run: () => Promise<Response>) => Promise<boolean>;
+  clinicName: string;
+  clinicPhone: string;
 }) {
   const late = daysLate(order, today);
   const labNumber = toWhatsAppNumber(order.labPhone);
@@ -357,7 +357,7 @@ function OrderCard({ order, today, busy, act }: {
             </button>
             {labNumber ? (
               <a
-                href={`https://wa.me/${labNumber}?text=${encodeURIComponent(labFollowUpText(order, today, CLINIC_NAME))}`}
+                href={`https://wa.me/${labNumber}?text=${encodeURIComponent(labFollowUpText(order, today, clinicName))}`}
                 target="_blank"
                 rel="noopener"
                 className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white"
@@ -384,7 +384,7 @@ function OrderCard({ order, today, busy, act }: {
             </button>
             {patientNumber ? (
               <a
-                href={`https://wa.me/${patientNumber}?text=${encodeURIComponent(patientReadyText(order, CLINIC_NAME, DEFAULT_CLINIC.phone))}`}
+                href={`https://wa.me/${patientNumber}?text=${encodeURIComponent(patientReadyText(order, clinicName, clinicPhone))}`}
                 target="_blank"
                 rel="noopener"
                 className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white"

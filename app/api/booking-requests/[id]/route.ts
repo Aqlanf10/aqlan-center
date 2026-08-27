@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { chairCount } from "@/lib/settings";
 import {
   confirmBookingRequest,
+  getSettings,
   listAppointmentsByDate,
   rejectBookingRequest,
 } from "@/lib/db";
@@ -9,7 +11,6 @@ import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-const CHAIRS = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -48,10 +49,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
       // نفس حارس السعة الذي يحمي الحجز اليدوي: تأكيد الطلب حجزٌ كامل، ولو تجاوز
       // الحارس لدخل من الباب الخلفي ما مُنع من الباب الأمامي.
+      const chairs = chairCount(await getSettings());
       const sameDay = await listAppointmentsByDate(date);
-      const verdict = checkSlot(sameDay, date, time, durationMinutes, CHAIRS);
+      const verdict = checkSlot(sameDay, date, time, durationMinutes, chairs);
       if (!verdict.allowed) {
-        const suggestion = nextFreeTime(sameDay, date, time, durationMinutes, CHAIRS);
+        const suggestion = nextFreeTime(sameDay, date, time, durationMinutes, chairs);
         return NextResponse.json({
           message: verdict.reason,
           suggestion,

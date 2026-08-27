@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { createAppointment, listAppointmentsByDate } from "@/lib/db";
+import { chairCount } from "@/lib/settings";
+import { createAppointment, getSettings, listAppointmentsByDate } from "@/lib/db";
 import { checkSlot, nextFreeTime } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-const CHAIRS = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
 const denied = () =>
   NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
 
@@ -44,12 +44,13 @@ export async function POST(request: Request) {
   }
 
   try {
+    const chairs = chairCount(await getSettings());
     // الحارس يُطبَّق على الخادم لا في الواجهة وحدها: جهازان يحجزان في اللحظة نفسها
     // لا يراهما بعضهما، والفحص هنا هو الوحيد الذي يراهما.
     const sameDay = await listAppointmentsByDate(date);
-    const verdict = checkSlot(sameDay, date, time, durationMinutes, CHAIRS);
+    const verdict = checkSlot(sameDay, date, time, durationMinutes, chairs);
     if (!verdict.allowed) {
-      const suggestion = nextFreeTime(sameDay, date, time, durationMinutes, CHAIRS);
+      const suggestion = nextFreeTime(sameDay, date, time, durationMinutes, chairs);
       return NextResponse.json(
         {
           message: verdict.reason,

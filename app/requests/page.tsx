@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CLINIC_NAME } from "@/lib/clinic";
+import { useClinicName, useSetting } from "@/components/SettingsProvider";
 import { PERIOD_LABELS, confirmationText, type BookingRequest } from "@/lib/booking";
-import { DEFAULT_CLINIC, friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
+import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { minutesSince } from "@/lib/flow";
 
 /**
@@ -33,6 +33,8 @@ function todayLocal(): string {
 }
 
 export default function RequestsPage() {
+  const CLINIC_NAME = useClinicName();
+  const clinicPhone = useSetting("clinic.phone");
   const [requests, setRequests] = useState<BookingRequest[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
@@ -98,7 +100,7 @@ export default function RequestsPage() {
         patientName: request.fullName,
         whenText: `${friendlyDate(date)} الساعة ${friendlyTime(time)}`,
         clinicName: CLINIC_NAME,
-        clinicPhone: DEFAULT_CLINIC.phone,
+        clinicPhone,
       });
       setConfirmed({
         id: request.id,
@@ -113,7 +115,7 @@ export default function RequestsPage() {
       inFlight.current = false;
       setBusy(false);
     }
-  }, [date, time, duration, load]);
+  }, [date, time, duration, load, CLINIC_NAME, clinicPhone]);
 
   const reject = useCallback(async (id: number) => {
     if (inFlight.current) return;
@@ -141,19 +143,12 @@ export default function RequestsPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4 flex items-start justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-extrabold">طلبات المرضى</h1>
-          <p className="text-xs text-slate-500">الطلبات التي وصلت من صفحة الحجز، الأقدم أولًا</p>
-          {/* الرابط ظاهر ليُنسخ إلى حالة واتساب أو صفحة المركز: صفحة حجز لا يعرفها
-              أحد لا تُستخدم، والاستقبال هي من ستنشرها لا المبرمج. */}
-          <p className="mt-1 text-[11px] text-slate-400">
-            رابط الحجز للمرضى: <a href="/book" target="_blank" rel="noopener" className="font-bold text-brand-blue underline">/book</a>
-          </p>
-        </div>
-        <a href="/" className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">
-          اللوحة
-        </a>
+      <header className="mb-4">
+        <h1 className="text-xl font-extrabold leading-tight">طلبات المرضى</h1>
+        <p className="text-xs text-slate-500">وصلت من صفحة الحجز، الأقدم أولًا</p>
+        <p className="mt-1 text-[11px] text-slate-400">
+          رابط الحجز للمرضى: <a href="/book" target="_blank" rel="noopener" className="font-bold text-brand-blue underline">/book</a>
+        </p>
       </header>
 
       {oldest >= 240 ? (

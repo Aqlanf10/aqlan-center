@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { chairCount } from "@/lib/settings";
 import {
   CLINIC_TIME_ZONE,
+  getSettings,
   listAppointmentsByDate,
   listLabOrders,
   listVisitsByDate,
@@ -12,7 +14,6 @@ import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-const CHAIRS = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function GET(request: Request) {
@@ -25,6 +26,7 @@ export async function GET(request: Request) {
   const next = addDays(date, 1);
 
   try {
+    const chairs = chairCount(await getSettings());
     const [visits, appointments, nextDay, labOrders] = await Promise.all([
       listVisitsByDate(date),
       listAppointmentsByDate(date),
@@ -36,9 +38,9 @@ export async function GET(request: Request) {
       date,
       nextDate: next,
       report: dayReport(visits, appointments, new Date()),
-      tomorrow: tomorrowLoad(nextDay, next, CHAIRS),
+      tomorrow: tomorrowLoad(nextDay, next, chairs),
       lab: labSummary(labOrders, today),
-      chairs: CHAIRS,
+      chairs,
     });
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل التقرير." }, { status: 500 });

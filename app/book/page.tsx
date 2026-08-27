@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CLINIC_NAME } from "@/lib/clinic";
+import { useClinicName } from "@/components/SettingsProvider";
 import { PERIOD_LABELS, type PreferredPeriod } from "@/lib/booking";
 import { addDays } from "@/lib/schedule";
 
@@ -26,6 +26,7 @@ function labelFor(date: string): string {
 }
 
 export default function BookPage() {
+  const clinicName = useClinicName();
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [reason, setReason] = useState("");
@@ -76,7 +77,7 @@ export default function BookPage() {
           <p className="mt-4 text-base leading-relaxed text-slate-600">
             سنتصل بكم لتأكيد الوقت المناسب. الموعد لا يُعتبر مؤكدًا حتى نتواصل معكم.
           </p>
-          <p className="mt-6 text-sm text-slate-400">{CLINIC_NAME}</p>
+          <p className="mt-6 text-sm text-slate-400">{clinicName}</p>
         </div>
       </main>
     );
@@ -86,7 +87,7 @@ export default function BookPage() {
     <main className="mx-auto max-w-lg p-4 pb-16">
       <header className="mb-5 mt-2 text-center">
         <h1 className="text-xl font-extrabold text-navy-900">طلب موعد</h1>
-        <p className="mt-1 text-xs leading-relaxed text-slate-500">{CLINIC_NAME}</p>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">{clinicName}</p>
       </header>
 
       <form onSubmit={submit} className="rounded-3xl border border-slate-200 bg-white p-5">

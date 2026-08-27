@@ -114,25 +114,17 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
       <header className="mb-4">
-        <h1 className="text-xl font-extrabold">{file.patient.fullName}</h1>
+        <h1 className="text-xl font-extrabold leading-tight">{file.patient.fullName}</h1>
         <p className="text-xs text-slate-500">
           {file.patient.patientNumber} · مسجّل منذ {friendlyDateLong(dateOnly(file.patient.createdAt))}
         </p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/patients" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">بحث</a>
-          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">اللوحة</a>
-          <a href="/appointments" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المواعيد</a>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <a href="/patients" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">‹ كل المرضى</a>
           {whatsApp ? (
-            <a
-              href={`https://wa.me/${whatsApp}`}
-              target="_blank"
-              rel="noopener"
-              className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white"
-            >
-              واتساب
-            </a>
+            <a href={`https://wa.me/${whatsApp}`} target="_blank" rel="noopener"
+              className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white">واتساب</a>
           ) : null}
-        </nav>
+        </div>
       </header>
 
       {error ? (

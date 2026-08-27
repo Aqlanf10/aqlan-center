@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { listTodayVisits } from "@/lib/db";
+import { chairCount } from "@/lib/settings";
+import { getSettings, listTodayVisits } from "@/lib/db";
 import { calledVisits, chairRows, firstNameOnly, waitingRows } from "@/lib/flow";
 
 export const dynamic = "force-dynamic";
 
-const CHAIRS = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
 
 /**
  * ما تعرضه شاشة الصالة — وليس أكثر.
@@ -18,7 +18,8 @@ const CHAIRS = Number(process.env.NEXT_PUBLIC_CHAIR_COUNT || 2);
  */
 export async function GET() {
   try {
-    const visits = await listTodayVisits();
+    const [visits, settings] = await Promise.all([listTodayVisits(), getSettings()]);
+    const chairs = chairCount(settings);
     const now = new Date();
     return NextResponse.json({
       called: calledVisits(visits).slice(0, 3).map((visit) => ({
@@ -30,7 +31,7 @@ export async function GET() {
       })),
       // الكرسي المحجوز بالنداء يُعرض «في الطريق» لا «فارغ»: المريض المنادى عليه يمشي
       // إليه الآن، وعرضه فارغًا يجعل الشاشة تناقض نداءها الظاهر فوقها.
-      chairs: chairRows(CHAIRS, visits, now).map((row) => ({
+      chairs: chairRows(chairs, visits, now).map((row) => ({
         chair: row.chair,
         state: row.occupant ? "busy" : row.calledFor ? "called" : "free",
         name: row.occupant
