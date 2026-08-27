@@ -175,6 +175,92 @@ export function ensureSchema(): Promise<void> {
 
       -- الإعدادات: مفتاح وقيمة. لا أعمدة لكل إعداد، لأن كل إعداد جديد كان سيعني
       -- تعديل جدول في قاعدة إنتاج تعمل عليها عيادة.
+      -- ── المالية ────────────────────────────────────────────────────────────
+      -- المبالغ كلها أعداد صحيحة بالوحدة الصغرى. الكسور العشرية في المال تتراكم:
+      -- مئة دفعة بحساب عشري تعطي رصيدًا يخالف الورقة بريالات لا أحد يعرف مصدرها.
+
+      -- قائمة الأسعار.
+      CREATE TABLE IF NOT EXISTS services (
+        id            SERIAL PRIMARY KEY,
+        name          TEXT        NOT NULL,
+        category      TEXT,
+        price_minor   BIGINT      NOT NULL DEFAULT 0,
+        is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
+        sort_order    INTEGER     NOT NULL DEFAULT 100,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS services_active_idx ON services (is_active, sort_order);
+
+      -- ورديات الصندوق. الدفع يتطلب وردية مفتوحة، والإغلاق يُقارن الجرد بالمتوقَّع.
+      CREATE TABLE IF NOT EXISTS cashier_shifts (
+        id            SERIAL PRIMARY KEY,
+        opened_by     TEXT        NOT NULL,
+        opened_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        opening_yer   BIGINT      NOT NULL DEFAULT 0,
+        opening_sar   BIGINT      NOT NULL DEFAULT 0,
+        opening_usd   BIGINT      NOT NULL DEFAULT 0,
+        closed_by     TEXT,
+        closed_at     TIMESTAMPTZ,
+        counted_yer   BIGINT,
+        counted_sar   BIGINT,
+        counted_usd   BIGINT,
+        note          TEXT,
+        status        TEXT        NOT NULL DEFAULT 'open'
+      );
+      -- وردية مفتوحة واحدة لا أكثر: صندوقٌ واحد في العيادة، ووردّيتان مفتوحتان
+      -- تعنيان دفعات موزّعة عشوائيًا بينهما فلا يُطابَق أيّهما.
+      CREATE UNIQUE INDEX IF NOT EXISTS cashier_shifts_one_open
+        ON cashier_shifts ((status)) WHERE status = 'open';
+
+      CREATE TABLE IF NOT EXISTS invoices (
+        id             SERIAL PRIMARY KEY,
+        invoice_number TEXT        NOT NULL UNIQUE,
+        patient_id     INTEGER     NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        status         TEXT        NOT NULL DEFAULT 'open',
+        total_minor    BIGINT      NOT NULL DEFAULT 0,
+        discount_minor BIGINT      NOT NULL DEFAULT 0,
+        base_currency  TEXT        NOT NULL DEFAULT 'YER',
+        note           TEXT,
+        created_by     TEXT,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS invoices_patient_idx ON invoices (patient_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS invoices_created_idx ON invoices (created_at);
+
+      CREATE TABLE IF NOT EXISTS invoice_items (
+        id               SERIAL PRIMARY KEY,
+        invoice_id       INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+        service_id       INTEGER REFERENCES services(id),
+        description      TEXT    NOT NULL,
+        quantity         INTEGER NOT NULL DEFAULT 1,
+        unit_price_minor BIGINT  NOT NULL DEFAULT 0,
+        total_minor      BIGINT  NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS invoice_items_invoice_idx ON invoice_items (invoice_id);
+
+      -- الدفعة تحمل سعر صرفها لحظة الدفع. لو حُسبت بسعر اليوم لتغيّر رصيد كل مريض
+      -- كلما حُدِّث السعر — وهو ما يجعل السجل كله بلا معنى.
+      CREATE TABLE IF NOT EXISTS payments (
+        id                SERIAL PRIMARY KEY,
+        receipt_number    TEXT        NOT NULL UNIQUE,
+        patient_id        INTEGER     NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        invoice_id        INTEGER     REFERENCES invoices(id) ON DELETE SET NULL,
+        shift_id          INTEGER     NOT NULL REFERENCES cashier_shifts(id),
+        kind              TEXT        NOT NULL DEFAULT 'payment',
+        amount_minor      BIGINT      NOT NULL,
+        currency          TEXT        NOT NULL,
+        exchange_rate     NUMERIC(18,6) NOT NULL DEFAULT 1,
+        base_amount_minor BIGINT      NOT NULL,
+        base_currency     TEXT        NOT NULL DEFAULT 'YER',
+        method            TEXT        NOT NULL DEFAULT 'cash',
+        note              TEXT,
+        created_by        TEXT,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS payments_patient_idx ON payments (patient_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS payments_shift_idx ON payments (shift_id);
+      CREATE INDEX IF NOT EXISTS payments_created_idx ON payments (created_at);
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -1463,3 +1549,491 @@ export async function saveSettings(values: Partial<Record<SettingKey, string>>):
   invalidateSettingsCache();
   return getSettings();
 }
+
+// ─── المالية ─────────────────────────────────────────────────────────────────
+
+import {
+  MINOR_UNITS,
+  toBaseAmount,
+  type Currency,
+  type PaymentLike,
+} from "./money";
+
+export interface Service {
+  id: number;
+  name: string;
+  category: string | null;
+  priceMinor: number;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+interface ServiceRow {
+  id: number; name: string; category: string | null;
+  price_minor: string; is_active: boolean; sort_order: number;
+}
+
+// `BIGINT` يصل من pg نصًّا لا رقمًا — وهو الصحيح لأنه قد يتجاوز حدّ العدد الآمن.
+// مبالغ العيادة أصغر من ذلك بكثير، فالتحويل آمن، لكن نسيانَه يعطي «"12500" + 1»
+// = «"125001"» — وهو نوع الخطأ الذي لا يُكتشف إلا في رصيد مريض.
+const toMinor = (value: string | number | null): number => Number(value ?? 0);
+
+const toService = (row: ServiceRow): Service => ({
+  id: row.id,
+  name: row.name,
+  category: row.category,
+  priceMinor: toMinor(row.price_minor),
+  isActive: row.is_active,
+  sortOrder: row.sort_order,
+});
+
+export async function listServices(includeInactive = false): Promise<Service[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ServiceRow>(
+    `SELECT id, name, category, price_minor, is_active, sort_order FROM services
+      ${includeInactive ? "" : "WHERE is_active"}
+      ORDER BY sort_order, name`,
+  );
+  return rows.map(toService);
+}
+
+export async function createService(input: {
+  name: string; category: string | null; priceMinor: number;
+}): Promise<Service> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ServiceRow>(
+    `INSERT INTO services (name, category, price_minor)
+     VALUES ($1, $2::text, $3) RETURNING id, name, category, price_minor, is_active, sort_order`,
+    [input.name, input.category, input.priceMinor],
+  );
+  return toService(rows[0]);
+}
+
+export async function updateService(id: number, input: {
+  name?: string; category?: string | null; priceMinor?: number; isActive?: boolean;
+}): Promise<Service | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ServiceRow>(
+    `UPDATE services SET
+       name        = COALESCE($2::text, name),
+       category    = CASE WHEN $3::boolean THEN $4::text ELSE category END,
+       price_minor = COALESCE($5::bigint, price_minor),
+       is_active   = COALESCE($6::boolean, is_active)
+     WHERE id = $1
+     RETURNING id, name, category, price_minor, is_active, sort_order`,
+    [
+      id, input.name ?? null,
+      input.category !== undefined, input.category ?? null,
+      input.priceMinor ?? null, input.isActive ?? null,
+    ],
+  );
+  return rows[0] ? toService(rows[0]) : null;
+}
+
+// ── الورديات ────────────────────────────────────────────────────────────────
+
+export interface CashierShift {
+  id: number;
+  openedBy: string;
+  openedAt: string;
+  opening: Record<Currency, number>;
+  closedBy: string | null;
+  closedAt: string | null;
+  counted: Record<Currency, number> | null;
+  note: string | null;
+  status: "open" | "closed";
+}
+
+interface ShiftRow {
+  id: number; opened_by: string; opened_at: Date;
+  opening_yer: string; opening_sar: string; opening_usd: string;
+  closed_by: string | null; closed_at: Date | null;
+  counted_yer: string | null; counted_sar: string | null; counted_usd: string | null;
+  note: string | null; status: string;
+}
+
+const toShift = (row: ShiftRow): CashierShift => ({
+  id: row.id,
+  openedBy: row.opened_by,
+  openedAt: row.opened_at.toISOString(),
+  opening: { YER: toMinor(row.opening_yer), SAR: toMinor(row.opening_sar), USD: toMinor(row.opening_usd) },
+  closedBy: row.closed_by,
+  closedAt: row.closed_at ? row.closed_at.toISOString() : null,
+  counted: row.counted_yer === null ? null : {
+    YER: toMinor(row.counted_yer), SAR: toMinor(row.counted_sar), USD: toMinor(row.counted_usd),
+  },
+  note: row.note,
+  status: row.status === "closed" ? "closed" : "open",
+});
+
+export async function getOpenShift(): Promise<CashierShift | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ShiftRow>(
+    `SELECT * FROM cashier_shifts WHERE status = 'open' LIMIT 1`,
+  );
+  return rows[0] ? toShift(rows[0]) : null;
+}
+
+/**
+ * يفتح وردية، ويرفض إن كانت هناك واحدة مفتوحة.
+ *
+ * الشرط `WHERE NOT EXISTS` داخل `INSERT` نفسه لا في الكود: ضغطتان على «افتح الوردية»
+ * من جهازين في اللحظة نفسها كانتا ستفتحان ورديتين، فتتوزّع دفعات اليوم بينهما ولا
+ * يُطابَق أيّهما. والفهرس الفريد على الحالة يمنعها حتى لو فشل هذا الشرط.
+ */
+export async function openShift(input: {
+  openedBy: string; opening: Record<Currency, number>;
+}): Promise<CashierShift | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ShiftRow>(
+    `INSERT INTO cashier_shifts (opened_by, opening_yer, opening_sar, opening_usd)
+     SELECT $1, $2, $3, $4
+      WHERE NOT EXISTS (SELECT 1 FROM cashier_shifts WHERE status = 'open')
+     RETURNING *`,
+    [input.openedBy, input.opening.YER, input.opening.SAR, input.opening.USD],
+  );
+  return rows[0] ? toShift(rows[0]) : null;
+}
+
+export async function closeShift(input: {
+  id: number; closedBy: string; counted: Record<Currency, number>; note: string | null;
+}): Promise<CashierShift | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ShiftRow>(
+    `UPDATE cashier_shifts SET
+       status = 'closed', closed_by = $2, closed_at = NOW(),
+       counted_yer = $3, counted_sar = $4, counted_usd = $5, note = $6::text
+     WHERE id = $1 AND status = 'open'
+     RETURNING *`,
+    [input.id, input.closedBy, input.counted.YER, input.counted.SAR, input.counted.USD, input.note],
+  );
+  return rows[0] ? toShift(rows[0]) : null;
+}
+
+export async function listShifts(limit = 30): Promise<CashierShift[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ShiftRow>(
+    `SELECT * FROM cashier_shifts ORDER BY opened_at DESC LIMIT $1`, [limit],
+  );
+  return rows.map(toShift);
+}
+
+// ── الفواتير والدفعات ───────────────────────────────────────────────────────
+
+export interface InvoiceItem {
+  id: number;
+  serviceId: number | null;
+  description: string;
+  quantity: number;
+  unitPriceMinor: number;
+  totalMinor: number;
+}
+
+export interface Invoice {
+  id: number;
+  invoiceNumber: string;
+  patientId: number;
+  patientName: string;
+  status: "open" | "paid" | "cancelled";
+  totalMinor: number;
+  discountMinor: number;
+  baseCurrency: Currency;
+  note: string | null;
+  createdAt: string;
+  items: InvoiceItem[];
+}
+
+export interface Payment {
+  id: number;
+  receiptNumber: string;
+  patientId: number;
+  patientName: string;
+  invoiceId: number | null;
+  shiftId: number;
+  kind: "payment" | "refund";
+  amountMinor: number;
+  currency: Currency;
+  exchangeRate: number;
+  baseAmountMinor: number;
+  baseCurrency: Currency;
+  method: string;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+interface InvoiceRow {
+  id: number; invoice_number: string; patient_id: number; full_name: string;
+  status: string; total_minor: string; discount_minor: string; base_currency: string;
+  note: string | null; created_at: Date;
+}
+
+interface PaymentRow {
+  id: number; receipt_number: string; patient_id: number; full_name: string;
+  invoice_id: number | null; shift_id: number; kind: string;
+  amount_minor: string; currency: string; exchange_rate: string;
+  base_amount_minor: string; base_currency: string; method: string;
+  note: string | null; created_by: string | null; created_at: Date;
+}
+
+const toInvoice = (row: InvoiceRow, items: InvoiceItem[]): Invoice => ({
+  id: row.id,
+  invoiceNumber: row.invoice_number,
+  patientId: row.patient_id,
+  patientName: row.full_name,
+  status: row.status as Invoice["status"],
+  totalMinor: toMinor(row.total_minor),
+  discountMinor: toMinor(row.discount_minor),
+  baseCurrency: row.base_currency as Currency,
+  note: row.note,
+  createdAt: row.created_at.toISOString(),
+  items,
+});
+
+const toPayment = (row: PaymentRow): Payment => ({
+  id: row.id,
+  receiptNumber: row.receipt_number,
+  patientId: row.patient_id,
+  patientName: row.full_name,
+  invoiceId: row.invoice_id,
+  shiftId: row.shift_id,
+  kind: row.kind === "refund" ? "refund" : "payment",
+  amountMinor: toMinor(row.amount_minor),
+  currency: row.currency as Currency,
+  exchangeRate: Number(row.exchange_rate),
+  baseAmountMinor: toMinor(row.base_amount_minor),
+  baseCurrency: row.base_currency as Currency,
+  method: row.method,
+  note: row.note,
+  createdBy: row.created_by,
+  createdAt: row.created_at.toISOString(),
+});
+
+const INVOICE_SELECT = `
+  SELECT i.id, i.invoice_number, i.patient_id, p.full_name, i.status, i.total_minor,
+         i.discount_minor, i.base_currency, i.note, i.created_at
+    FROM invoices i JOIN patients p ON p.id = i.patient_id`;
+
+const PAYMENT_SELECT = `
+  SELECT y.id, y.receipt_number, y.patient_id, p.full_name, y.invoice_id, y.shift_id, y.kind,
+         y.amount_minor, y.currency, y.exchange_rate, y.base_amount_minor, y.base_currency,
+         y.method, y.note, y.created_by, y.created_at
+    FROM payments y JOIN patients p ON p.id = y.patient_id`;
+
+async function itemsFor(invoiceIds: number[]): Promise<Map<number, InvoiceItem[]>> {
+  const map = new Map<number, InvoiceItem[]>();
+  if (invoiceIds.length === 0) return map;
+  const { rows } = await getPool().query<{
+    id: number; invoice_id: number; service_id: number | null; description: string;
+    quantity: number; unit_price_minor: string; total_minor: string;
+  }>(
+    `SELECT id, invoice_id, service_id, description, quantity, unit_price_minor, total_minor
+       FROM invoice_items WHERE invoice_id = ANY($1::int[]) ORDER BY id`,
+    [invoiceIds],
+  );
+  for (const row of rows) {
+    const list = map.get(row.invoice_id) ?? [];
+    list.push({
+      id: row.id,
+      serviceId: row.service_id,
+      description: row.description,
+      quantity: row.quantity,
+      unitPriceMinor: toMinor(row.unit_price_minor),
+      totalMinor: toMinor(row.total_minor),
+    });
+    map.set(row.invoice_id, list);
+  }
+  return map;
+}
+
+/**
+ * ينشئ فاتورة ببنودها في معاملة واحدة، ويحسب الإجمالي على الخادم.
+ *
+ * الإجمالي **لا يُقرأ من الطلب** مهما أرسله المتصفّح: قيمة الفاتورة هي مجموع بنودها،
+ * وقبولُ رقم من الواجهة يعني أن أي أحد يستطيع إنشاء فاتورة بمليون وبنودٍ بألف.
+ */
+export async function createInvoice(input: {
+  patientId: number;
+  baseCurrency: Currency;
+  discountMinor: number;
+  note: string | null;
+  createdBy: string;
+  items: { serviceId: number | null; description: string; quantity: number; unitPriceMinor: number }[];
+}): Promise<Invoice | null> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const total = input.items.reduce(
+      (sum, item) => sum + Math.max(0, item.quantity) * Math.max(0, item.unitPriceMinor), 0,
+    );
+    const discount = Math.min(Math.max(0, input.discountMinor), total);
+
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO invoices (invoice_number, patient_id, total_minor, discount_minor, base_currency, note, created_by)
+       VALUES (
+         'INV-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(invoice_number, '\\D', '', 'g'), '')::bigint) FROM invoices), 0) + 1)::text, 5, '0'),
+         $1, $2, $3, $4, $5::text, $6)
+       RETURNING id`,
+      [input.patientId, total, discount, input.baseCurrency, input.note, input.createdBy],
+    );
+    const invoiceId = rows[0].id;
+
+    for (const item of input.items) {
+      const quantity = Math.max(1, Math.round(item.quantity));
+      const unit = Math.max(0, Math.round(item.unitPriceMinor));
+      await client.query(
+        `INSERT INTO invoice_items (invoice_id, service_id, description, quantity, unit_price_minor, total_minor)
+         VALUES ($1, $2::int, $3, $4, $5, $6)`,
+        [invoiceId, item.serviceId, item.description, quantity, unit, quantity * unit],
+      );
+    }
+    await client.query("COMMIT");
+    return getInvoice(invoiceId);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getInvoice(id: number): Promise<Invoice | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<InvoiceRow>(`${INVOICE_SELECT} WHERE i.id = $1`, [id]);
+  if (!rows[0]) return null;
+  const items = await itemsFor([id]);
+  return toInvoice(rows[0], items.get(id) ?? []);
+}
+
+export async function listPatientInvoices(patientId: number): Promise<Invoice[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<InvoiceRow>(
+    `${INVOICE_SELECT} WHERE i.patient_id = $1 ORDER BY i.created_at DESC LIMIT 100`, [patientId],
+  );
+  const items = await itemsFor(rows.map((row) => row.id));
+  return rows.map((row) => toInvoice(row, items.get(row.id) ?? []));
+}
+
+export async function setInvoiceStatus(
+  id: number, status: "open" | "paid" | "cancelled",
+): Promise<Invoice | null> {
+  await ensureSchema();
+  // الفاتورة الملغاة لا تعود: إلغاءٌ ثم فتحٌ يعيد مبلغًا أُسقط من رصيد المريض بعد
+  // أن رآه مسدّدًا. التصحيح يكون بفاتورة جديدة لا بإحياء ملغاة.
+  const { rowCount } = await getPool().query(
+    `UPDATE invoices SET status = $2 WHERE id = $1 AND status <> 'cancelled'`, [id, status],
+  );
+  return (rowCount ?? 0) > 0 ? getInvoice(id) : null;
+}
+
+export async function listPatientPayments(patientId: number): Promise<Payment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PaymentRow>(
+    `${PAYMENT_SELECT} WHERE y.patient_id = $1 ORDER BY y.created_at DESC LIMIT 200`, [patientId],
+  );
+  return rows.map(toPayment);
+}
+
+export async function getPayment(id: number): Promise<Payment | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PaymentRow>(`${PAYMENT_SELECT} WHERE y.id = $1`, [id]);
+  return rows[0] ? toPayment(rows[0]) : null;
+}
+
+export async function listShiftPayments(shiftId: number): Promise<Payment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PaymentRow>(
+    `${PAYMENT_SELECT} WHERE y.shift_id = $1 ORDER BY y.created_at DESC`, [shiftId],
+  );
+  return rows.map(toPayment);
+}
+
+export async function listPaymentsByDate(date: string): Promise<Payment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PaymentRow>(
+    `${PAYMENT_SELECT}
+      WHERE (y.created_at AT TIME ZONE $1)::date = $2::date
+      ORDER BY y.created_at DESC`,
+    [CLINIC_TIME_ZONE, date],
+  );
+  return rows.map(toPayment);
+}
+
+/**
+ * يسجّل دفعة أو استردادًا داخل الوردية المفتوحة.
+ *
+ * ثلاثة أشياء مقصودة:
+ *
+ * ١) **الوردية شرطٌ داخل الاستعلام** لا فحصٌ قبله: بين الفحص والإدراج ثانيةٌ قد
+ *    تُغلق فيها الوردية من جهاز آخر، فتُسجَّل الدفعة في وردية مقفلة ولا تظهر في
+ *    جردها ولا في جرد التالية — مالٌ دخل ولا يظهر في أي إغلاق.
+ *
+ * ٢) **سعر الصرف يُنسخ في الصف** ولا يُقرأ من الإعدادات بعدها. هذا ما يجعل رصيد
+ *    المريض ثابتًا حين يتغيّر السعر غدًا.
+ *
+ * ٣) **المكافئ الأساسي يُحسب على الخادم** من المبلغ والسعر: قبولُه من الواجهة يعني
+ *    دفعة بدولار واحد تُسجَّل بمليون ريال.
+ */
+export async function recordPayment(input: {
+  patientId: number;
+  invoiceId: number | null;
+  kind: "payment" | "refund";
+  amountMinor: number;
+  currency: Currency;
+  baseCurrency: Currency;
+  exchangeRate: number;
+  method: string;
+  note: string | null;
+  createdBy: string;
+}): Promise<{ payment: Payment | null; reason: "no_shift" | null }> {
+  await ensureSchema();
+  const baseAmount = toBaseAmount(
+    input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
+  );
+
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO payments (
+       receipt_number, patient_id, invoice_id, shift_id, kind, amount_minor, currency,
+       exchange_rate, base_amount_minor, base_currency, method, note, created_by)
+     SELECT
+       'R-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(receipt_number, '\\D', '', 'g'), '')::bigint) FROM payments), 0) + 1)::text, 5, '0'),
+       $1, $2::int, s.id, $3, $4, $5, $6, $7, $8, $9, $10::text, $11
+       FROM cashier_shifts s
+      WHERE s.status = 'open'
+      LIMIT 1
+     RETURNING id`,
+    [
+      input.patientId, input.invoiceId, input.kind, input.amountMinor, input.currency,
+      input.exchangeRate, baseAmount, input.baseCurrency, input.method, input.note, input.createdBy,
+    ],
+  );
+
+  if (!rows[0]) return { payment: null, reason: "no_shift" };
+  return { payment: await getPayment(rows[0].id), reason: null };
+}
+
+/** رصيد المريض: الفواتير والدفعات معًا، لأن الرقم لا يُقرأ من أحدهما وحده. */
+export async function patientLedger(patientId: number): Promise<{
+  invoices: Invoice[]; payments: Payment[];
+}> {
+  const [invoices, payments] = await Promise.all([
+    listPatientInvoices(patientId),
+    listPatientPayments(patientId),
+  ]);
+  return { invoices, payments };
+}
+
+/** يحوّل صفوف الدفعات إلى الشكل الذي تفهمه حسابات `lib/money`. */
+export function asPaymentLikes(payments: Payment[]): PaymentLike[] {
+  return payments.map((payment) => ({
+    amountMinor: payment.amountMinor,
+    currency: payment.currency,
+    exchangeRate: payment.exchangeRate,
+    baseAmountMinor: payment.baseAmountMinor,
+    kind: payment.kind,
+  }));
+}
+
+/** الوحدات الصغرى — تُصدَّر لتستعملها المسارات في التحقق. */
+export { MINOR_UNITS };

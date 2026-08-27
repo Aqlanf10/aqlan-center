@@ -6,6 +6,7 @@ import type { Appointment } from "@/lib/schedule";
 import { GENDER_LABEL, ageFromBirthYear, ageText, type Gender, type Patient } from "@/lib/patient";
 import { friendlyDate, friendlyDateLong, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import { PatientLedger } from "@/components/PatientLedger";
 
 /**
  * ملف المريض.
@@ -30,7 +31,7 @@ function dateOnly(iso: string): string {
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 }
 
-type Tab = "overview" | "appointments" | "visits";
+type Tab = "overview" | "ledger" | "appointments" | "visits";
 
 export default function PatientFilePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -136,8 +137,8 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
         </div>
       </section>
 
-      <div className="mb-3 flex gap-1.5">
-        {([["overview", "نظرة عامة"], ["appointments", `المواعيد (${file.appointments.length})`], ["visits", `الزيارات (${file.visits.length})`]] as [Tab, string][]).map(([key, label]) => (
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {([["overview", "نظرة عامة"], ["ledger", "الحساب"], ["appointments", `المواعيد (${file.appointments.length})`], ["visits", `الزيارات (${file.visits.length})`]] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -159,6 +160,8 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
           <Row label="مسجّل منذ" value={friendlyDateLong(dateOnly(patient.createdAt))} />
           <Row label="ملاحظة" value={patient.note} />
         </section>
+      ) : tab === "ledger" ? (
+        <PatientLedger patientId={patient.id} />
       ) : tab === "appointments" ? (
         file.appointments.length === 0 ? (
           <p className="rounded-2xl border border-slate-200 bg-white p-4 text-center text-sm text-slate-400">لا توجد مواعيد.</p>

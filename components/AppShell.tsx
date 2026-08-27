@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   { href: "/", label: "اليوم", icon: "🦷" },
   { href: "/appointments", label: "المواعيد", icon: "🗓" },
   { href: "/patients", label: "المرضى", icon: "👤" },
+  { href: "/finance", label: "الصندوق", icon: "💵" },
   { href: "/lab", label: "المختبر", icon: "🔧", badge: "lab" },
   { href: "/recall", label: "المتابعة", icon: "📞" },
   { href: "/requests", label: "الطلبات", icon: "📥", badge: "requests" },
@@ -33,8 +34,12 @@ const NAV: NavItem[] = [
   { href: "/settings", label: "الإعدادات", icon: "⚙️" },
 ];
 
-/** الشاشات التي لا قشرة لها: عامة، أو تُعرض على تلفاز، أو قبل الدخول. */
-const BARE_PATHS = ["/login", "/setup", "/display", "/book"];
+/**
+ * الشاشات التي لا قشرة لها: عامة، أو تُعرض على تلفاز، أو قبل الدخول، أو تُطبع.
+ *
+ * صفحات الطباعة أهمّها هنا: قائمة جانبية وشريط سفلي على ورقة سندٍ يُعطى لمريض.
+ */
+const BARE_PATHS = ["/login", "/setup", "/display", "/book", "/print"];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
