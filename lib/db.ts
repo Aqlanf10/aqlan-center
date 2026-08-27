@@ -140,6 +140,26 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS booking_requests_status_idx ON booking_requests (status, created_at);
       CREATE INDEX IF NOT EXISTS booking_requests_phone_idx ON booking_requests (phone, created_at);
 
+      -- أعمال المختبر. المقياس الوحيد هنا تاريخ الاستحقاق: عملٌ بلا تاريخ يُنتظر إلى
+      -- ما لا نهاية ولا يعرف أحد أنه تأخّر إلا حين يسأل المريض وهو على الكرسي.
+      CREATE TABLE IF NOT EXISTS lab_orders (
+        id           SERIAL PRIMARY KEY,
+        patient_id   INTEGER     NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        lab_name     TEXT        NOT NULL,
+        lab_phone    TEXT,
+        work_type    TEXT        NOT NULL,
+        details      TEXT,
+        sent_date    DATE        NOT NULL DEFAULT CURRENT_DATE,
+        due_date     DATE        NOT NULL,
+        status       TEXT        NOT NULL DEFAULT 'sent',
+        received_at  TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ,
+        note         TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS lab_orders_status_idx ON lab_orders (status, due_date);
+      CREATE INDEX IF NOT EXISTS lab_orders_patient_idx ON lab_orders (patient_id);
+
       CREATE TABLE IF NOT EXISTS users (
         id            SERIAL PRIMARY KEY,
         username      TEXT        NOT NULL UNIQUE,
@@ -960,4 +980,146 @@ export async function updatePatient(id: number, input: {
     ],
   );
   return rows[0] ? toPatient(rows[0]) : null;
+}
+
+// ─── أعمال المختبر ───────────────────────────────────────────────────────────
+
+import type { LabOrder, LabOrderStatus } from "./lab";
+
+interface LabOrderRow {
+  id: number;
+  patient_id: number;
+  full_name: string;
+  phone: string | null;
+  lab_name: string;
+  lab_phone: string | null;
+  work_type: string;
+  details: string | null;
+  sent_date: Date;
+  due_date: Date;
+  status: string;
+  received_at: Date | null;
+  delivered_at: Date | null;
+  note: string | null;
+}
+
+/** التاريخ من مكوّناته المحلية لا بـ toISOString — نفس فخ اليوم السابق. */
+function dateText(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function toLabOrder(row: LabOrderRow): LabOrder {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    patientName: row.full_name,
+    patientPhone: row.phone,
+    labName: row.lab_name,
+    labPhone: row.lab_phone,
+    workType: row.work_type,
+    details: row.details,
+    sentDate: dateText(row.sent_date),
+    dueDate: dateText(row.due_date),
+    status: row.status as LabOrderStatus,
+    receivedAt: row.received_at ? row.received_at.toISOString() : null,
+    deliveredAt: row.delivered_at ? row.delivered_at.toISOString() : null,
+    note: row.note,
+  };
+}
+
+const LAB_SELECT = `
+  SELECT l.id, l.patient_id, p.full_name, p.phone, l.lab_name, l.lab_phone, l.work_type,
+         l.details, l.sent_date, l.due_date, l.status, l.received_at, l.delivered_at, l.note
+    FROM lab_orders l JOIN patients p ON p.id = l.patient_id`;
+
+/**
+ * الأعمال المفتوحة وما أُنجز حديثًا.
+ *
+ * ما سُلّم قبل شهور لا يُحمَّل: القائمة أداة عمل يومية لا أرشيفًا، وصفحة تُحمّل مئات
+ * الصفوف على هاتف الاستقبال تُفتح مرة ثم تُهجَر. الأرشيف الكامل يظهر في ملف المريض.
+ */
+export async function listLabOrders(): Promise<LabOrder[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<LabOrderRow>(
+    `${LAB_SELECT}
+      WHERE l.status IN ('sent', 'received')
+         OR l.delivered_at > NOW() - INTERVAL '30 days'
+      ORDER BY l.due_date ASC
+      LIMIT 300`,
+  );
+  return rows.map(toLabOrder);
+}
+
+export async function createLabOrder(input: {
+  patientId: number;
+  labName: string;
+  labPhone: string | null;
+  workType: string;
+  details: string | null;
+  sentDate: string;
+  dueDate: string;
+  note: string | null;
+}): Promise<LabOrder | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO lab_orders (patient_id, lab_name, lab_phone, work_type, details, sent_date, due_date, note)
+     VALUES ($1, $2, $3::text, $4, $5::text, $6::date, $7::date, $8::text) RETURNING id`,
+    [
+      input.patientId, input.labName, input.labPhone, input.workType,
+      input.details, input.sentDate, input.dueDate, input.note,
+    ],
+  );
+  const { rows: full } = await getPool().query<LabOrderRow>(`${LAB_SELECT} WHERE l.id = $1`, [rows[0].id]);
+  return full[0] ? toLabOrder(full[0]) : null;
+}
+
+/**
+ * ينقل العمل بين حالاته، ولا يسمح بقفزة إلى الوراء.
+ *
+ * الشرط على الحالة الحالية داخل الاستعلام: ضغطتان على «وصل» من جهازين — الاستقبال
+ * على الشاشة والطبيب على هاتفه — كانتا ستكتبان تاريخ وصول ثانيًا يمحو الأول، فيبدو
+ * العمل كأنه وصل اليوم وهو واصل منذ ثلاثة أيام.
+ */
+export async function setLabOrderStatus(id: number, status: LabOrderStatus): Promise<LabOrder | null> {
+  await ensureSchema();
+  const allowedFrom: Record<LabOrderStatus, string[]> = {
+    sent: ["received"],
+    received: ["sent"],
+    delivered: ["received"],
+    cancelled: ["sent", "received"],
+  };
+  const { rows } = await getPool().query<{ id: number }>(
+    `UPDATE lab_orders SET
+       status = $2,
+       received_at  = CASE WHEN $2 = 'received'  THEN NOW() ELSE received_at  END,
+       delivered_at = CASE WHEN $2 = 'delivered' THEN NOW() ELSE delivered_at END
+     WHERE id = $1 AND status = ANY($3::text[])
+     RETURNING id`,
+    [id, status, allowedFrom[status]],
+  );
+  if (!rows[0]) return null;
+  const { rows: full } = await getPool().query<LabOrderRow>(`${LAB_SELECT} WHERE l.id = $1`, [id]);
+  return full[0] ? toLabOrder(full[0]) : null;
+}
+
+/** يؤجّل موعد التسليم حين يعد المختبر بموعد جديد — بلا هذا يبقى «متأخرًا» بلا معنى. */
+export async function setLabOrderDueDate(id: number, dueDate: string): Promise<LabOrder | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ id: number }>(
+    `UPDATE lab_orders SET due_date = $2::date WHERE id = $1 AND status = 'sent' RETURNING id`,
+    [id, dueDate],
+  );
+  if (!rows[0]) return null;
+  const { rows: full } = await getPool().query<LabOrderRow>(`${LAB_SELECT} WHERE l.id = $1`, [id]);
+  return full[0] ? toLabOrder(full[0]) : null;
+}
+
+/** أسماء المختبرات المستخدمة سابقًا — تُختصر الكتابة وتمنع «النور» و«مختبر النور». */
+export async function listLabNames(): Promise<{ labName: string; labPhone: string | null }[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ lab_name: string; lab_phone: string | null }>(
+    `SELECT lab_name, MAX(lab_phone) AS lab_phone FROM lab_orders
+      GROUP BY lab_name ORDER BY MAX(created_at) DESC LIMIT 10`,
+  );
+  return rows.map((row) => ({ labName: row.lab_name, labPhone: row.lab_phone }));
 }

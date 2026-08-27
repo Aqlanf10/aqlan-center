@@ -44,23 +44,6 @@ export const MAX_DAYS_AHEAD = 60;
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-/**
- * تاريخ اليوم بتوقيت العيادة لا بتوقيت الخادم.
- *
- * الخادم يعمل بـ UTC، واليمن عند UTC+3: بعد التاسعة مساءً بتوقيت غرينتش يكون التاريخ
- * في تعز قد انتقل لليوم التالي. حساب «اليوم» بـ `toISOString` كان سيرفض طلب مريض
- * لموعد الغد مساءً بحجة أنه «تاريخ ماضٍ».
- */
-export function clinicDateString(now: Date, timeZone: string): string {
-  // `en-CA` تُخرج YYYY-MM-DD مباشرة، والمنطقة الزمنية هي المقصود من الدالة كلها.
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
-
 export type Validation =
   | { ok: true; value: BookingRequestInput }
   | { ok: false; message: string };

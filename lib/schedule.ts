@@ -41,6 +41,23 @@ export function toMinutes(time: string): number | null {
 }
 
 /**
+ * تاريخ اليوم بتوقيت العيادة لا بتوقيت الخادم.
+ *
+ * الخادم يعمل بـ UTC، واليمن عند UTC+3: بعد التاسعة مساءً بتوقيت غرينتش يكون التاريخ
+ * في تعز قد انتقل لليوم التالي. حساب «اليوم» بـ `toISOString` كان سيرفض طلب مريض
+ * لموعد الغد مساءً بحجة أنه «تاريخ ماضٍ».
+ */
+export function clinicDateString(now: Date, timeZone: string): string {
+  // `en-CA` تُخرج YYYY-MM-DD مباشرة، والمنطقة الزمنية هي المقصود من الدالة كلها.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/**
  * يضيف أيامًا إلى تاريخ YYYY-MM-DD بحساب تقويمي بحت.
  *
  * الحساب بـ`Date.UTC` لا بتاريخ محلي: الجمع المحلي عبر حدود التوقيت الصيفي يعيد

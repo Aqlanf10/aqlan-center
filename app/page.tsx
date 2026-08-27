@@ -66,6 +66,7 @@ export default function FlowBoard() {
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingRequests, setPendingRequests] = useState(0);
+  const [lateLabOrders, setLateLabOrders] = useState(0);
   // الزيارة التي انتهت للتو، معروضة لحجز جلستها القادمة والمريض ما زال واقفًا.
   const [justFinished, setJustFinished] = useState<Visit | null>(null);
   const [nextDate, setNextDate] = useState("");
@@ -91,10 +92,14 @@ export default function FlowBoard() {
     // عدّاد طلبات المرضى منفصل عن اللوحة ولا يُفشلها: طلب لم يصل عدده لا يمنع
     // الاستقبال من إدارة يومها، لكن طلبًا لا يراه أحد هو سبب الشكوى التي نعالجها.
     try {
-      const response = await fetch("/api/booking-requests?status=new", { cache: "no-store" });
-      if (response.ok) setPendingRequests(((await response.json()) as unknown[]).length);
+      const [requests, lab] = await Promise.all([
+        fetch("/api/booking-requests?status=new", { cache: "no-store" }),
+        fetch("/api/lab?summary=1", { cache: "no-store" }),
+      ]);
+      if (requests.ok) setPendingRequests(((await requests.json()) as unknown[]).length);
+      if (lab.ok) setLateLabOrders(Number(((await lab.json()) as { late?: number }).late ?? 0));
     } catch {
-      // لا شيء: العدّاد يبقى على آخر قيمة.
+      // لا شيء: العدّادان يبقيان على آخر قيمة.
     }
   }, []);
 
@@ -256,6 +261,17 @@ export default function FlowBoard() {
             {pendingRequests > 0 ? (
               <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
                 {pendingRequests}
+              </span>
+            ) : null}
+          </a>
+          <a
+            href="/lab"
+            className="relative rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+          >
+            المختبر
+            {lateLabOrders > 0 ? (
+              <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                {lateLabOrders}
               </span>
             ) : null}
           </a>

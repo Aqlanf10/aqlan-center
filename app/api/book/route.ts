@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { CLINIC_TIME_ZONE, countRecentRequests, createBookingRequest } from "@/lib/db";
-import { clinicDateString, validateBookingRequest } from "@/lib/booking";
+import { validateBookingRequest } from "@/lib/booking";
+import { clinicDateString } from "@/lib/schedule";
 
 export const dynamic = "force-dynamic";
 

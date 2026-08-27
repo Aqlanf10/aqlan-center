@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  clinicDateString,
-  confirmationText,
-  validateBookingRequest,
-} from "../lib/booking";
-import { addDays } from "../lib/schedule";
+import { confirmationText, validateBookingRequest } from "../lib/booking";
+import { addDays, clinicDateString } from "../lib/schedule";
 
 const TODAY = "2026-08-27";
 
