@@ -84,6 +84,7 @@ export const AP_ACCOUNT = "2101";
 export const REVENUE_ACCOUNT = "4101";
 export const DISCOUNT_ACCOUNT = "4201";
 export const CASH_DIFF_ACCOUNT = "5961";
+export const OPENING_EQUITY_ACCOUNT = "3101";
 
 /** حساب المصروف لكل تصنيف — القائمة الوحيدة التي تربط التشغيل بالمحاسبة. */
 export const EXPENSE_ACCOUNT: Record<string, string> = {
@@ -191,6 +192,38 @@ export function paymentEntry(input: {
     lines: [
       { accountCode: isRefund ? AR_ACCOUNT : cash, amountMinor: input.baseAmountMinor, side: "debit" },
       { accountCode: isRefund ? cash : AR_ACCOUNT, amountMinor: input.baseAmountMinor, side: "credit" },
+    ],
+  };
+}
+
+/**
+ * قيد الرصيد الافتتاحي لمريض.
+ *
+ * مدين ذمم المرضى، دائن رأس المال والأرصدة الافتتاحية.
+ *
+ * **الطرف الدائن حقوق ملكية لا إيراد** — وهذا هو بيت القصيد. الطريقة السهلة أن
+ * يُفتح للمريض «فاتورة سابقة» بقيمة ما عليه، فيدخل دَينٌ عمره سنتان في إيراد هذا
+ * الشهر: تظهر العيادة رابحة بملايين لم تكسبها في هذه الفترة، وتُحسب عليها عمولات
+ * أطباء عن عمل قديم دُفعت عمولته أصلًا، وتُبنى قرارات على ربح وهمي.
+ *
+ * الصحيح محاسبيًا أن الدَّين السابق **أصلٌ افتتاحي** جاء مع افتتاح الدفاتر لا كسبٌ
+ * تحقّق فيها. فيظهر في الميزانية ضمن ذمم المرضى، ولا يمسّ قائمة الدخل بشيء.
+ */
+export function openingBalanceEntry(input: {
+  patientId: number;
+  date: string;
+  patientName: string;
+  amountMinor: number;
+}): JournalEntry | null {
+  if (input.amountMinor <= 0) return null;
+  return {
+    source: "opening",
+    reference: `OB-${input.patientId}`,
+    date: input.date,
+    description: `رصيد افتتاحي — ${input.patientName}`,
+    lines: [
+      { accountCode: AR_ACCOUNT, amountMinor: input.amountMinor, side: "debit" },
+      { accountCode: OPENING_EQUITY_ACCOUNT, amountMinor: input.amountMinor, side: "credit" },
     ],
   };
 }

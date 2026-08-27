@@ -384,6 +384,20 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
       ALTER TABLE invoices ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
 
+      -- الأرصدة الافتتاحية للمرضى: ما كان على المريض **قبل** تشغيل النظام.
+      -- صفٌّ واحد لكل مريض عمدًا: الرصيد الافتتاحي واقعة واحدة لا سجلّ حركات، وتعدّد
+      -- الصفوف يجعل «كم كان عليه يوم البدء» سؤالًا بأكثر من جواب.
+      CREATE TABLE IF NOT EXISTS patient_opening_balances (
+        patient_id   INTEGER     PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+        amount_minor BIGINT      NOT NULL CHECK (amount_minor > 0),
+        as_of_date   DATE        NOT NULL,
+        note         TEXT,
+        created_by   TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS opening_balances_date_idx ON patient_opening_balances (as_of_date);
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -2188,13 +2202,14 @@ export async function recordPayment(input: {
 
 /** رصيد المريض: الفواتير والدفعات معًا، لأن الرقم لا يُقرأ من أحدهما وحده. */
 export async function patientLedger(patientId: number): Promise<{
-  invoices: Invoice[]; payments: Payment[];
+  invoices: Invoice[]; payments: Payment[]; opening: OpeningBalance | null;
 }> {
-  const [invoices, payments] = await Promise.all([
+  const [invoices, payments, opening] = await Promise.all([
     listPatientInvoices(patientId),
     listPatientPayments(patientId),
+    getPatientOpeningBalance(patientId),
   ]);
-  return { invoices, payments };
+  return { invoices, payments, opening };
 }
 
 /** يحوّل صفوف الدفعات إلى الشكل الذي تفهمه حسابات `lib/money`. */
@@ -2452,12 +2467,13 @@ export async function commissionReport(from: string, to: string): Promise<Commis
     ),
     pool.query<{
       patient_id: number; invoice_id: number; net_minor: string; created_at: Date;
-      doctor_id: number | null; share_minor: string;
+      clinic_date: Date; doctor_id: number | null; share_minor: string;
     }>(
       `SELECT i.patient_id,
               i.id AS invoice_id,
               GREATEST(0, i.total_minor - i.discount_minor) AS net_minor,
               i.created_at,
+              (i.created_at AT TIME ZONE $1)::date AS clinic_date,
               it.doctor_id,
               COALESCE(SUM(it.total_minor), 0) AS share_minor
          FROM invoices i
@@ -2468,7 +2484,7 @@ export async function commissionReport(from: string, to: string): Promise<Commis
                  WHERE status <> 'cancelled'
                    AND (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
               )
-        GROUP BY i.patient_id, i.id, i.total_minor, i.discount_minor, i.created_at, it.doctor_id`,
+        GROUP BY i.patient_id, i.id, i.total_minor, i.discount_minor, i.created_at, clinic_date, it.doctor_id`,
       [CLINIC_TIME_ZONE, from, to],
     ),
     pool.query<{ party_id: number; paid: string }>(
@@ -2486,7 +2502,9 @@ export async function commissionReport(from: string, to: string): Promise<Commis
 
   // تجميع الفواتير لكل مريض مع حصص الأطباء فيها.
   const byPatient = new Map<number, Map<number, CommissionInvoice>>();
+  const clinicDateOfInvoice = new Map<number, string>();
   for (const row of invoiceRows) {
+    clinicDateOfInvoice.set(row.invoice_id, dateText(row.clinic_date));
     const patientInvoices = byPatient.get(row.patient_id) ?? new Map<number, CommissionInvoice>();
     const invoice = patientInvoices.get(row.invoice_id) ?? {
       id: row.invoice_id,
@@ -2513,14 +2531,31 @@ export async function commissionReport(from: string, to: string): Promise<Commis
     for (const row of rows) collectedByPatient.set(row.patient_id, toMinor(row.collected));
   }
 
-  const fromStamp = `${from}T00:00:00.000Z`;
-  const toStamp = `${to}T23:59:59.999Z`;
+  // التحصيل يُغطّي الأقدم أولًا، والرصيد الافتتاحي أقدم من كل فاتورة في هذا النظام.
+  // فما دخل منه على دَينٍ سابق **لا عمولة عليه**: عمله تمّ قبل النظام وعمولته صُرفت
+  // في حينها، وصرفها ثانية دفعٌ مرتين عن عمل واحد.
+  const openingByPatient = await openingBalanceAmounts(patientIds);
+  for (const [patientId, collected] of collectedByPatient) {
+    const opening = openingByPatient.get(patientId) ?? 0;
+    if (opening > 0) collectedByPatient.set(patientId, Math.max(0, collected - opening));
+  }
+
+  // فواتير المدى تُنتقى **بيوم العيادة** لا بيوم التوقيت العالمي.
+  //
+  // كان الانتقاء بمقارنة الطابع الزمني بـ`YYYY-MM-DDT00:00Z`، واليمن UTC+3: فحالةٌ
+  // سُجّلت الواحدة ليلًا يومها العيادي هو اليوم نفسه لكن طابعها العالمي في اليوم
+  // السابق، فتسقط من عمولة الطبيب بلا أثر — والفرق بين استعلام SQL يصفّي بيوم
+  // العيادة وفلترٍ في الذاكرة يصفّي بيوم UTC هو بالضبط ما يجعل الخلل صامتًا.
+  const inRange = (invoiceId: number): boolean => {
+    const day = clinicDateOfInvoice.get(invoiceId);
+    return day !== undefined && day >= from && day <= to;
+  };
   const perPatient = patientIds.map((patientId) =>
     commissionForPatient(
       [...(byPatient.get(patientId) ?? new Map()).values()],
       collectedByPatient.get(patientId) ?? 0,
       percentByDoctor,
-      (invoice) => invoice.createdAt >= fromStamp && invoice.createdAt <= toStamp,
+      (invoice) => inRange(invoice.id),
     ),
   );
 
@@ -2547,6 +2582,8 @@ export interface DebtRow {
   patientName: string;
   phone: string | null;
   billedMinor: number;
+  /** ما كان عليه قبل تشغيل النظام — دَينٌ حقيقي وإن لم تكن له فاتورة هنا. */
+  openingMinor: number;
   collectedMinor: number;
   dueMinor: number;
   /** أقدم فاتورة غير مغطّاة — عليها يقوم عمر الدين. */
@@ -2565,7 +2602,7 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
   await ensureSchema();
   const { rows } = await getPool().query<{
     patient_id: number; full_name: string; phone: string | null;
-    billed: string; collected: string; oldest: Date | null;
+    billed: string; opening: string; collected: string; oldest: Date | null;
   }>(
     `WITH billed AS (
        SELECT patient_id,
@@ -2579,13 +2616,17 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
      )
      SELECT p.id AS patient_id, p.full_name, p.phone,
             COALESCE(b.amount, 0) AS billed,
+            COALESCE(o.amount_minor, 0) AS opening,
             COALESCE(c.amount, 0) AS collected,
-            b.oldest
+            -- عمر الدين من أقدم ما عليه: والرصيد الافتتاحي أقدم من أي فاتورة هنا.
+            -- LEAST في بوستجرس يتجاهل القيم الفارغة، فمن لا افتتاحي له لا يتأثر.
+            LEAST(b.oldest, o.as_of_date::timestamptz) AS oldest
        FROM patients p
        LEFT JOIN billed b ON b.patient_id = p.id
        LEFT JOIN collected c ON c.patient_id = p.id
-      WHERE COALESCE(b.amount, 0) - COALESCE(c.amount, 0) >= $1
-      ORDER BY (COALESCE(b.amount, 0) - COALESCE(c.amount, 0)) DESC
+       LEFT JOIN patient_opening_balances o ON o.patient_id = p.id
+      WHERE COALESCE(b.amount, 0) + COALESCE(o.amount_minor, 0) - COALESCE(c.amount, 0) >= $1
+      ORDER BY (COALESCE(b.amount, 0) + COALESCE(o.amount_minor, 0) - COALESCE(c.amount, 0)) DESC
       LIMIT 500`,
     [minDueMinor],
   );
@@ -2598,8 +2639,9 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
       patientName: row.full_name,
       phone: row.phone,
       billedMinor: toMinor(row.billed),
+      openingMinor: toMinor(row.opening),
       collectedMinor: toMinor(row.collected),
-      dueMinor: toMinor(row.billed) - toMinor(row.collected),
+      dueMinor: toMinor(row.billed) + toMinor(row.opening) - toMinor(row.collected),
       oldestUnpaidDate: oldest,
       ageDays: oldest ? Math.max(0, Math.floor((now - Date.parse(oldest)) / 86_400_000)) : 0,
     };
@@ -2930,6 +2972,7 @@ import {
   expenseEntry,
   invoiceEntry,
   isBalanced,
+  openingBalanceEntry,
   payableEntry,
   paymentEntry,
   type JournalEntry,
@@ -2952,7 +2995,7 @@ export async function journalEntries(from: string, to: string): Promise<JournalE
   await ensureSchema();
   const pool = getPool();
 
-  const [invoices, payments, expenses, payables, shifts, manual] = await Promise.all([
+  const [invoices, payments, expenses, payables, shifts, manual, openings] = await Promise.all([
     pool.query<{
       invoice_number: string; created_at: Date; full_name: string;
       total_minor: string; discount_minor: string; status: string;
@@ -3004,6 +3047,12 @@ export async function journalEntries(from: string, to: string): Promise<JournalE
          FROM journal_manual m JOIN journal_manual_lines l ON l.entry_id = m.id
         WHERE m.entry_date BETWEEN $1::date AND $2::date
         ORDER BY m.id, l.id`,
+      [from, to],
+    ),
+    pool.query<{ patient_id: number; full_name: string; amount_minor: string; as_of_date: Date }>(
+      `SELECT o.patient_id, p.full_name, o.amount_minor, o.as_of_date
+         FROM patient_opening_balances o JOIN patients p ON p.id = o.patient_id
+        WHERE o.as_of_date BETWEEN $1::date AND $2::date`,
       [from, to],
     ),
   ]);
@@ -3080,6 +3129,16 @@ export async function journalEntries(from: string, to: string): Promise<JournalE
     }
   }
 
+  // الأرصدة الافتتاحية للمرضى — أصلٌ جاء مع افتتاح الدفاتر لا إيراد الفترة.
+  for (const row of openings.rows) {
+    entries.push(openingBalanceEntry({
+      patientId: row.patient_id,
+      date: dateText(row.as_of_date),
+      patientName: row.full_name,
+      amountMinor: toMinor(row.amount_minor),
+    }));
+  }
+
   // القيود اليدوية.
   const manualById = new Map<number, JournalEntry>();
   for (const row of manual.rows) {
@@ -3148,6 +3207,121 @@ export async function isPeriodLocked(date: string): Promise<boolean> {
   const lockedBefore = (settings["finance.locked_before"] ?? "").trim();
   if (!lockedBefore) return false;
   return date < lockedBefore;
+}
+
+// ─── الأرصدة الافتتاحية للمرضى ───────────────────────────────────────────────
+
+/**
+ * الرصيد الافتتاحي: ما كان على المريض **قبل** تشغيل النظام.
+ *
+ * بلا هذا يبدأ كل مريض من صفر يوم التشغيل، فتضيع مديونية سنوات كاملة في يوم واحد —
+ * وهو أسوأ ما يمكن أن يفعله نظام جديد بعيادة قائمة. والبديل الشائع — فتح «فاتورة
+ * سابقة» بقيمة الدَّين — أسوأ: يدخل دينٌ قديم في إيراد هذا الشهر، فتظهر أرباح لم
+ * تتحقق وتُحسب عمولات عن عمل قديم دُفعت عمولته أصلًا.
+ *
+ * فهو هنا **بندٌ مستقل**: يدخل حساب المريض ومديونيته، ويُقيَّد أصلًا افتتاحيًا مقابل
+ * حقوق الملكية، ولا يمسّ الإيراد ولا العمولات بشيء.
+ */
+export interface OpeningBalance {
+  patientId: number;
+  patientName: string;
+  phone: string | null;
+  amountMinor: number;
+  asOfDate: string;
+  note: string | null;
+  createdBy: string | null;
+  updatedAt: string;
+}
+
+interface OpeningRow {
+  patient_id: number; full_name: string; phone: string | null;
+  amount_minor: string; as_of_date: Date; note: string | null;
+  created_by: string | null; updated_at: Date;
+}
+
+const toOpeningBalance = (row: OpeningRow): OpeningBalance => ({
+  patientId: row.patient_id,
+  patientName: row.full_name,
+  phone: row.phone,
+  amountMinor: toMinor(row.amount_minor),
+  asOfDate: dateText(row.as_of_date),
+  note: row.note,
+  createdBy: row.created_by,
+  updatedAt: row.updated_at.toISOString(),
+});
+
+const OPENING_SELECT = `SELECT o.patient_id, p.full_name, p.phone, o.amount_minor,
+                               o.as_of_date, o.note, o.created_by, o.updated_at
+                          FROM patient_opening_balances o
+                          JOIN patients p ON p.id = o.patient_id`;
+
+export async function getPatientOpeningBalance(patientId: number): Promise<OpeningBalance | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<OpeningRow>(
+    `${OPENING_SELECT} WHERE o.patient_id = $1`,
+    [patientId],
+  );
+  return rows[0] ? toOpeningBalance(rows[0]) : null;
+}
+
+export async function listOpeningBalances(): Promise<OpeningBalance[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<OpeningRow>(
+    `${OPENING_SELECT} ORDER BY o.amount_minor DESC LIMIT 500`,
+  );
+  return rows.map(toOpeningBalance);
+}
+
+/** أرصدة افتتاحية لمجموعة مرضى — للتقارير التي تقرأ مئات الصفوف بلا استعلام لكل صف. */
+export async function openingBalanceAmounts(patientIds: number[]): Promise<Map<number, number>> {
+  if (patientIds.length === 0) return new Map();
+  await ensureSchema();
+  const { rows } = await getPool().query<{ patient_id: number; amount_minor: string }>(
+    `SELECT patient_id, amount_minor FROM patient_opening_balances WHERE patient_id = ANY($1::int[])`,
+    [patientIds],
+  );
+  return new Map(rows.map((row) => [row.patient_id, toMinor(row.amount_minor)]));
+}
+
+/**
+ * إثبات الرصيد الافتتاحي أو تصحيحه.
+ *
+ * صفٌّ واحد لكل مريض: إعادة الإدخال **تصحيح** لا إضافة، لأن رصيدًا افتتاحيًا يُدخل
+ * مرتين بالخطأ يضاعف دَين المريض بصمت — وهو خطأ يقع كثيرًا يوم إدخال البيانات
+ * القديمة حين يعمل أكثر من شخص على الملفات نفسها.
+ */
+export async function setPatientOpeningBalance(input: {
+  patientId: number;
+  amountMinor: number;
+  asOfDate: string;
+  note: string | null;
+  createdBy: string;
+}): Promise<OpeningBalance | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ patient_id: number }>(
+    `INSERT INTO patient_opening_balances
+       (patient_id, amount_minor, as_of_date, note, created_by)
+     SELECT $1, $2, $3::date, $4, $5
+      WHERE EXISTS (SELECT 1 FROM patients WHERE id = $1)
+     ON CONFLICT (patient_id) DO UPDATE
+        SET amount_minor = EXCLUDED.amount_minor,
+            as_of_date   = EXCLUDED.as_of_date,
+            note         = EXCLUDED.note,
+            created_by   = EXCLUDED.created_by,
+            updated_at   = NOW()
+     RETURNING patient_id`,
+    [input.patientId, input.amountMinor, input.asOfDate, input.note, input.createdBy],
+  );
+  return rows[0] ? getPatientOpeningBalance(rows[0].patient_id) : null;
+}
+
+export async function clearPatientOpeningBalance(patientId: number): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `DELETE FROM patient_opening_balances WHERE patient_id = $1`,
+    [patientId],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 // ─── خطط العلاج والأقساط ─────────────────────────────────────────────────────

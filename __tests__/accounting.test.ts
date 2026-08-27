@@ -12,6 +12,8 @@ import {
   incomeStatement,
   invoiceEntry,
   isBalanced,
+  OPENING_EQUITY_ACCOUNT,
+  openingBalanceEntry,
   payableEntry,
   paymentEntry,
   trialBalance,
@@ -166,6 +168,38 @@ describe("القوائم المالية", () => {
     expect(sheet.totalLiabilitiesMinor).toBe(15000); // ذمم موردين
     expect(sheet.equityMinor).toBe(47000);           // الربح
     expect(sheet.differenceMinor).toBe(0);
+  });
+
+  it("يقيّد الرصيد الافتتاحي أصلًا مقابل حقوق الملكية لا إيرادًا", () => {
+    // الطريقة السهلة أن يُفتح للمريض «فاتورة سابقة»، فيدخل دَينٌ عمره سنتان في
+    // إيراد هذا الشهر: أرباح لم تتحقق، وعمولات عن عمل قديم دُفعت عمولته أصلًا.
+    const entry = openingBalanceEntry({
+      patientId: 7, date: DATE, patientName: "سعيد", amountMinor: 120000,
+    });
+    expect(entry).not.toBeNull();
+    expect(isBalanced(entry!)).toBe(true);
+    expect(entry!.lines).toContainEqual({
+      accountCode: AR_ACCOUNT, amountMinor: 120000, side: "debit",
+    });
+    expect(entry!.lines).toContainEqual({
+      accountCode: OPENING_EQUITY_ACCOUNT, amountMinor: 120000, side: "credit",
+    });
+    // لا يمسّ الإيراد بشيء.
+    expect(entry!.lines.some((line) => line.accountCode === REVENUE_ACCOUNT)).toBe(false);
+
+    const statement = incomeStatement(trialBalance([entry!]));
+    expect(statement.revenueMinor).toBe(0);
+    expect(statement.netProfitMinor).toBe(0);
+
+    const sheet = balanceSheet(trialBalance([entry!]));
+    expect(sheet.totalAssetsMinor).toBe(120000);
+    expect(sheet.differenceMinor).toBe(0);
+  });
+
+  it("يرفض الرصيد الافتتاحي غير الموجب", () => {
+    expect(openingBalanceEntry({
+      patientId: 7, date: DATE, patientName: "سعيد", amountMinor: 0,
+    })).toBeNull();
   });
 
   it("تظل متوازنة بعد قيد رصيد افتتاحي", () => {

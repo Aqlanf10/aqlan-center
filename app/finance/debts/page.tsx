@@ -18,7 +18,7 @@ import { toWhatsAppNumber } from "@/lib/reminders";
 
 interface DebtRow {
   patientId: number; patientName: string; phone: string | null;
-  billedMinor: number; collectedMinor: number; dueMinor: number;
+  billedMinor: number; openingMinor: number; collectedMinor: number; dueMinor: number;
   oldestUnpaidDate: string | null; ageDays: number;
 }
 
@@ -82,6 +82,7 @@ export default function DebtsPage() {
         <nav className="mt-2 flex flex-wrap gap-1.5">
           <a href="/finance" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الصندوق</a>
           <a href="/finance/reports" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">التقرير</a>
+          <a href="/finance/opening" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الأرصدة الافتتاحية</a>
         </nav>
       </header>
 
@@ -134,6 +135,7 @@ export default function DebtsPage() {
                   </a>
                   <p className="text-[11px] text-slate-500">
                     مفوتر {formatMoney(row.billedMinor, base)} · محصّل {formatMoney(row.collectedMinor, base)}
+                    {row.openingMinor > 0 ? ` · افتتاحي ${formatMoney(row.openingMinor, base)}` : ""}
                     {row.ageDays > 0 ? ` · منذ ${row.ageDays} يومًا` : ""}
                   </p>
                 </div>

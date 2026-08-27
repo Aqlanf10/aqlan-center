@@ -132,6 +132,8 @@ export function collectedBase(payments: PaymentLike[]): number {
 export interface Balance {
   billedMinor: number;
   collectedMinor: number;
+  /** ما كان على المريض قبل بدء النظام — دَينٌ حقيقي لا فاتورة في هذا النظام. */
+  openingMinor: number;
   /** موجب = على المريض، سالب = له عندنا. */
   dueMinor: number;
 }
@@ -142,11 +144,24 @@ export interface Balance {
  * الرقم الذي يُسأل عنه على الباب. سالبًا يعني أن للمريض رصيدًا عندنا — وهي حالة
  * حقيقية تحدث عند الاسترداد أو الدفع المقدّم، وإخفاؤها بجعل الأدنى صفرًا يعني أن
  * تضيع أموال المرضى بصمت.
+ *
+ * والرصيد الافتتاحي يدخل الحساب كما تدخله الفاتورة: من كان عليه مئة ألف قبل تشغيل
+ * النظام لا يصير حسابه صفرًا لأن النظام جديد. لكنه يبقى **بندًا مستقلًا** لا يُخلط
+ * بالمفوتر، لأنه ليس إيراد هذه الفترة ولا يستحق عليه عمولة.
  */
-export function patientBalance(invoices: InvoiceLike[], payments: PaymentLike[]): Balance {
+export function patientBalance(
+  invoices: InvoiceLike[],
+  payments: PaymentLike[],
+  openingMinor = 0,
+): Balance {
   const billedMinor = invoices.reduce((total, invoice) => total + invoiceNet(invoice), 0);
   const collectedMinor = collectedBase(payments);
-  return { billedMinor, collectedMinor, dueMinor: billedMinor - collectedMinor };
+  return {
+    billedMinor,
+    collectedMinor,
+    openingMinor,
+    dueMinor: openingMinor + billedMinor - collectedMinor,
+  };
 }
 
 /** «على المريض 12,500 ر.ي» / «للمريض 3,000 ر.ي» / «الحساب مسدّد». */

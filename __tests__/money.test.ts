@@ -70,6 +70,29 @@ describe("رصيد المريض", () => {
     expect(balanceText(balance, "YER")).toBe("على المريض 25,000 ر.ي");
   });
 
+  it("يضمّ الرصيد الافتتاحي إلى الحساب ويُبقيه بندًا مستقلًا", () => {
+    // من كان عليه مئة ألف قبل التشغيل لا يصير حسابه صفرًا لأن النظام جديد. لكنه
+    // يبقى منفصلًا عن المفوتر: ليس إيراد هذه الفترة ولا عمولة عليه.
+    const balance = patientBalance(
+      [{ totalMinor: 50000, discountMinor: 0, status: "open" }],
+      [payment({ baseAmountMinor: 20000 })],
+      100000,
+    );
+    expect(balance.openingMinor).toBe(100000);
+    expect(balance.billedMinor).toBe(50000);
+    expect(balance.dueMinor).toBe(130000);
+    expect(balanceText(balance, "YER")).toBe("على المريض 130,000 ر.ي");
+  });
+
+  it("يبقى المفوتر وحده بلا رصيد افتتاحي", () => {
+    const balance = patientBalance(
+      [{ totalMinor: 50000, discountMinor: 0, status: "open" }],
+      [],
+    );
+    expect(balance.openingMinor).toBe(0);
+    expect(balance.dueMinor).toBe(50000);
+  });
+
   it("يُظهر رصيد المريض عندنا سالبًا بدل إخفائه", () => {
     // إخفاؤه بجعل الأدنى صفرًا يعني أن تضيع أموال المرضى بصمت.
     const balance = patientBalance(

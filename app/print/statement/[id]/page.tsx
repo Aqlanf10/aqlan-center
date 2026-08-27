@@ -40,6 +40,7 @@ export default async function StatementPage({ params }: { params: Promise<{ id: 
       status: invoice.status,
     })),
     asPaymentLikes(ledger.payments),
+    ledger.opening?.amountMinor ?? 0,
   );
 
   return (
@@ -57,6 +58,15 @@ export default async function StatementPage({ params }: { params: Promise<{ id: 
           <span className="num" dir="ltr">{patient.patientNumber}</span>
         </div>
         <div className="rule" />
+
+        {ledger.opening ? (
+          <div className="line">
+            <span>رصيد افتتاحي — ما كان على المريض قبل بدء العمل بالبرنامج
+              {ledger.opening.note ? ` (${ledger.opening.note})` : ""}
+            </span>
+            <span className="num">{formatMoney(ledger.opening.amountMinor, base)}</span>
+          </div>
+        ) : null}
 
         <p style={{ fontSize: "10pt", fontWeight: 700, margin: "2mm 0" }}>الفواتير</p>
         <table className="items">
@@ -109,6 +119,12 @@ export default async function StatementPage({ params }: { params: Promise<{ id: 
         </table>
 
         <div style={{ marginTop: "5mm" }}>
+          {balance.openingMinor > 0 ? (
+            <div className="line">
+              <span>رصيد افتتاحي</span>
+              <span className="num">{formatMoney(balance.openingMinor, base)}</span>
+            </div>
+          ) : null}
           <div className="line">
             <span>إجمالي المفوتر</span>
             <span className="num">{formatMoney(balance.billedMinor, base)}</span>

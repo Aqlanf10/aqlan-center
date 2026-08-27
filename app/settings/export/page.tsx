@@ -21,6 +21,7 @@ const TABLES: { key: string; label: string; dated: boolean; hint?: string }[] = 
   { key: "expenses", label: "سندات الصرف", dated: true },
   { key: "payables", label: "الالتزامات", dated: true },
   { key: "lab_orders", label: "أعمال المختبر", dated: true },
+  { key: "opening_balances", label: "الأرصدة الافتتاحية", dated: true, hint: "ما كان على المرضى قبل بدء النظام" },
   { key: "journal", label: "دفتر اليومية", dated: true, hint: "كل القيود بطرفيها — للمحاسب" },
 ];
 

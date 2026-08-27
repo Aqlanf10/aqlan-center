@@ -22,7 +22,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   }
 
   try {
-    const [{ invoices, payments }, settings] = await Promise.all([patientLedger(id), getSettings()]);
+    const [{ invoices, payments, opening }, settings] = await Promise.all([
+      patientLedger(id),
+      getSettings(),
+    ]);
     const base = settings["finance.base_currency"];
     if (!isCurrency(base)) {
       return NextResponse.json({ message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 });
@@ -34,8 +37,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         status: invoice.status,
       })),
       asPaymentLikes(payments),
+      opening?.amountMinor ?? 0,
     );
-    return NextResponse.json({ invoices, payments, balance, baseCurrency: base });
+    return NextResponse.json({ invoices, payments, opening, balance, baseCurrency: base });
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل حساب المريض." }, { status: 500 });
   }

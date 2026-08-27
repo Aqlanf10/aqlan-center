@@ -13,6 +13,8 @@ import {
   type Currency,
 } from "@/lib/money";
 import { useSetting } from "./SettingsProvider";
+import { useSession } from "./SessionProvider";
+import { isAdmin } from "@/lib/roles";
 import { friendlyDateLong } from "@/lib/reminders";
 
 /**
@@ -33,7 +35,13 @@ interface Payment {
   amountMinor: number; currency: Currency; exchangeRate: number; baseAmountMinor: number;
   method: string; note: string | null; createdAt: string;
 }
-interface Ledger { invoices: Invoice[]; payments: Payment[]; balance: Balance; baseCurrency: Currency }
+interface OpeningBalance {
+  patientId: number; amountMinor: number; asOfDate: string; note: string | null;
+}
+interface Ledger {
+  invoices: Invoice[]; payments: Payment[]; opening: OpeningBalance | null;
+  balance: Balance; baseCurrency: Currency;
+}
 
 const STATUS_LABEL: Record<Invoice["status"], string> = {
   open: "مفتوحة", paid: "مسدّدة", cancelled: "ملغاة",
@@ -48,8 +56,10 @@ export function PatientLedger({ patientId }: { patientId: number }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<"none" | "invoice" | "payment">("none");
+  const [mode, setMode] = useState<"none" | "invoice" | "payment" | "opening">("none");
   const [lastReceiptId, setLastReceiptId] = useState<number | null>(null);
+  const session = useSession();
+  const admin = isAdmin(session?.role);
 
   const base = ledger?.baseCurrency ?? fallbackBase;
 
@@ -111,6 +121,9 @@ export function PatientLedger({ patientId }: { patientId: number }) {
           <p className="text-xl font-extrabold">{balanceText(ledger.balance, base)}</p>
           <p className="mt-1 text-[11px] font-bold text-slate-500">
             مفوتر {formatMoney(ledger.balance.billedMinor, base)} · محصّل {formatMoney(ledger.balance.collectedMinor, base)}
+            {ledger.balance.openingMinor > 0
+              ? ` · رصيد افتتاحي ${formatMoney(ledger.balance.openingMinor, base)}`
+              : ""}
           </p>
         </div>
       ) : null}
@@ -128,6 +141,12 @@ export function PatientLedger({ patientId }: { patientId: number }) {
           className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-navy-800">
           كشف حساب
         </a>
+        {admin ? (
+          <button onClick={() => setMode(mode === "opening" ? "none" : "opening")}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-navy-800">
+            {mode === "opening" ? "إغلاق" : ledger?.opening ? "تعديل الرصيد الافتتاحي" : "رصيد افتتاحي"}
+          </button>
+        ) : null}
       </div>
 
       {lastReceiptId ? (
@@ -163,6 +182,25 @@ export function PatientLedger({ patientId }: { patientId: number }) {
               body: JSON.stringify({ patientId, ...body }),
             })) as { id?: number } | null;
             if (created?.id) { setLastReceiptId(created.id); setMode("none"); }
+          }}
+        />
+      ) : null}
+
+      {mode === "opening" && admin ? (
+        <OpeningForm
+          base={base} busy={busy} existing={ledger?.opening ?? null}
+          onSubmit={async (body) => {
+            const saved = await send(() => fetch("/api/opening-balances", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ patientId, ...body }),
+            }));
+            if (saved) setMode("none");
+          }}
+          onClear={async () => {
+            const cleared = await send(() => fetch(
+              `/api/opening-balances?patientId=${patientId}`, { method: "DELETE" },
+            ));
+            if (cleared) setMode("none");
           }}
         />
       ) : null}
@@ -442,6 +480,67 @@ function PaymentForm({ base, busy, invoices, onSubmit }: {
       >
         {kind === "refund" ? "سجّل الاسترداد" : "سجّل الدفعة واطبع السند"}
       </button>
+    </section>
+  );
+}
+
+/**
+ * الرصيد الافتتاحي: ما كان على المريض قبل تشغيل النظام.
+ *
+ * شاشة صغيرة عمدًا وللمدير وحده — تُستعمل أيام إدخال البيانات القديمة ثم لا تكاد
+ * تُفتح. والتاريخ حقلٌ لأنه هو ما يُؤرّخ به القيد وعمر الدَّين: «الأول من الشهر»
+ * ليس كـ«قبل سنتين» في قائمة المتأخرين.
+ */
+function OpeningForm({ base, busy, existing, onSubmit, onClear }: {
+  base: Currency;
+  busy: boolean;
+  existing: { amountMinor: number; asOfDate: string; note: string | null } | null;
+  onSubmit: (body: Record<string, unknown>) => void;
+  onClear: () => void;
+}) {
+  const [amount, setAmount] = useState(
+    existing ? formatAmount(existing.amountMinor, base) : "",
+  );
+  const [asOfDate, setAsOfDate] = useState(existing?.asOfDate ?? "");
+  const [note, setNote] = useState(existing?.note ?? "");
+
+  return (
+    <section className="mb-4 rounded-2xl border border-slate-300 bg-white p-4" aria-label="رصيد افتتاحي">
+      <h3 className="mb-1 text-sm font-bold">رصيد افتتاحي</h3>
+      <p className="mb-3 text-[11px] font-bold leading-5 text-slate-500">
+        ما كان على المريض <span className="text-navy-800">قبل</span> بدء العمل بالبرنامج.
+        يدخل حسابه ومديونيته، ولا يُحسب إيرادًا لهذه الفترة ولا عمولة عليه.
+      </p>
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input value={amount} onChange={(event) => setAmount(event.target.value)}
+          placeholder={`المبلغ (${CURRENCY_LABEL[base]})`} aria-label="المبلغ"
+          inputMode="decimal" dir="ltr" autoFocus
+          className="min-w-[8rem] flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-base font-bold outline-none focus:border-brand-blue" />
+        <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)}
+          aria-label="تاريخ الرصيد"
+          className="w-44 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm" />
+      </div>
+
+      <input value={note} onChange={(event) => setNote(event.target.value)}
+        placeholder="ملاحظة (اختياري) — مثل: متبقٍ من تقويم بدأ 2024" aria-label="ملاحظة"
+        className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-blue" />
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => onSubmit({ amount, asOfDate: asOfDate || undefined, note: note.trim() || undefined })}
+          disabled={busy || !amount.trim()}
+          className="flex-1 rounded-xl bg-navy-800 py-2.5 text-sm font-extrabold text-white disabled:opacity-50"
+        >
+          احفظ الرصيد الافتتاحي
+        </button>
+        {existing ? (
+          <button onClick={onClear} disabled={busy}
+            className="rounded-xl border border-red-300 bg-red-50 px-4 py-2.5 text-sm font-bold text-red-700 disabled:opacity-50">
+            احذفه
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }

@@ -129,6 +129,17 @@ const TABLES: Record<string, {
     dated: true,
     tz: true,
   },
+  opening_balances: {
+    label: "الأرصدة الافتتاحية",
+    headers: ["رقم الملف", "المريض", "الجوال", "المبلغ", "تاريخ الرصيد", "ملاحظة", "أدخله"],
+    sql: `SELECT p.patient_number, p.full_name, p.phone, o.amount_minor,
+                 o.as_of_date, o.note, o.created_by
+            FROM patient_opening_balances o JOIN patients p ON p.id = o.patient_id
+           WHERE o.as_of_date BETWEEN $1::date AND $2::date
+           ORDER BY o.amount_minor DESC`,
+    dated: true,
+    tz: false,
+  },
   lab_orders: {
     label: "أعمال المختبر",
     headers: ["المريض", "المختبر", "نوع العمل", "التفاصيل", "أُرسل", "الاستحقاق", "الحالة", "التكلفة", "العملة"],
