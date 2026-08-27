@@ -119,6 +119,26 @@ export function ensureSchema(): Promise<void> {
       ALTER TABLE visits ADD COLUMN IF NOT EXISTS patient_id INTEGER REFERENCES patients(id);
       ALTER TABLE visits ADD COLUMN IF NOT EXISTS appointment_id INTEGER REFERENCES appointments(id);
 
+      -- طلبات الحجز من المرضى. جدول منفصل عن المواعيد عمدًا: الطلب ليس موعدًا حتى
+      -- تؤكّده الاستقبال، وخلطهما كان يعني يومًا ممتلئًا بأسماء غير مؤكّدة.
+      CREATE TABLE IF NOT EXISTS booking_requests (
+        id               SERIAL PRIMARY KEY,
+        full_name        TEXT        NOT NULL,
+        phone            TEXT        NOT NULL,
+        reason           TEXT,
+        preferred_date   DATE,
+        preferred_period TEXT        NOT NULL DEFAULT 'any',
+        status           TEXT        NOT NULL DEFAULT 'new',
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        handled_at       TIMESTAMPTZ,
+        appointment_id   INTEGER REFERENCES appointments(id),
+        -- بصمة مصدر الطلب لا عنوانه: تكفي لإيقاف من يرسل مئة طلب، ولا تُبقي عنوان
+        -- مريض مخزّنًا في قاعدة عيادة.
+        source_hash      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS booking_requests_status_idx ON booking_requests (status, created_at);
+      CREATE INDEX IF NOT EXISTS booking_requests_phone_idx ON booking_requests (phone, created_at);
+
       CREATE TABLE IF NOT EXISTS users (
         id            SERIAL PRIMARY KEY,
         username      TEXT        NOT NULL UNIQUE,
@@ -553,4 +573,162 @@ export async function callVisit(id: number, chair: number): Promise<Visit | null
     [id, chair, CLINIC_TIME_ZONE],
   );
   return rows[0] ? toVisit(rows[0]) : null;
+}
+
+// ─── طلبات الحجز ─────────────────────────────────────────────────────────────
+
+import type { BookingRequest, BookingRequestInput, BookingRequestStatus, PreferredPeriod } from "./booking";
+
+interface BookingRequestRow {
+  id: number;
+  full_name: string;
+  phone: string;
+  reason: string | null;
+  preferred_date: Date | null;
+  preferred_period: string;
+  status: string;
+  created_at: Date;
+  handled_at: Date | null;
+  appointment_id: number | null;
+}
+
+function toBookingRequest(row: BookingRequestRow): BookingRequest {
+  const date = row.preferred_date;
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    phone: row.phone,
+    reason: row.reason,
+    // من مكوّنات التاريخ المحلية لا بـ toISOString — نفس فخ اليوم السابق.
+    preferredDate: date
+      ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+      : null,
+    preferredPeriod: row.preferred_period as PreferredPeriod,
+    status: row.status as BookingRequestStatus,
+    createdAt: row.created_at.toISOString(),
+    handledAt: row.handled_at ? row.handled_at.toISOString() : null,
+    appointmentId: row.appointment_id,
+  };
+}
+
+/**
+ * كم طلبًا أرسله هذا الرقم أو هذا المصدر في آخر أربع وعشرين ساعة.
+ *
+ * الصفحة عامة بلا تسجيل دخول، وبلا هذا العدّ يستطيع أي أحد أن يملأ قائمة الاستقبال
+ * بألف طلب في دقيقة فتصير القائمة بلا فائدة. الحدّ يُطبَّق على الخادم لا في الواجهة:
+ * الواجهة يمكن تجاوزها بطلب مباشر.
+ */
+export async function countRecentRequests(phone: string, sourceHash: string | null): Promise<{ byPhone: number; bySource: number }> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ by_phone: string; by_source: string }>(
+    // النوع مُصرّح على المعامل (`$2::text`): بلا التصريح يرفض Postgres الاستعلام حين
+    // تصل البصمة فارغة — «could not determine data type» — فيتحوّل طلب مريض سليم إلى
+    // 503 لا سبب ظاهر له. ظهر في أول تشغيل حقيقي لا في البناء.
+    `SELECT
+       count(*) FILTER (WHERE phone = $1)::int AS by_phone,
+       count(*) FILTER (WHERE $2::text IS NOT NULL AND source_hash = $2::text)::int AS by_source
+       FROM booking_requests
+      WHERE created_at > NOW() - INTERVAL '24 hours'`,
+    [phone, sourceHash],
+  );
+  return { byPhone: Number(rows[0].by_phone), bySource: Number(rows[0].by_source) };
+}
+
+export async function createBookingRequest(
+  input: BookingRequestInput,
+  sourceHash: string | null,
+): Promise<BookingRequest> {
+  await ensureSchema();
+  const { rows } = await getPool().query<BookingRequestRow>(
+    `INSERT INTO booking_requests (full_name, phone, reason, preferred_date, preferred_period, source_hash)
+     VALUES ($1, $2, $3::text, $4::date, $5, $6::text) RETURNING *`,
+    [input.fullName, input.phone, input.reason, input.preferredDate, input.preferredPeriod, sourceHash],
+  );
+  return toBookingRequest(rows[0]);
+}
+
+export async function listBookingRequests(status: BookingRequestStatus): Promise<BookingRequest[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<BookingRequestRow>(
+    // الأقدم أولًا: الطلب الذي مضى عليه يومان هو من ينتظر رده، لا الذي وصل قبل دقيقة.
+    `SELECT * FROM booking_requests WHERE status = $1 ORDER BY created_at ASC LIMIT 200`,
+    [status],
+  );
+  return rows.map(toBookingRequest);
+}
+
+export async function rejectBookingRequest(id: number): Promise<BookingRequest | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<BookingRequestRow>(
+    `UPDATE booking_requests SET status = 'rejected', handled_at = NOW()
+      WHERE id = $1 AND status = 'new' RETURNING *`,
+    [id],
+  );
+  return rows[0] ? toBookingRequest(rows[0]) : null;
+}
+
+/**
+ * يحوّل طلبًا إلى موعد مؤكّد في معاملة واحدة.
+ *
+ * ثلاث كتابات مرتبطة: مريض (إن كان جديدًا)، وموعد، وإغلاق الطلب. تنفيذها متتابعة بلا
+ * معاملة يترك — عند انقطاع بين الثانية والثالثة — موعدًا محجوزًا وطلبًا ما زال يبدو
+ * معلّقًا، فتؤكّده الاستقبال مرة ثانية ويصير للمريض موعدان.
+ *
+ * البحث عن المريض بالرقم لا بالاسم: «عبدالله محمد» و«عبد الله محمد» شخص واحد بسجلّين،
+ * والرقم هو المُعرّف الوحيد الذي يكتبه المريض بنفسه.
+ */
+export async function confirmBookingRequest(input: {
+  id: number;
+  date: string;
+  time: string;
+  durationMinutes: number;
+}): Promise<{ appointmentId: number; patientId: number } | null> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: requests } = await client.query<{ full_name: string; phone: string; reason: string | null }>(
+      `SELECT full_name, phone, reason FROM booking_requests
+        WHERE id = $1 AND status = 'new' FOR UPDATE`,
+      [input.id],
+    );
+    if (!requests[0]) { await client.query("ROLLBACK"); return null; }
+    const request = requests[0];
+
+    const { rows: existing } = await client.query<{ id: number }>(
+      `SELECT id FROM patients WHERE phone = $1 ORDER BY id LIMIT 1`,
+      [request.phone],
+    );
+    let patientId = existing[0]?.id;
+    if (!patientId) {
+      const { rows: created } = await client.query<{ id: number }>(
+        `INSERT INTO patients (patient_number, full_name, phone)
+         VALUES (
+           'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
+           $1, $2)
+         RETURNING id`,
+        [request.full_name, request.phone],
+      );
+      patientId = created[0].id;
+    }
+
+    const { rows: appointments } = await client.query<{ id: number }>(
+      `INSERT INTO appointments (patient_id, scheduled_date, scheduled_time, duration_minutes, note)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [patientId, input.date, input.time, input.durationMinutes, request.reason],
+    );
+
+    await client.query(
+      `UPDATE booking_requests SET status = 'confirmed', handled_at = NOW(), appointment_id = $2
+        WHERE id = $1`,
+      [input.id, appointments[0].id],
+    );
+    await client.query("COMMIT");
+    return { appointmentId: appointments[0].id, patientId };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }

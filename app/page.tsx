@@ -43,6 +43,7 @@ export default function FlowBoard() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState(0);
   const inFlight = useRef(false);
 
   const load = useCallback(async (showSpinner = false) => {
@@ -57,6 +58,14 @@ export default function FlowBoard() {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
     } finally {
       setLoading(false);
+    }
+    // عدّاد طلبات المرضى منفصل عن اللوحة ولا يُفشلها: طلب لم يصل عدده لا يمنع
+    // الاستقبال من إدارة يومها، لكن طلبًا لا يراه أحد هو سبب الشكوى التي نعالجها.
+    try {
+      const response = await fetch("/api/booking-requests?status=new", { cache: "no-store" });
+      if (response.ok) setPendingRequests(((await response.json()) as unknown[]).length);
+    } catch {
+      // لا شيء: العدّاد يبقى على آخر قيمة.
     }
   }, []);
 
@@ -151,6 +160,17 @@ export default function FlowBoard() {
           className="shrink-0 rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-bold text-white"
         >
           المواعيد
+        </a>
+        <a
+          href="/requests"
+          className="relative shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+        >
+          الطلبات
+          {pendingRequests > 0 ? (
+            <span className="absolute -top-2 -left-2 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+              {pendingRequests}
+            </span>
+          ) : null}
         </a>
         <a
           href="/display"
