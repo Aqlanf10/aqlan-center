@@ -142,6 +142,11 @@ export function ensureSchema(): Promise<void> {
 
       -- أعمال المختبر. المقياس الوحيد هنا تاريخ الاستحقاق: عملٌ بلا تاريخ يُنتظر إلى
       -- ما لا نهاية ولا يعرف أحد أنه تأخّر إلا حين يسأل المريض وهو على الكرسي.
+      -- أثر المتابعة. القاعدة: لا يُتصل بأحد مرتين، ولا يُنسى أحد — وكلاهما مستحيل
+      -- بلا تسجيل. المريض يعود إلى قائمة الاستدعاء إن بقي منقطعًا بعد مدة.
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS recalled_at TIMESTAMPTZ;
+      ALTER TABLE appointments ADD COLUMN IF NOT EXISTS follow_up_at TIMESTAMPTZ;
+
       CREATE TABLE IF NOT EXISTS lab_orders (
         id           SERIAL PRIMARY KEY,
         patient_id   INTEGER     NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -1122,4 +1127,119 @@ export async function listLabNames(): Promise<{ labName: string; labPhone: strin
       GROUP BY lab_name ORDER BY MAX(created_at) DESC LIMIT 10`,
   );
   return rows.map((row) => ({ labName: row.lab_name, labPhone: row.lab_phone }));
+}
+
+// ─── الاستدعاء ومتابعة المتغيّبين ────────────────────────────────────────────
+
+import type { RecallRow } from "./recall";
+
+/**
+ * المتغيّبون الذين لم يُتابَعوا بعد.
+ *
+ * موعد فائت بلا مكالمة هو المريض الذي يفهم أن العيادة لم تلاحظ غيابه. والمدى محدود
+ * بشهر: الاتصال بمن تغيّب قبل ثلاثة أشهر ليس متابعة غياب — إنه استدعاء، وله قائمته.
+ */
+export async function listMissedAppointments(): Promise<RecallRow[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    id: number; patient_id: number; full_name: string; phone: string | null;
+    scheduled_date: Date; note: string | null;
+  }>(
+    `SELECT a.id, a.patient_id, p.full_name, p.phone, a.scheduled_date, a.note
+       FROM appointments a JOIN patients p ON p.id = a.patient_id
+      WHERE a.status = 'no_show'
+        AND a.follow_up_at IS NULL
+        AND a.scheduled_date > CURRENT_DATE - INTERVAL '30 days'
+      ORDER BY a.scheduled_date ASC
+      LIMIT 100`,
+  );
+  return rows.map((row) => ({
+    kind: "missed" as const,
+    id: row.id,
+    patientId: row.patient_id,
+    patientName: row.full_name,
+    patientPhone: row.phone,
+    referenceDate: dateText(row.scheduled_date),
+    note: row.note,
+  }));
+}
+
+/**
+ * المنقطعون: مرضى مضى على آخر نشاط لهم أكثر من المدة، ولا موعد قادم لهم.
+ *
+ * شرط «لا موعد قادم» هو الذي يجعل القائمة صالحة: من انقطع شهرين ولكنه حاجز الأسبوع
+ * القادم ليس منقطعًا، والاتصال به يقول له إن العيادة لا تعرف مواعيدها.
+ *
+ * «آخر نشاط» أكبر التاريخين — آخر زيارة وآخر موعد — لأن المريض قد يكون له موعد
+ * مسجّل بلا زيارة (سُجّل يدويًا) أو زيارة بلا موعد (مريض مشي).
+ *
+ * ومن استُدعي في آخر ثلاثين يومًا يخرج مؤقتًا: مكالمتان في أسبوع إلحاحٌ لا اهتمام.
+ */
+export async function listLapsedPatients(weeks: number): Promise<RecallRow[]> {
+  await ensureSchema();
+  const days = Math.max(1, Math.round(weeks * 7));
+  const { rows } = await getPool().query<{
+    id: number; full_name: string; phone: string | null; last_activity: Date; note: string | null;
+  }>(
+    `WITH activity AS (
+       SELECT p.id, p.full_name, p.phone, p.note, p.recalled_at,
+              GREATEST(
+                COALESCE((SELECT MAX(v.arrived_at)::date FROM visits v WHERE v.patient_id = p.id), p.created_at::date),
+                COALESCE((SELECT MAX(a.scheduled_date) FROM appointments a
+                           WHERE a.patient_id = p.id AND a.status IN ('done', 'arrived')), p.created_at::date)
+              ) AS last_activity
+         FROM patients p
+        WHERE NOT EXISTS (
+                SELECT 1 FROM appointments f
+                 WHERE f.patient_id = p.id
+                   AND f.scheduled_date >= CURRENT_DATE
+                   AND f.status IN ('booked', 'arrived')
+              )
+     )
+     SELECT id, full_name, phone, note, last_activity
+       FROM activity
+      WHERE last_activity < CURRENT_DATE - ($1::int * INTERVAL '1 day')
+        AND (recalled_at IS NULL OR recalled_at < NOW() - INTERVAL '30 days')
+      ORDER BY last_activity ASC
+      LIMIT 100`,
+    [days],
+  );
+  return rows.map((row) => ({
+    kind: "lapsed" as const,
+    id: row.id,
+    patientId: row.id,
+    patientName: row.full_name,
+    patientPhone: row.phone,
+    referenceDate: dateText(row.last_activity),
+    note: row.note,
+  }));
+}
+
+/**
+ * يُسجَّل بعد فتح واتساب لا قبله: التسجيل قبل الفتح يزعم متابعةً لم تحدث.
+ *
+ * `COALESCE` يُبقي أول وقت متابعة: ضغطة ثانية على الزر — أو فتح واتساب مرتين —
+ * كانت ستكتب وقتًا جديدًا فيبدو أننا تابعنا المتغيّب اليوم وقد تابعناه قبل أسبوع.
+ * التاريخ الأول هو الحقيقة، وهو ما يُقاس به أثر المتابعة.
+ */
+export async function markAppointmentFollowedUp(id: number): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE appointments SET follow_up_at = COALESCE(follow_up_at, NOW())
+      WHERE id = $1 AND status = 'no_show'`,
+    [id],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * آخر استدعاء — لا أوّله: عليه يقوم إخفاء المريض ثلاثين يومًا عن القائمة. لو حُفظ
+ * الأول لعاد المريض إلى القائمة كل يوم بعد شهر من أول اتصال مهما اتُّصل به بعده.
+ */
+export async function markPatientRecalled(id: number): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE patients SET recalled_at = NOW() WHERE id = $1`, [id],
+  );
+  return (rowCount ?? 0) > 0;
 }
