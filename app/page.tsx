@@ -265,6 +265,12 @@ export default function FlowBoard() {
             ) : null}
           </a>
           <a
+            href="/report"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+          >
+            تقرير اليوم
+          </a>
+          <a
             href="/recall"
             className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
           >

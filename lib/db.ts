@@ -234,6 +234,24 @@ export async function listTodayVisits(): Promise<Visit[]> {
 
 export const CLINIC_TIME_ZONE = process.env.CLINIC_TIME_ZONE || "Asia/Aden";
 
+/**
+ * زيارات يوم بعينه بتوقيت العيادة — للتقرير.
+ *
+ * نفس حساب اليوم الذي تستخدمه اللوحة: `AT TIME ZONE` لا مقارنة UTC. تقريرٌ يُحسب
+ * بتوقيت الخادم كان سيُسقط زيارات المساء من تقرير اليوم ويضيفها إلى تقرير الغد،
+ * فتظهر أيام «هادئة» ليست هادئة.
+ */
+export async function listVisitsByDate(date: string): Promise<Visit[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<VisitRow>(
+    `SELECT * FROM visits
+      WHERE (arrived_at AT TIME ZONE $1)::date = $2::date
+      ORDER BY arrived_at ASC`,
+    [CLINIC_TIME_ZONE, date],
+  );
+  return rows.map(toVisit);
+}
+
 export async function addVisit(input: {
   patientName: string;
   patientPhone: string | null;
