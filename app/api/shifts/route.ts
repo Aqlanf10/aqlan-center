@@ -3,10 +3,12 @@ import {
   asPaymentLikes,
   closeShift,
   getOpenShift,
+  listShiftExpenses,
   listShiftPayments,
   listShifts,
   openShift,
 } from "@/lib/db";
+import { expenseTotals } from "@/lib/expenses";
 import { parseAmount, shiftTotals, type Currency } from "@/lib/money";
 import { requireSession } from "@/lib/session";
 
@@ -33,11 +35,17 @@ export async function GET() {
   if (!(await requireSession())) return denied();
   try {
     const open = await getOpenShift();
-    const payments = open ? await listShiftPayments(open.id) : [];
+    const [payments, expenses] = open
+      ? await Promise.all([listShiftPayments(open.id), listShiftExpenses(open.id)])
+      : [[], []];
     return NextResponse.json({
       open,
       totals: shiftTotals(asPaymentLikes(payments)),
+      // المصروف يُطرح من المتوقَّع في الصندوق. إهماله أشيع خطأ في إغلاق الصناديق:
+      // كل إغلاق يبدو ناقصًا بمقدار ما صُرف، فيُتجاهل الفرق ويصير الجرد بلا فائدة.
+      expenseTotals: expenseTotals(expenses),
       payments,
+      expenses,
       recent: await listShifts(15),
     });
   } catch {

@@ -261,6 +261,44 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS payments_shift_idx ON payments (shift_id);
       CREATE INDEX IF NOT EXISTS payments_created_idx ON payments (created_at);
 
+      -- جهات التعامل: مختبرات وموردون وأطباء. جدول واحد لأن ما يُسأل عنه واحد:
+      -- كم لهذه الجهة عندنا، وكم دفعنا لها.
+      CREATE TABLE IF NOT EXISTS parties (
+        id         SERIAL PRIMARY KEY,
+        name       TEXT        NOT NULL,
+        kind       TEXT        NOT NULL DEFAULT 'supplier',
+        phone      TEXT,
+        note       TEXT,
+        -- نسبة عمولة الطبيب من قيمة عمله. تُحفظ في الجهة لا في الكود.
+        commission_percent NUMERIC(5,2) NOT NULL DEFAULT 0,
+        is_active  BOOLEAN     NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS parties_kind_idx ON parties (kind, is_active);
+
+      -- المصروفات: سند صرف لكل مبلغ يخرج من الصندوق.
+      CREATE TABLE IF NOT EXISTS expenses (
+        id                SERIAL PRIMARY KEY,
+        voucher_number    TEXT        NOT NULL UNIQUE,
+        category          TEXT        NOT NULL,
+        party_id          INTEGER     REFERENCES parties(id),
+        payee_text        TEXT,
+        shift_id          INTEGER     NOT NULL REFERENCES cashier_shifts(id),
+        amount_minor      BIGINT      NOT NULL,
+        currency          TEXT        NOT NULL,
+        exchange_rate     NUMERIC(18,6) NOT NULL DEFAULT 1,
+        base_amount_minor BIGINT      NOT NULL,
+        base_currency     TEXT        NOT NULL DEFAULT 'YER',
+        -- ما يربط الصرف بما يُسدَّده: أمر مختبر، أو التزام مورّد، أو عمولة طبيب.
+        payable_id        INTEGER,
+        note              TEXT,
+        created_by        TEXT,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS expenses_shift_idx ON expenses (shift_id);
+      CREATE INDEX IF NOT EXISTS expenses_created_idx ON expenses (created_at);
+      CREATE INDEX IF NOT EXISTS expenses_party_idx ON expenses (party_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -2037,3 +2075,212 @@ export function asPaymentLikes(payments: Payment[]): PaymentLike[] {
 
 /** الوحدات الصغرى — تُصدَّر لتستعملها المسارات في التحقق. */
 export { MINOR_UNITS };
+
+// ─── الجهات والمصروفات ───────────────────────────────────────────────────────
+
+import type { ExpenseCategory, PartyKind } from "./expenses";
+
+export interface Party {
+  id: number;
+  name: string;
+  kind: PartyKind;
+  phone: string | null;
+  note: string | null;
+  commissionPercent: number;
+  isActive: boolean;
+}
+
+interface PartyRow {
+  id: number; name: string; kind: string; phone: string | null;
+  note: string | null; commission_percent: string; is_active: boolean;
+}
+
+const toParty = (row: PartyRow): Party => ({
+  id: row.id,
+  name: row.name,
+  kind: row.kind as PartyKind,
+  phone: row.phone,
+  note: row.note,
+  commissionPercent: Number(row.commission_percent),
+  isActive: row.is_active,
+});
+
+export async function listParties(kind?: PartyKind): Promise<Party[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PartyRow>(
+    `SELECT id, name, kind, phone, note, commission_percent, is_active FROM parties
+      WHERE ($1::text IS NULL OR kind = $1::text)
+      ORDER BY is_active DESC, name`,
+    [kind ?? null],
+  );
+  return rows.map(toParty);
+}
+
+export async function createParty(input: {
+  name: string; kind: PartyKind; phone: string | null;
+  commissionPercent: number; note: string | null;
+}): Promise<Party> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PartyRow>(
+    `INSERT INTO parties (name, kind, phone, commission_percent, note)
+     VALUES ($1, $2, $3::text, $4, $5::text)
+     RETURNING id, name, kind, phone, note, commission_percent, is_active`,
+    [input.name, input.kind, input.phone, input.commissionPercent, input.note],
+  );
+  return toParty(rows[0]);
+}
+
+export async function updateParty(id: number, input: {
+  name?: string; phone?: string | null; commissionPercent?: number;
+  note?: string | null; isActive?: boolean;
+}): Promise<Party | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PartyRow>(
+    `UPDATE parties SET
+       name               = COALESCE($2::text, name),
+       phone              = CASE WHEN $3::boolean THEN $4::text ELSE phone END,
+       commission_percent = COALESCE($5::numeric, commission_percent),
+       note               = CASE WHEN $6::boolean THEN $7::text ELSE note END,
+       is_active          = COALESCE($8::boolean, is_active)
+     WHERE id = $1
+     RETURNING id, name, kind, phone, note, commission_percent, is_active`,
+    [
+      id, input.name ?? null,
+      input.phone !== undefined, input.phone ?? null,
+      input.commissionPercent ?? null,
+      input.note !== undefined, input.note ?? null,
+      input.isActive ?? null,
+    ],
+  );
+  return rows[0] ? toParty(rows[0]) : null;
+}
+
+export interface Expense {
+  id: number;
+  voucherNumber: string;
+  category: ExpenseCategory;
+  partyId: number | null;
+  partyName: string | null;
+  payeeText: string | null;
+  shiftId: number;
+  amountMinor: number;
+  currency: Currency;
+  exchangeRate: number;
+  baseAmountMinor: number;
+  baseCurrency: Currency;
+  payableId: number | null;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+interface ExpenseRow {
+  id: number; voucher_number: string; category: string; party_id: number | null;
+  party_name: string | null; payee_text: string | null; shift_id: number;
+  amount_minor: string; currency: string; exchange_rate: string;
+  base_amount_minor: string; base_currency: string; payable_id: number | null;
+  note: string | null; created_by: string | null; created_at: Date;
+}
+
+const toExpense = (row: ExpenseRow): Expense => ({
+  id: row.id,
+  voucherNumber: row.voucher_number,
+  category: row.category as ExpenseCategory,
+  partyId: row.party_id,
+  partyName: row.party_name,
+  payeeText: row.payee_text,
+  shiftId: row.shift_id,
+  amountMinor: toMinor(row.amount_minor),
+  currency: row.currency as Currency,
+  exchangeRate: Number(row.exchange_rate),
+  baseAmountMinor: toMinor(row.base_amount_minor),
+  baseCurrency: row.base_currency as Currency,
+  payableId: row.payable_id,
+  note: row.note,
+  createdBy: row.created_by,
+  createdAt: row.created_at.toISOString(),
+});
+
+const EXPENSE_SELECT = `
+  SELECT e.id, e.voucher_number, e.category, e.party_id, t.name AS party_name, e.payee_text,
+         e.shift_id, e.amount_minor, e.currency, e.exchange_rate, e.base_amount_minor,
+         e.base_currency, e.payable_id, e.note, e.created_by, e.created_at
+    FROM expenses e LEFT JOIN parties t ON t.id = e.party_id`;
+
+export async function getExpense(id: number): Promise<Expense | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ExpenseRow>(`${EXPENSE_SELECT} WHERE e.id = $1`, [id]);
+  return rows[0] ? toExpense(rows[0]) : null;
+}
+
+export async function listShiftExpenses(shiftId: number): Promise<Expense[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ExpenseRow>(
+    `${EXPENSE_SELECT} WHERE e.shift_id = $1 ORDER BY e.created_at DESC`, [shiftId],
+  );
+  return rows.map(toExpense);
+}
+
+export async function listExpensesBetween(from: string, to: string): Promise<Expense[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ExpenseRow>(
+    `${EXPENSE_SELECT}
+      WHERE (e.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
+      ORDER BY e.created_at DESC LIMIT 1000`,
+    [CLINIC_TIME_ZONE, from, to],
+  );
+  return rows.map(toExpense);
+}
+
+export async function listPartyExpenses(partyId: number): Promise<Expense[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ExpenseRow>(
+    `${EXPENSE_SELECT} WHERE e.party_id = $1 ORDER BY e.created_at DESC LIMIT 200`, [partyId],
+  );
+  return rows.map(toExpense);
+}
+
+/**
+ * يسجّل سند صرف داخل الوردية المفتوحة.
+ *
+ * نفس حراسة القبض: الوردية شرطٌ داخل الاستعلام لا فحصٌ قبله. والمال الخارج أخطر من
+ * الداخل — مبلغٌ يخرج بلا سند ولا وردية لا يظهر في أي جرد، وهو بالضبط كيف تضيع
+ * أموال العيادات.
+ */
+export async function recordExpense(input: {
+  category: ExpenseCategory;
+  partyId: number | null;
+  payeeText: string | null;
+  amountMinor: number;
+  currency: Currency;
+  baseCurrency: Currency;
+  exchangeRate: number;
+  payableId: number | null;
+  note: string | null;
+  createdBy: string;
+}): Promise<{ expense: Expense | null; reason: "no_shift" | null }> {
+  await ensureSchema();
+  const baseAmount = toBaseAmount(
+    input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
+  );
+
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO expenses (
+       voucher_number, category, party_id, payee_text, shift_id, amount_minor, currency,
+       exchange_rate, base_amount_minor, base_currency, payable_id, note, created_by)
+     SELECT
+       'V-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(voucher_number, '\\D', '', 'g'), '')::bigint) FROM expenses), 0) + 1)::text, 5, '0'),
+       $1, $2::int, $3::text, s.id, $4, $5, $6, $7, $8, $9::int, $10::text, $11
+       FROM cashier_shifts s
+      WHERE s.status = 'open'
+      LIMIT 1
+     RETURNING id`,
+    [
+      input.category, input.partyId, input.payeeText, input.amountMinor, input.currency,
+      input.exchangeRate, baseAmount, input.baseCurrency, input.payableId, input.note, input.createdBy,
+    ],
+  );
+
+  if (!rows[0]) return { expense: null, reason: "no_shift" };
+  return { expense: await getExpense(rows[0].id), reason: null };
+}

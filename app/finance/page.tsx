@@ -11,6 +11,14 @@ import {
   type Currency,
 } from "@/lib/money";
 import { useSetting } from "@/components/SettingsProvider";
+import {
+  EXPENSE_CATEGORIES,
+  EXPENSE_CATEGORY_LABEL,
+  categoryForParty,
+  expectedInBox,
+  type ExpenseCategory,
+  type PartyKind,
+} from "@/lib/expenses";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 
@@ -43,10 +51,26 @@ interface Payment {
   exchangeRate: number; baseAmountMinor: number; method: string; createdAt: string;
 }
 
+interface Expense {
+  id: number; voucherNumber: string; category: ExpenseCategory;
+  partyName: string | null; payeeText: string | null;
+  amountMinor: number; currency: Currency; exchangeRate: number;
+  baseAmountMinor: number; note: string | null; createdAt: string;
+}
+
+interface Party { id: number; name: string; kind: PartyKind; commissionPercent: number; isActive: boolean }
+
 interface Feed {
   open: Shift | null;
   totals: { byCurrency: Record<Currency, number>; baseTotalMinor: number; paymentCount: number };
+  expenseTotals: {
+    byCategory: Record<ExpenseCategory, number>;
+    byCurrency: Record<Currency, number>;
+    baseTotalMinor: number;
+    count: number;
+  };
   payments: Payment[];
+  expenses: Expense[];
   recent: Shift[];
 }
 
@@ -65,14 +89,25 @@ export default function FinancePage() {
   const [counted, setCounted] = useState(emptyAmounts);
   const [note, setNote] = useState("");
   const [closing, setClosing] = useState(false);
+  const [parties, setParties] = useState<Party[]>([]);
+  const [spending, setSpending] = useState(false);
+  const [expenseForm, setExpenseForm] = useState({
+    category: "lab" as ExpenseCategory, partyId: "", payee: "",
+    amount: "", currency: base as Currency, note: "",
+  });
+  const [lastVoucherId, setLastVoucherId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/shifts", { cache: "no-store" });
+      const [response, partiesResponse] = await Promise.all([
+        fetch("/api/shifts", { cache: "no-store" }),
+        fetch("/api/parties", { cache: "no-store" }),
+      ]);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
       setFeed(payload as Feed);
+      if (partiesResponse.ok) setParties(await partiesResponse.json());
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
@@ -85,11 +120,7 @@ export default function FinancePage() {
 
   const expected = useMemo(() => {
     if (!feed?.open) return null;
-    const result = {} as Record<Currency, number>;
-    for (const currency of CURRENCIES) {
-      result[currency] = feed.open.opening[currency] + feed.totals.byCurrency[currency];
-    }
-    return result;
+    return expectedInBox(feed.open.opening, feed.totals.byCurrency, feed.expenseTotals.byCurrency);
   }, [feed]);
 
   const open = useCallback(async () => {
@@ -112,6 +143,29 @@ export default function FinancePage() {
       setBusy(false);
     }
   }, [busy, opening, load]);
+
+  const spend = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/expenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(expenseForm),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) { setError(payload?.message ?? "تعذّر تسجيل الصرف."); return; }
+      setLastVoucherId((payload as { id: number }).id);
+      setExpenseForm((current) => ({ ...current, amount: "", note: "", payee: "" }));
+      setSpending(false);
+      setError(null);
+      await load();
+    } catch {
+      setError("تعذّر الاتصال بالخادم.");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, expenseForm, load]);
 
   const close = useCallback(async () => {
     if (busy || !feed?.open) return;
@@ -143,9 +197,14 @@ export default function FinancePage() {
           <h1 className="text-xl font-extrabold leading-tight">الصندوق</h1>
           <p className="text-xs text-slate-500">{friendlyDateLong(today)}</p>
         </div>
-        <a href="/finance/services" className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
-          قائمة الأسعار
-        </a>
+        <div className="flex shrink-0 gap-1.5">
+          <a href="/finance/services" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
+            الأسعار
+          </a>
+          <a href="/finance/parties" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
+            الجهات
+          </a>
+        </div>
       </header>
 
       {error ? (
@@ -190,10 +249,22 @@ export default function FinancePage() {
                 فتحها {feed.open.openedBy} · {new Date(feed.open.openedAt).toLocaleTimeString("ar-YE-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}
               </span>
             </div>
-            <p className="mb-3 rounded-xl bg-slate-50 px-3 py-2 text-center text-lg font-extrabold">
-              {formatMoney(feed.totals.baseTotalMinor, base)}
-              <span className="mr-2 text-[11px] font-bold text-slate-400">صافي التحصيل</span>
-            </p>
+            <div className="mb-3 grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-xl bg-emerald-50 px-2 py-2">
+                <p className="text-sm font-extrabold text-emerald-800">{formatMoney(feed.totals.baseTotalMinor, base)}</p>
+                <p className="text-[11px] font-bold text-emerald-700">قُبض</p>
+              </div>
+              <div className="rounded-xl bg-red-50 px-2 py-2">
+                <p className="text-sm font-extrabold text-red-700">{formatMoney(feed.expenseTotals.baseTotalMinor, base)}</p>
+                <p className="text-[11px] font-bold text-red-600">صُرف</p>
+              </div>
+              <div className="rounded-xl bg-slate-100 px-2 py-2">
+                <p className="text-sm font-extrabold">
+                  {formatMoney(feed.totals.baseTotalMinor - feed.expenseTotals.baseTotalMinor, base)}
+                </p>
+                <p className="text-[11px] font-bold text-slate-600">الصافي</p>
+              </div>
+            </div>
             <div className="grid gap-2 sm:grid-cols-3">
               {CURRENCIES.map((currency) => (
                 <div key={currency} className="rounded-xl border border-slate-200 p-2 text-center">
@@ -206,10 +277,16 @@ export default function FinancePage() {
             </div>
 
             {!closing ? (
-              <button onClick={() => setClosing(true)}
-                className="mt-3 w-full rounded-xl border border-slate-300 bg-white py-2.5 text-sm font-bold text-slate-700">
-                إغلاق الوردية وجرد الصندوق
-              </button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button onClick={() => setSpending((open) => !open)}
+                  className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-extrabold text-white">
+                  {spending ? "إغلاق" : "سند صرف"}
+                </button>
+                <button onClick={() => setClosing(true)}
+                  className="flex-1 rounded-xl border border-slate-300 bg-white py-2.5 text-sm font-bold text-slate-700">
+                  إغلاق الوردية وجرد الصندوق
+                </button>
+              </div>
             ) : (
               <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <p className="mb-2 text-xs font-bold text-slate-600">اعدد ما في الصندوق فعلًا:</p>
@@ -261,6 +338,131 @@ export default function FinancePage() {
               </div>
             )}
           </section>
+
+          {lastVoucherId ? (
+            <div className="mb-4 rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-center">
+              <p className="mb-2 text-sm font-bold text-emerald-800">سُجّل الصرف.</p>
+              <a href={`/print/voucher/${lastVoucherId}`} target="_blank" rel="noopener"
+                onClick={() => setLastVoucherId(null)}
+                className="inline-block rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white">
+                اطبع سند الصرف
+              </a>
+            </div>
+          ) : null}
+
+          {spending ? (
+            <section className="mb-4 rounded-2xl border-2 border-red-400 bg-white p-4" aria-label="سند صرف">
+              <h2 className="mb-3 text-sm font-bold">سند صرف</h2>
+
+              <label className="mb-2 block">
+                <span className="mb-1 block text-[11px] font-bold text-slate-500">البند</span>
+                <select
+                  value={expenseForm.category}
+                  onChange={(event) => setExpenseForm((current) => ({ ...current, category: event.target.value as ExpenseCategory }))}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                >
+                  {EXPENSE_CATEGORIES.map((category) => (
+                    <option key={category} value={category}>{EXPENSE_CATEGORY_LABEL[category]}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="mb-2 block">
+                <span className="mb-1 block text-[11px] font-bold text-slate-500">جهة الصرف</span>
+                <select
+                  value={expenseForm.partyId}
+                  onChange={(event) => {
+                    const party = parties.find((item) => String(item.id) === event.target.value);
+                    setExpenseForm((current) => ({
+                      ...current,
+                      partyId: event.target.value,
+                      // التصنيف يتبع نوع الجهة: من يختار مختبرًا يقصد مستحقات مختبر.
+                      category: party ? categoryForParty(party.kind) : current.category,
+                    }));
+                  }}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">— جهة غير مسجّلة —</option>
+                  {parties.filter((party) => party.isActive).map((party) => (
+                    <option key={party.id} value={party.id}>{party.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              {!expenseForm.partyId ? (
+                <input
+                  value={expenseForm.payee}
+                  onChange={(event) => setExpenseForm((current) => ({ ...current, payee: event.target.value }))}
+                  placeholder="اسم المستفيد"
+                  aria-label="اسم المستفيد"
+                  className="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                />
+              ) : null}
+
+              <div className="mb-2 flex flex-wrap gap-2">
+                <input
+                  value={expenseForm.amount}
+                  onChange={(event) => setExpenseForm((current) => ({ ...current, amount: event.target.value }))}
+                  placeholder="المبلغ" aria-label="المبلغ" inputMode="decimal" dir="ltr"
+                  className="min-w-[8rem] flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-base font-bold"
+                />
+                <select
+                  value={expenseForm.currency}
+                  onChange={(event) => setExpenseForm((current) => ({ ...current, currency: event.target.value as Currency }))}
+                  aria-label="العملة"
+                  className="w-36 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm"
+                >
+                  {CURRENCIES.map((option) => (
+                    <option key={option} value={option}>{CURRENCY_LABEL[option]}</option>
+                  ))}
+                </select>
+              </div>
+
+              <input
+                value={expenseForm.note}
+                onChange={(event) => setExpenseForm((current) => ({ ...current, note: event.target.value }))}
+                placeholder="البيان (اختياري)"
+                aria-label="البيان"
+                className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              />
+
+              <button onClick={spend} disabled={busy || !expenseForm.amount.trim()}
+                className="w-full rounded-xl bg-red-600 py-2.5 text-sm font-extrabold text-white disabled:opacity-50">
+                سجّل الصرف واطبع السند
+              </button>
+            </section>
+          ) : null}
+
+          {feed.expenses.length > 0 ? (
+            <section className="mb-5" aria-label="مصروفات الوردية">
+              <h2 className="mb-2 text-sm font-bold">مصروفات الوردية ({feed.expenses.length})</h2>
+              <ul className="space-y-2">
+                {feed.expenses.map((expense) => (
+                  <li key={expense.id} className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 p-3">
+                    <div className="min-w-[9rem] flex-1">
+                      <p className="truncate text-sm font-extrabold">{expense.partyName ?? expense.payeeText}</p>
+                      <p className="text-[11px] text-slate-500">
+                        {expense.voucherNumber} · {EXPENSE_CATEGORY_LABEL[expense.category]}
+                        {expense.note ? ` · ${expense.note}` : ""}
+                      </p>
+                    </div>
+                    <div className="text-left">
+                      <p className="text-sm font-extrabold text-red-700">
+                        −{formatMoney(expense.amountMinor, expense.currency)}
+                      </p>
+                      {expense.currency !== base ? (
+                        <p className="text-[11px] text-slate-400">= {formatMoney(expense.baseAmountMinor, base)}</p>
+                      ) : null}
+                    </div>
+                    <a href={`/print/voucher/${expense.id}`} target="_blank" rel="noopener"
+                      className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">
+                      طباعة
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
           <section className="mb-5" aria-label="حركة الوردية">
             <h2 className="mb-2 text-sm font-bold">حركة الوردية ({feed.payments.length})</h2>
