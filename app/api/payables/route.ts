@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createPayable, getSettings, partyBalances, partyStatement } from "@/lib/db";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { canHandleMoney } from "@/lib/roles";
+import { rateFromSettings } from "@/lib/settings";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -73,14 +74,9 @@ export async function POST(request: Request) {
   if (!isCurrency(base)) {
     return NextResponse.json({ message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 });
   }
-  let exchangeRate = 1;
-  if (currency !== base) {
-    const raw = (currency as Currency) === "SAR" ? settings["finance.rate.SAR"] : settings["finance.rate.USD"];
-    const rate = Number(raw);
-    if (!Number.isFinite(rate) || rate <= 0) {
-      return NextResponse.json({ message: "سعر الصرف غير مضبوط في الإعدادات." }, { status: 409 });
-    }
-    exchangeRate = rate;
+  const exchangeRate = rateFromSettings(settings, currency, base);
+  if (exchangeRate === null) {
+    return NextResponse.json({ message: "سعر الصرف غير مضبوط في الإعدادات." }, { status: 409 });
   }
 
   try {

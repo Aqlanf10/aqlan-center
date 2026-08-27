@@ -95,6 +95,8 @@ export default function AccountingPage() {
         <nav className="mt-2 flex flex-wrap gap-1.5">
           <a href="/finance" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الصندوق</a>
           <a href="/finance/reports" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">التقرير</a>
+          <a href="/finance/fx" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">إعادة تقييم العملات</a>
+          <a href="/finance/opening" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الأرصدة الافتتاحية</a>
         </nav>
       </header>
 

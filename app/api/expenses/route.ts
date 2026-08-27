@@ -4,6 +4,7 @@ import { isExpenseCategory } from "@/lib/expenses";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
 import { canHandleMoney } from "@/lib/roles";
+import { rateFromSettings } from "@/lib/settings";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -12,13 +13,6 @@ const denied = () =>
   NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-function rateFor(currency: Currency, base: Currency, settings: Record<string, string>): number | null {
-  if (currency === base) return 1;
-  const raw = currency === "SAR" ? settings["finance.rate.SAR"] : settings["finance.rate.USD"];
-  const rate = Number(raw);
-  return Number.isFinite(rate) && rate > 0 ? rate : null;
-}
 
 export async function GET(request: Request) {
   const session = await requireSession();
@@ -81,7 +75,7 @@ export async function POST(request: Request) {
   if (!isCurrency(base)) {
     return NextResponse.json({ message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 });
   }
-  const exchangeRate = rateFor(currency, base, settings);
+  const exchangeRate = rateFromSettings(settings, currency, base);
   if (exchangeRate === null) {
     return NextResponse.json(
       { message: "سعر الصرف غير مضبوط. اضبطه في الإعدادات قبل الصرف بعملة أجنبية." },

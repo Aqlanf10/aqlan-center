@@ -112,6 +112,24 @@ export function chairCount(settings: SettingsMap): number {
   return Math.round(numberSetting(settings, "clinic.chairs", 1, 20));
 }
 
+/**
+ * سعر صرف عملة مقابل العملة الأساسية، من الإعدادات.
+ *
+ * مصدر واحد لقراءة السعر: كان يُقرأ في كل مسار على حدة، فأي تغيير في مفاتيح
+ * الأسعار يحتاج تتبّع كل موضع — ومن يفوته موضع يحصل على مكافئ خطأ بصمت. ويعيد
+ * `null` للسعر غير الصالح بدل أن يحسب المكافئ صفرًا.
+ */
+export function rateFromSettings(
+  settings: SettingsMap,
+  currency: string,
+  base: string,
+): number | null {
+  if (currency === base) return 1;
+  const raw = currency === "SAR" ? settings["finance.rate.SAR"] : settings["finance.rate.USD"];
+  const rate = Number(raw);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
 /** حدود التحقق عند الحفظ — لكل مفتاح ما يُقبل فيه. */
 export function validateSetting(key: SettingKey, value: string): string | null {
   const trimmed = value.trim();

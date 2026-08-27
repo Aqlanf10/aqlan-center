@@ -4,6 +4,7 @@ import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { CLINIC_TIME_ZONE } from "@/lib/db";
 import { clinicDateString } from "@/lib/schedule";
 import { canHandleMoney } from "@/lib/roles";
+import { rateFromSettings } from "@/lib/settings";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -27,19 +28,6 @@ export async function GET(request: Request) {
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل المقبوضات." }, { status: 500 });
   }
-}
-
-/**
- * سعر صرف العملة لحظة الدفع.
- *
- * يُقرأ من الإعدادات هنا ثم يُنسخ في صفّ الدفعة، فلا يتغيّر أثر الدفعة حين يُحدَّث
- * السعر غدًا. وسعرٌ غير صالح يُرفض بدل أن يُحسب المكافئ صفرًا بصمت.
- */
-function rateFor(currency: Currency, base: Currency, settings: Record<string, string>): number | null {
-  if (currency === base) return 1;
-  const raw = currency === "SAR" ? settings["finance.rate.SAR"] : settings["finance.rate.USD"];
-  const rate = Number(raw);
-  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
 export async function POST(request: Request) {
@@ -82,7 +70,7 @@ export async function POST(request: Request) {
   if (!isCurrency(base)) {
     return NextResponse.json({ message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 });
   }
-  const exchangeRate = rateFor(currency, base, settings);
+  const exchangeRate = rateFromSettings(settings, currency, base);
   if (exchangeRate === null) {
     return NextResponse.json(
       { message: "سعر الصرف غير مضبوط. اضبطه في الإعدادات قبل قبض عملة أجنبية." },

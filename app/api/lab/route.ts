@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createLabOrder, getSettings, labCounts, listLabNames, listLabOrders, listParties } from "@/lib/db";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { toWhatsAppNumber } from "@/lib/reminders";
+import { rateFromSettings } from "@/lib/settings";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -93,14 +94,11 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (costCurrency !== base) {
-      const raw = costCurrency === "SAR" ? settings["finance.rate.SAR"] : settings["finance.rate.USD"];
-      const rate = Number(raw);
-      if (!Number.isFinite(rate) || rate <= 0) {
-        return NextResponse.json({ message: "سعر الصرف غير مضبوط في الإعدادات." }, { status: 409 });
-      }
-      exchangeRate = rate;
+    const rate = rateFromSettings(settings, costCurrency, base);
+    if (rate === null) {
+      return NextResponse.json({ message: "سعر الصرف غير مضبوط في الإعدادات." }, { status: 409 });
     }
+    exchangeRate = rate;
   }
 
   try {

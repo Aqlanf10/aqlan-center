@@ -85,6 +85,7 @@ export const REVENUE_ACCOUNT = "4101";
 export const DISCOUNT_ACCOUNT = "4201";
 export const CASH_DIFF_ACCOUNT = "5961";
 export const OPENING_EQUITY_ACCOUNT = "3101";
+export const FX_ACCOUNT = "5951";
 
 /** حساب المصروف لكل تصنيف — القائمة الوحيدة التي تربط التشغيل بالمحاسبة. */
 export const EXPENSE_ACCOUNT: Record<string, string> = {
@@ -328,6 +329,43 @@ export function cashDifferenceEntry(input: {
         amountMinor: amount,
         side: "credit",
       },
+    ],
+  };
+}
+
+/**
+ * قيد إعادة تقييم النقد الأجنبي.
+ *
+ * ارتفع سعر العملة: مدين صندوقها، دائن فروقات الصرف — ربحٌ حقيقي وإن لم يدخل ريال
+ * جديد إلى الدرج. وانخفض: العكس.
+ *
+ * والفرق يدخل **قائمة الدخل** لا حقوق الملكية، وهذا هو المتعارف عليه عالميًا للبنود
+ * النقدية (IAS 21): من احتفظ بدولارات فربح من ارتفاعها فقد ربح من قرارٍ اتخذه، لا
+ * من رأس مال أضافه.
+ *
+ * ويُقيَّد في حساب مستقل لا يُخلط بعجز الجرد: الجرد يعالج الفرق بين الدرج والدفاتر،
+ * وإعادة التقييم تعالج تغيّر السعر — وخلطهما يجعل الحسابين بلا معنى، فلا يُعرف أضاع
+ * الصندوق مالًا أم تحرّك السعر.
+ */
+export function revaluationEntry(input: {
+  date: string;
+  currency: Currency;
+  differenceMinor: number;
+}): JournalEntry | null {
+  if (input.differenceMinor === 0) return null;
+  const amount = Math.abs(input.differenceMinor);
+  const gain = input.differenceMinor > 0;
+  const cash = CASH_ACCOUNT[input.currency];
+  return {
+    source: "fx",
+    reference: `FX-${input.date}-${input.currency}`,
+    date: input.date,
+    description: gain
+      ? `فرق إعادة تقييم ${input.currency} — ربح`
+      : `فرق إعادة تقييم ${input.currency} — خسارة`,
+    lines: [
+      { accountCode: gain ? cash : FX_ACCOUNT, amountMinor: amount, side: "debit" },
+      { accountCode: gain ? FX_ACCOUNT : cash, amountMinor: amount, side: "credit" },
     ],
   };
 }

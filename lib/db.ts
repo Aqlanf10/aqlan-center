@@ -1658,6 +1658,7 @@ export async function markPatientRecalled(id: number): Promise<boolean> {
 import {
   ALL_SETTING_KEYS,
   SETTING_DEFAULTS,
+  rateFromSettings,
   withDefaults,
   type SettingKey,
   type SettingsMap,
@@ -1736,6 +1737,7 @@ export async function saveSettings(values: Partial<Record<SettingKey, string>>):
 
 import {
   MINOR_UNITS,
+  isCurrency,
   toBaseAmount,
   type Currency,
   type PaymentLike,
@@ -2968,6 +2970,15 @@ export async function countActiveAdmins(): Promise<number> {
 // ─── الدفاتر المحاسبية ───────────────────────────────────────────────────────
 
 import {
+  effectiveRate,
+  foreignCurrencies,
+  isWorthPosting,
+  revaluationDescription,
+  revaluePosition,
+  type FxPosition,
+} from "./fx";
+import {
+  CASH_ACCOUNT,
   cashDifferenceEntry,
   expenseEntry,
   invoiceEntry,
@@ -2975,6 +2986,8 @@ import {
   openingBalanceEntry,
   payableEntry,
   paymentEntry,
+  revaluationEntry,
+  trialBalance,
   type JournalEntry,
 } from "./accounting";
 
@@ -3105,6 +3118,14 @@ export async function journalEntries(from: string, to: string): Promise<JournalE
   }
 
   // فروق جرد الورديات المغلقة: المعدود ناقص (الافتتاحي + المقبوض − المصروف).
+  //
+  // والفرق يُعدّ **بورق العملة** ثم يُقيَّد **بالمكافئ الأساسي**: الدفاتر كلها بعملة
+  // واحدة، فعجزُ عشرة دولارات ليس عشرة ريالات. وسعرُه سعرُ ما مرّ من تلك العملة في
+  // الوردية نفسها — لا سعر اليوم — فالوردية أُغلقت يومها لا اليوم؛ وإن لم يمرّ منها
+  // شيء (فرقٌ في افتتاحيّها) فسعر الإعدادات هو أقرب ما يُتاح.
+  const settingsNow = await getSettings();
+  const baseCurrency: Currency = isCurrency(settingsNow["finance.base_currency"])
+    ? settingsNow["finance.base_currency"] : "YER";
   for (const row of shifts.rows) {
     const shift = toShift(row);
     if (!shift.counted || !shift.closedAt) continue;
@@ -3120,11 +3141,19 @@ export async function journalEntries(from: string, to: string): Promise<JournalE
       const spent = shiftExpenses.reduce(
         (sum, expense) => expense.currency === currency ? sum + expense.amountMinor : sum, 0);
       const expected = shift.opening[currency] + collected - spent;
+      const rate = effectiveRate(
+        shiftPayments.filter((payment) => payment.currency === currency),
+        currency,
+        baseCurrency,
+        rateFromSettings(settingsNow, currency, baseCurrency) ?? 1,
+      );
       entries.push(cashDifferenceEntry({
         shiftId: shift.id,
         date: clinicDayOf(shift.closedAt),
         currency,
-        differenceMinor: shift.counted[currency] - expected,
+        differenceMinor: toBaseAmount(
+          shift.counted[currency] - expected, currency, baseCurrency, rate,
+        ),
       }));
     }
   }
@@ -3207,6 +3236,113 @@ export async function isPeriodLocked(date: string): Promise<boolean> {
   const lockedBefore = (settings["finance.locked_before"] ?? "").trim();
   if (!lockedBefore) return false;
   return date < lockedBefore;
+}
+
+// ─── إعادة تقييم العملات الأجنبية ────────────────────────────────────────────
+
+export interface FxReport {
+  asOf: string;
+  baseCurrency: Currency;
+  positions: FxPosition[];
+  totalDifferenceMinor: number;
+}
+
+/**
+ * مركز كل عملة أجنبية اليوم: كم منها في الصندوق، وبكم هي في الدفاتر، وكم تساوي.
+ *
+ * الوحدات المحتفظ بها تُحسب من المستندات — سندات القبض ناقص سندات الصرف بتلك
+ * العملة — لا من جرد الوردية. والفرق مقصود: **الجرد يعالج الفرق بين الدرج
+ * والدفاتر، وإعادة التقييم تعالج تغيّر السعر**، وخلطهما يجعل الحسابين بلا معنى فلا
+ * يُعرف أضاع الصندوق مالًا أم تحرّك السعر.
+ *
+ * والقيمة الدفترية تُقرأ من رصيد حساب صندوق العملة في ميزان المراجعة — بكل مصادره،
+ * ومنها إعادات التقييم السابقة. فترحيلُ الفرق يجعل الفرق التالي صفرًا: لا ازدواج
+ * ولو رُحّل مرتين في اليوم نفسه.
+ */
+export async function fxReport(asOf: string): Promise<FxReport> {
+  await ensureSchema();
+  const settings = await getSettings();
+  const baseCurrency: Currency = isCurrency(settings["finance.base_currency"])
+    ? settings["finance.base_currency"] : "YER";
+
+  const [entries, { rows: flows }] = await Promise.all([
+    journalEntries(FX_EPOCH, asOf),
+    getPool().query<{ currency: string; held: string }>(
+      `SELECT currency, COALESCE(SUM(held), 0) AS held FROM (
+         SELECT currency,
+                SUM(CASE WHEN kind = 'refund' THEN -amount_minor ELSE amount_minor END) AS held
+           FROM payments
+          WHERE (created_at AT TIME ZONE $1)::date <= $2::date
+          GROUP BY currency
+         UNION ALL
+         SELECT currency, -SUM(amount_minor) AS held
+           FROM expenses
+          WHERE (created_at AT TIME ZONE $1)::date <= $2::date
+          GROUP BY currency
+       ) AS movements GROUP BY currency`,
+      [CLINIC_TIME_ZONE, asOf],
+    ),
+  ]);
+
+  const balances = trialBalance(entries);
+  const heldByCurrency = new Map<string, number>(
+    flows.map((row) => [row.currency, toMinor(row.held)]),
+  );
+
+  const positions = foreignCurrencies(baseCurrency).map((currency) => {
+    const account = balances.find((row) => row.code === CASH_ACCOUNT[currency]);
+    return revaluePosition({
+      currency,
+      base: baseCurrency,
+      heldMinor: heldByCurrency.get(currency) ?? 0,
+      bookValueMinor: account?.balanceMinor ?? 0,
+      rate: rateFromSettings(settings, currency, baseCurrency) ?? 0,
+    });
+  });
+
+  return {
+    asOf,
+    baseCurrency,
+    positions,
+    totalDifferenceMinor: positions.reduce((sum, row) => sum + row.differenceMinor, 0),
+  };
+}
+
+/** أول يوم تُقرأ منه الدفاتر لحساب رصيد الصندوق — قبل أي حركة ممكنة. */
+const FX_EPOCH = "2000-01-01";
+
+/**
+ * ترحيل فرق إعادة التقييم قيدًا.
+ *
+ * يُعاد الحساب على الخادم ولا يُقبل الفرق من الواجهة: رقمٌ يأتي من المتصفّح يعني أن
+ * يستطيع من يفتح الشاشة أن يكتب في الدفاتر ما يشاء.
+ */
+export async function postRevaluation(input: {
+  currency: Currency;
+  asOf: string;
+  createdBy: string;
+}): Promise<{ entryId: number | null; reason: "locked" | "nothing" | "no_rate" | null }> {
+  if (await isPeriodLocked(input.asOf)) return { entryId: null, reason: "locked" };
+
+  const report = await fxReport(input.asOf);
+  const position = report.positions.find((row) => row.currency === input.currency);
+  if (!position || position.rate <= 0) return { entryId: null, reason: "no_rate" };
+  if (!isWorthPosting(position.differenceMinor)) return { entryId: null, reason: "nothing" };
+
+  const entry = revaluationEntry({
+    date: input.asOf,
+    currency: input.currency,
+    differenceMinor: position.differenceMinor,
+  });
+  if (!entry) return { entryId: null, reason: "nothing" };
+
+  const entryId = await createManualEntry({
+    date: input.asOf,
+    description: revaluationDescription(input.currency, position.rate, input.asOf),
+    lines: entry.lines,
+    createdBy: input.createdBy,
+  });
+  return { entryId, reason: null };
 }
 
 // ─── الأرصدة الافتتاحية للمرضى ───────────────────────────────────────────────
