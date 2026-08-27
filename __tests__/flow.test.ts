@@ -15,6 +15,7 @@ const NOW = new Date("2026-08-24T10:00:00.000Z");
 
 function visit(over: Partial<Visit> & { id: number }): Visit {
   return {
+    patientId: null,
     patientName: `مريض ${over.id}`,
     patientPhone: null,
     note: null,

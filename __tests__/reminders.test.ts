@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { friendlyDate, friendlyTime, reminderText, toWhatsAppNumber, whatsAppLink } from "../lib/reminders";
+import { friendlyDate,
+  friendlyDateLong, friendlyTime, reminderText, toWhatsAppNumber, whatsAppLink } from "../lib/reminders";
 import type { Appointment } from "../lib/schedule";
 
 const appointment: Appointment = {
@@ -66,5 +67,12 @@ describe("الرابط", () => {
   it("يعيد null بلا رقم صالح بدل رابط مكسور", () => {
     expect(whatsAppLink({ ...appointment, patientPhone: null }, "upcoming")).toBeNull();
     expect(whatsAppLink({ ...appointment, patientPhone: "04253028" }, "upcoming")).toBeNull();
+  });
+});
+
+describe("تاريخ الملف", () => {
+  it("يحمل السنة — ملف مريض تقويم فيه زيارات من سنتين", () => {
+    expect(friendlyDateLong("2026-08-27")).toBe("الخميس 27/08/2026");
+    expect(friendlyDateLong("2024-08-27")).toBe("الثلاثاء 27/08/2024");
   });
 });

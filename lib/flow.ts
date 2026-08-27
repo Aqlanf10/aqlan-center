@@ -21,6 +21,8 @@ export type VisitStatus = "waiting" | "called" | "in_chair" | "done";
 
 export interface Visit {
   id: number;
+  /** سجل المريض إن كانت الزيارة مرتبطة به. المريض المشي يبقى بلا سجل حتى يُحجز له. */
+  patientId: number | null;
   patientName: string;
   patientPhone: string | null;
   note: string | null;

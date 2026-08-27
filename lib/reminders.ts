@@ -62,6 +62,18 @@ export function friendlyTime(time: string): string {
   return `${display}:${minute} ${period}`;
 }
 
+/**
+ * «الخميس 27/08/2026» — بالسنة، للتاريخ لا للتذكير.
+ *
+ * رسالة التذكير تتحدث عن موعد هذا الأسبوع فالسنة فيها ضجيج. أما ملف مريض تقويم بعد
+ * عامين ففيه زيارات من سنتين، و«27/08» وحدها لا تقول أيّهما.
+ */
+export function friendlyDateLong(date: string): string {
+  const parsed = new Date(`${date}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return `${friendlyDate(date)}/${parsed.getFullYear()}`;
+}
+
 export type ReminderKind = "upcoming" | "missed";
 
 /**

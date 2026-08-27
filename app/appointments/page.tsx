@@ -134,14 +134,14 @@ export default function AppointmentsPage() {
 
   return (
     <main className="mx-auto max-w-4xl p-4 pb-24">
-      <header className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-extrabold">المواعيد</h1>
-          <p className="text-xs text-slate-500">الحجز محكوم بعدد الكراسي — لا يُوعَد بما لا يتسع له اليوم.</p>
-        </div>
-        <a href="/" className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600">
-          لوحة اليوم
-        </a>
+      <header className="mb-4">
+        <h1 className="text-xl font-extrabold leading-tight">المواعيد</h1>
+        <p className="text-xs text-slate-500">الحجز محكوم بعدد الكراسي — لا يُوعَد بما لا يتسع له اليوم.</p>
+        <nav className="mt-2 flex flex-wrap gap-1.5">
+          <a href="/" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">لوحة اليوم</a>
+          <a href="/patients" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المرضى</a>
+          <a href="/requests" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الطلبات</a>
+        </nav>
       </header>
 
       <div className="mb-4 flex items-center gap-2">
@@ -225,7 +225,9 @@ export default function AppointmentsPage() {
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="rounded-xl bg-navy-800 px-2.5 py-1 text-xs font-extrabold text-white">{item.scheduledTime}</span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-base font-extrabold">{item.patientName}</p>
+                    <a href={`/patients/${item.patientId}`} className="block truncate text-base font-extrabold underline decoration-slate-300 underline-offset-4">
+                      {item.patientName}
+                    </a>
                     <p className="text-xs text-slate-500">{item.durationMinutes} دقيقة · {STATUS_LABEL[item.status] ?? item.status}</p>
                   </div>
                   {item.status === "booked" || item.status === "no_show" ? (

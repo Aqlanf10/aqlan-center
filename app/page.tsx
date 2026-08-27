@@ -260,6 +260,12 @@ export default function FlowBoard() {
             ) : null}
           </a>
           <a
+            href="/patients"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800"
+          >
+            المرضى
+          </a>
+          <a
             href="/display"
             target="_blank"
             rel="noopener"
@@ -453,7 +459,13 @@ export default function FlowBoard() {
               </div>
               {chair.occupant ? (
                 <>
-                  <p className="mt-1 truncate text-base font-extrabold">{chair.occupant.patientName}</p>
+                  {chair.occupant.patientId ? (
+                    <a href={`/patients/${chair.occupant.patientId}`} className="mt-1 block truncate text-base font-extrabold underline decoration-slate-300 underline-offset-4">
+                      {chair.occupant.patientName}
+                    </a>
+                  ) : (
+                    <p className="mt-1 truncate text-base font-extrabold">{chair.occupant.patientName}</p>
+                  )}
                   <button
                     onClick={() => finish(chair.occupant!)}
                     disabled={busy}
@@ -540,7 +552,15 @@ export default function FlowBoard() {
                     {row.waitedMinutes} د
                   </span>
                   <div className="min-w-[9rem] flex-1">
-                    <p className="truncate text-base font-extrabold">{row.visit.patientName}</p>
+                    {/* الاسم رابط إلى الملف حين يكون للمريض سجل: الاستقبال تحتاج
+                        ملاحظته وتاريخه وهو أمامها، لا بعد أن يدخل الكرسي. */}
+                    {row.visit.patientId ? (
+                      <a href={`/patients/${row.visit.patientId}`} className="block truncate text-base font-extrabold underline decoration-slate-300 underline-offset-4">
+                        {row.visit.patientName}
+                      </a>
+                    ) : (
+                      <p className="truncate text-base font-extrabold">{row.visit.patientName}</p>
+                    )}
                     {row.visit.patientPhone ? (
                       <p className="text-xs text-slate-500" dir="ltr">{row.visit.patientPhone}</p>
                     ) : null}

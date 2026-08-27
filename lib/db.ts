@@ -176,6 +176,7 @@ interface VisitRow {
 function toVisit(row: VisitRow): Visit {
   return {
     id: row.id,
+    patientId: row.patient_id,
     patientName: row.patient_name,
     patientPhone: row.patient_phone,
     note: row.note,
@@ -878,4 +879,85 @@ export async function confirmBookingRequest(input: {
   } finally {
     client.release();
   }
+}
+
+// ─── ملف المريض ──────────────────────────────────────────────────────────────
+
+export interface PatientFile {
+  patient: Patient & { note: string | null; createdAt: string };
+  visits: Visit[];
+  appointments: Appointment[];
+}
+
+/**
+ * ملف المريض: بياناته وتاريخه في استعلام واحد لكل جزء.
+ *
+ * الاستقبال تُسأل عشر مرات في اليوم «متى كانت آخر زيارة له؟» و«هل عنده موعد؟»،
+ * وبلا هذه الصفحة تُجاب من الذاكرة أو لا تُجاب. وهي أيضًا ما يجعل بقية الوحدات
+ * ذات معنى: موعد بلا تاريخ مريض هو سطر في جدول، لا متابعة علاج.
+ *
+ * التاريخ محدود بعدد معقول لكل جزء: ملف مريض تقويم بعد عامين فيه عشرات الزيارات،
+ * وتحميلها كلها في هاتف الاستقبال يبطئ الصفحة بلا أن يقرأها أحد.
+ */
+export async function getPatientFile(id: number): Promise<PatientFile | null> {
+  await ensureSchema();
+  const pool = getPool();
+  const { rows: patients } = await pool.query<PatientRow & { note: string | null; created_at: Date }>(
+    `SELECT id, patient_number, full_name, phone, note, created_at FROM patients WHERE id = $1`,
+    [id],
+  );
+  if (!patients[0]) return null;
+
+  const [{ rows: visitRows }, { rows: appointmentRows }] = await Promise.all([
+    pool.query<VisitRow>(
+      `SELECT * FROM visits WHERE patient_id = $1 ORDER BY arrived_at DESC LIMIT 50`,
+      [id],
+    ),
+    pool.query<AppointmentRow>(
+      `${APPOINTMENT_SELECT} WHERE a.patient_id = $1
+        ORDER BY a.scheduled_date DESC, a.scheduled_time DESC LIMIT 50`,
+      [id],
+    ),
+  ]);
+
+  return {
+    patient: {
+      ...toPatient(patients[0]),
+      note: patients[0].note,
+      createdAt: patients[0].created_at.toISOString(),
+    },
+    visits: visitRows.map(toVisit),
+    appointments: appointmentRows.map(toAppointment),
+  };
+}
+
+/**
+ * يحدّث بيانات المريض القابلة للتصحيح.
+ *
+ * الاسم والرقم يُكتبان على عجل في يوم مزدحم، وبلا تصحيح يبقى الخطأ إلى الأبد ويُنشأ
+ * سجل ثانٍ بدلًا منه. الرقم يُوحَّد كما في كل مكان آخر يكتب سجل مريض.
+ */
+export async function updatePatient(id: number, input: {
+  fullName?: string;
+  phone?: string | null;
+  note?: string | null;
+}): Promise<Patient | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PatientRow>(
+    `UPDATE patients SET
+       full_name = COALESCE($2, full_name),
+       phone     = CASE WHEN $3::boolean THEN $4::text ELSE phone END,
+       note      = CASE WHEN $5::boolean THEN $6::text ELSE note  END
+     WHERE id = $1
+     RETURNING id, patient_number, full_name, phone`,
+    [
+      id,
+      input.fullName ?? null,
+      input.phone !== undefined,
+      input.phone !== undefined ? normalizePatientPhone(input.phone) : null,
+      input.note !== undefined,
+      input.note !== undefined ? input.note : null,
+    ],
+  );
+  return rows[0] ? toPatient(rows[0]) : null;
 }
