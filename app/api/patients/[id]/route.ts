@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { getPatientFile, updatePatient } from "@/lib/db";
-import { toWhatsAppNumber } from "@/lib/reminders";
+import { CLINIC_TIME_ZONE, getPatientFile, updatePatient } from "@/lib/db";
+import { validatePatient } from "@/lib/patient";
+import { clinicDateString } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -40,36 +41,30 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
   const source = (body ?? {}) as Record<string, unknown>;
 
-  const patch: { fullName?: string; phone?: string | null; note?: string | null } = {};
+  // التعديل يمرّ من نفس تحقّق الإنشاء: قاعدتان مختلفتان للاسم أو سنة الميلاد تعنيان
+  // أن ما يُرفض عند الإنشاء يدخل من باب التعديل.
+  const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
+  const current = await getPatientFile(id).catch(() => null);
+  if (!current) return NextResponse.json({ message: "لا يوجد مريض بهذا الرقم." }, { status: 404 });
 
-  if (typeof source.fullName === "string") {
-    const fullName = source.fullName.trim().replace(/\s+/g, " ");
-    if (fullName.length < 2 || fullName.length > 120) {
-      return NextResponse.json({ message: "الاسم غير صالح." }, { status: 400 });
-    }
-    patch.fullName = fullName;
-  }
+  const merged = {
+    fullName: source.fullName ?? current.patient.fullName,
+    phone: source.phone ?? current.patient.phone ?? "",
+    altPhone: source.altPhone ?? current.patient.altPhone ?? "",
+    gender: source.gender ?? current.patient.gender,
+    birthYear: source.birthYear ?? current.patient.birthYear ?? "",
+    address: source.address ?? current.patient.address ?? "",
+    medicalAlert: source.medicalAlert ?? current.patient.medicalAlert ?? "",
+    note: source.note ?? current.patient.note ?? "",
+  };
 
-  if (typeof source.phone === "string") {
-    const raw = source.phone.trim();
-    // حذف الرقم مسموح صراحةً؛ ورقمٌ مكتوب يُرفض إن لم يصلح للاتصال، لأن رقمًا خاطئًا
-    // في السجل أسوأ من غيابه: الاستقبال تظن أنها تستطيع تذكيره ولا تستطيع.
-    if (raw && !toWhatsAppNumber(raw) && !/^\d[\d\-\s]{5,}$/.test(raw)) {
-      return NextResponse.json({ message: "رقم الجوال غير صحيح." }, { status: 400 });
-    }
-    patch.phone = raw || null;
-  }
-
-  if (typeof source.note === "string") {
-    patch.note = source.note.trim().slice(0, 2000) || null;
-  }
-
-  if (Object.keys(patch).length === 0) {
-    return NextResponse.json({ message: "لا يوجد ما يُحدَّث." }, { status: 400 });
+  const validation = validatePatient(merged, today);
+  if (!validation.ok) {
+    return NextResponse.json({ message: validation.message, field: validation.field }, { status: 400 });
   }
 
   try {
-    const updated = await updatePatient(id, patch);
+    const updated = await updatePatient(id, validation.value);
     if (!updated) return NextResponse.json({ message: "لا يوجد مريض بهذا الرقم." }, { status: 404 });
     return NextResponse.json(updated);
   } catch {

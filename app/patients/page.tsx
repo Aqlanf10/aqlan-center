@@ -1,77 +1,114 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { GENDER_LABEL, type Gender } from "@/lib/patient";
 
 /**
- * البحث عن مريض.
+ * المرضى: بحث، وتصفّح، وإنشاء.
  *
- * السؤال الذي تُسأله الاستقبال عشر مرات في اليوم: «متى كانت آخر زيارة له؟»، «هل عنده
- * موعد؟». بلا هذه الصفحة يُجاب من الذاكرة أو لا يُجاب — وهو ما يجعل المريض يشعر أن
- * العيادة لا تعرفه.
+ * الاستقبال تصل إلى هذه الشاشة من سؤالين: «ابحث لي عن فلان» و«سجّل مريضًا جديدًا».
+ * فهما الشيئان الظاهران، والباقي — التصفّح والترقيم — يخدم الحالة الثالثة: أن تكون
+ * تبحث عن اسم لا تتذكّر هجاءه.
  */
 
-interface Patient { id: number; patientNumber: string; fullName: string; phone: string | null }
+interface PatientSummary {
+  id: number;
+  patientNumber: string;
+  fullName: string;
+  phone: string | null;
+  medicalAlert: string | null;
+}
+
+interface PageResult { rows: PatientSummary[]; total: number; page: number; pageSize: number }
 
 export default function PatientsPage() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Patient[]>([]);
-  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState<PatientSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const [browsing, setBrowsing] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [searched, setSearched] = useState(false);
+  const [adding, setAdding] = useState(false);
 
-  const search = useCallback(async (term: string) => {
-    if (term.trim().length < 2) { setResults([]); setSearched(false); return; }
-    setSearching(true);
+  const load = useCallback(async (term: string, targetPage: number) => {
+    setLoading(true);
     try {
-      const response = await fetch(`/api/patients?q=${encodeURIComponent(term.trim())}`, { cache: "no-store" });
+      const url = term.trim().length >= 2
+        ? `/api/patients?q=${encodeURIComponent(term.trim())}`
+        : `/api/patients?page=${targetPage}`;
+      const response = await fetch(url, { cache: "no-store" });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message ?? "تعذّر البحث.");
-      setResults(payload as Patient[]);
+      if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
+      if (Array.isArray(payload)) {
+        setResults(payload as PatientSummary[]);
+        setBrowsing(false);
+      } else {
+        const result = payload as PageResult;
+        setResults(result.rows);
+        setTotal(result.total);
+        setPageSize(result.pageSize);
+        setBrowsing(true);
+      }
       setError(null);
-    } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : "تعذّر البحث.");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
     } finally {
-      setSearching(false);
-      setSearched(true);
+      setLoading(false);
     }
   }, []);
 
-  // بحث بعد توقف الكتابة لا مع كل حرف: طلبٌ لكل حرف يُثقل الاتصال ويعيد نتائج قديمة
-  // بعد الجديدة، فتظهر للاستقبال نتيجةُ «مح» بعد أن كتبت «محمد».
+  // بحث بعد توقف الكتابة لا مع كل حرف: طلبٌ لكل حرف يُثقل الاتصال ويعيد نتيجة «مح»
+  // بعد أن كتبت الاستقبال «محمد».
   useEffect(() => {
-    const timer = setTimeout(() => { void search(query); }, 300);
+    const timer = setTimeout(() => { void load(query, page); }, 300);
     return () => clearTimeout(timer);
-  }, [query, search]);
+  }, [query, page, load]);
+
+  const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">المرضى</h1>
-        <p className="text-xs text-slate-500">ابحث بالاسم أو رقم الجوال</p>
+      <header className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-extrabold leading-tight">المرضى</h1>
+          <p className="text-xs text-slate-500">
+            {browsing && total > 0 ? `${total} مريضًا مسجّلًا` : "ابحث بالاسم أو رقم الجوال أو رقم الملف"}
+          </p>
+        </div>
+        <button
+          onClick={() => setAdding((open) => !open)}
+          className="shrink-0 rounded-xl bg-brand-orange px-4 py-2 text-sm font-extrabold text-white"
+        >
+          {adding ? "إغلاق" : "+ مريض جديد"}
+        </button>
       </header>
+
+      {adding ? (
+        <NewPatientForm
+          onCreated={(patient) => { window.location.href = `/patients/${patient.id}`; }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : null}
 
       <input
         value={query}
-        onChange={(event) => setQuery(event.target.value)}
+        onChange={(event) => { setQuery(event.target.value); setPage(0); }}
         placeholder="اسم المريض أو رقمه"
         aria-label="بحث عن مريض"
         className="mb-4 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-base outline-none focus:border-brand-blue"
-        autoFocus
       />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
       ) : null}
 
-      {query.trim().length < 2 ? (
+      {loading && results.length === 0 ? (
+        <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">جارٍ التحميل…</p>
+      ) : results.length === 0 ? (
         <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">
-          اكتب حرفين فأكثر للبحث.
-        </p>
-      ) : searching && results.length === 0 ? (
-        <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">جارٍ البحث…</p>
-      ) : results.length === 0 && searched ? (
-        <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">
-          لا يوجد مريض بهذا الاسم. يُنشأ السجل تلقائيًا عند حجز موعد أو جلسة قادمة.
+          {query.trim() ? "لا يوجد مريض بهذا الاسم أو الرقم." : "لا مرضى مسجّلون بعد."}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -88,6 +125,13 @@ export default function PatientsPage() {
                   ) : (
                     <span className="block text-xs text-amber-600">بلا رقم — لا يمكن تذكيره</span>
                   )}
+                  {/* التنبيه الطبي يظهر في القائمة لا في الملف وحده: يُقرأ قبل أن
+                      يُفتح السجل، وهو المقصود منه. */}
+                  {patient.medicalAlert ? (
+                    <span className="mt-1 inline-block rounded-lg bg-red-50 px-2 py-0.5 text-[11px] font-bold text-red-700">
+                      ⚠ {patient.medicalAlert}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="shrink-0 text-xs font-bold text-slate-400">{patient.patientNumber}</span>
               </a>
@@ -95,6 +139,135 @@ export default function PatientsPage() {
           ))}
         </ul>
       )}
+
+      {browsing && lastPage > 0 ? (
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <button
+            onClick={() => setPage((current) => Math.max(0, current - 1))}
+            disabled={page === 0}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold disabled:opacity-40"
+          >
+            السابق
+          </button>
+          <span className="text-xs font-bold text-slate-400">صفحة {page + 1} من {lastPage + 1}</span>
+          <button
+            onClick={() => setPage((current) => Math.min(lastPage, current + 1))}
+            disabled={page >= lastPage}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold disabled:opacity-40"
+          >
+            التالي
+          </button>
+        </div>
+      ) : null}
     </main>
+  );
+}
+
+function NewPatientForm({ onCreated, onCancel }: {
+  onCreated: (patient: { id: number }) => void;
+  onCancel: () => void;
+}) {
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [gender, setGender] = useState<Gender>("unknown");
+  const [birthYear, setBirthYear] = useState("");
+  const [medicalAlert, setMedicalAlert] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/patients", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fullName, phone, gender, birthYear, medicalAlert }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) { setError(payload?.message ?? "تعذّر الحفظ."); return; }
+      onCreated(payload as { id: number });
+    } catch {
+      setError("تعذّر الاتصال بالخادم.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="mb-4 rounded-2xl border border-brand-blue bg-white p-4">
+      {/* الحد الأدنى فقط هنا: الاسم يكفي لفتح سجل، والبقية تُكمَّل من الملف لاحقًا.
+          نموذجٌ من ثمانية حقول أمام مريض واقف ينتهي بسجلات نصف فارغة أو بلا سجل. */}
+      <h2 className="mb-3 text-sm font-bold">مريض جديد</h2>
+      <input
+        value={fullName}
+        onChange={(event) => setFullName(event.target.value)}
+        placeholder="الاسم الكامل"
+        aria-label="الاسم الكامل"
+        autoFocus
+        className="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-blue"
+      />
+      <div className="mb-2 flex flex-wrap gap-2">
+        <input
+          value={phone}
+          onChange={(event) => setPhone(event.target.value)}
+          placeholder="رقم الجوال"
+          aria-label="رقم الجوال"
+          dir="ltr"
+          inputMode="tel"
+          className="min-w-[9rem] flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-blue"
+        />
+        <input
+          value={birthYear}
+          onChange={(event) => setBirthYear(event.target.value)}
+          placeholder="سنة الميلاد"
+          aria-label="سنة الميلاد"
+          dir="ltr"
+          inputMode="numeric"
+          className="w-28 rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-blue"
+        />
+      </div>
+      <div className="mb-2 flex gap-2">
+        {(["male", "female", "unknown"] as Gender[]).map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => setGender(option)}
+            className={`flex-1 rounded-xl border px-3 py-2 text-sm font-bold ${
+              gender === option ? "border-brand-blue bg-brand-blue text-white" : "border-slate-200 bg-white text-slate-600"
+            }`}
+          >
+            {GENDER_LABEL[option]}
+          </button>
+        ))}
+      </div>
+      <input
+        value={medicalAlert}
+        onChange={(event) => setMedicalAlert(event.target.value)}
+        placeholder="تنبيه طبي (اختياري) — حساسية، سكري، مميعات دم"
+        aria-label="تنبيه طبي"
+        className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-blue"
+      />
+      {error ? (
+        <p role="alert" className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={busy || fullName.trim().length < 2}
+          className="flex-1 rounded-xl bg-brand-orange py-2.5 text-sm font-extrabold text-white disabled:opacity-50"
+        >
+          {busy ? "جارٍ الحفظ…" : "احفظ وافتح الملف"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-600"
+        >
+          إلغاء
+        </button>
+      </div>
+    </form>
   );
 }

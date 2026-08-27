@@ -100,6 +100,14 @@ export function ensureSchema(): Promise<void> {
         created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS patients_name_idx ON patients (full_name);
+      -- بيانات المريض التي تحتاجها عيادة تعمل: رقم بديل، جنس، سنة ميلاد، عنوان،
+      -- وتنبيه طبي يُقرأ قبل الإجراء لا بعده.
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS alt_phone     TEXT;
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS gender        TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS birth_year    INTEGER;
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS address       TEXT;
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS medical_alert TEXT;
+      CREATE INDEX IF NOT EXISTS patients_phone_idx ON patients (phone);
 
       CREATE TABLE IF NOT EXISTS appointments (
         id               SERIAL PRIMARY KEY,
@@ -519,11 +527,15 @@ export async function createStaffUser(input: {
 
 import type { Appointment, AppointmentStatus } from "./schedule";
 
-export interface Patient {
+import type { Gender, Patient, PatientInput } from "./patient";
+
+/** ما يكفي لقائمة بحث: الحقول الثقيلة لا تُحمَّل لعشرين نتيجة لن تُقرأ. */
+export interface PatientSummary {
   id: number;
   patientNumber: string;
   fullName: string;
   phone: string | null;
+  medicalAlert: string | null;
 }
 
 interface PatientRow {
@@ -531,13 +543,30 @@ interface PatientRow {
   patient_number: string;
   full_name: string;
   phone: string | null;
+  alt_phone: string | null;
+  gender: string;
+  birth_year: number | null;
+  address: string | null;
+  medical_alert: string | null;
+  note: string | null;
+  created_at: Date;
 }
+
+const PATIENT_COLUMNS = `id, patient_number, full_name, phone, alt_phone, gender,
+                         birth_year, address, medical_alert, note, created_at`;
 
 const toPatient = (row: PatientRow): Patient => ({
   id: row.id,
   patientNumber: row.patient_number,
   fullName: row.full_name,
   phone: row.phone,
+  altPhone: row.alt_phone,
+  gender: (row.gender as Gender) ?? "unknown",
+  birthYear: row.birth_year,
+  address: row.address,
+  medicalAlert: row.medical_alert,
+  note: row.note,
+  createdAt: row.created_at.toISOString(),
 });
 
 /**
@@ -575,17 +604,54 @@ function phoneLookupForms(raw: string | null | undefined): string[] {
  * البحث بالجزء لا بالبداية: الاستقبال تتذكر «محمد» من «عبدالله محمد سالم»، والبحث
  * بالبداية وحده كان سيعيد لا شيء فتُنشئ سجلًا مكررًا لمريض موجود.
  */
-export async function searchPatients(term: string, limit = 8): Promise<Patient[]> {
+export async function searchPatients(term: string, limit = 8): Promise<PatientSummary[]> {
   await ensureSchema();
   const trimmed = term.trim();
   if (!trimmed) return [];
+  // الرقم يُبحث عنه بصيغتيه: من كتب `770…` يجب أن يجد سجلًا مخزّنًا `967770…`.
+  const forms = phoneLookupForms(trimmed);
   const { rows } = await getPool().query<PatientRow>(
-    `SELECT id, patient_number, full_name, phone FROM patients
-      WHERE full_name ILIKE $1 OR phone ILIKE $1
+    `SELECT id, patient_number, full_name, phone, medical_alert FROM patients
+      WHERE full_name ILIKE $1
+         OR phone ILIKE $1 OR alt_phone ILIKE $1
+         OR phone = ANY($3::text[]) OR alt_phone = ANY($3::text[])
+         OR patient_number ILIKE $1
       ORDER BY full_name LIMIT $2`,
-    [`%${trimmed}%`, limit],
+    [`%${trimmed}%`, limit, forms],
   );
-  return rows.map(toPatient);
+  return rows.map((row) => ({
+    id: row.id,
+    patientNumber: row.patient_number,
+    fullName: row.full_name,
+    phone: row.phone,
+    medicalAlert: row.medical_alert,
+  }));
+}
+
+/** صفحة من كل المرضى — للتصفّح حين لا يعرف الباحث ما يكتب. */
+export async function listPatients(offset: number, limit: number): Promise<{
+  rows: PatientSummary[]; total: number;
+}> {
+  await ensureSchema();
+  const pool = getPool();
+  const [{ rows }, { rows: counted }] = await Promise.all([
+    pool.query<PatientRow>(
+      `SELECT id, patient_number, full_name, phone, medical_alert FROM patients
+        ORDER BY created_at DESC, id DESC OFFSET $1 LIMIT $2`,
+      [offset, limit],
+    ),
+    pool.query<{ c: string }>(`SELECT count(*)::int AS c FROM patients`),
+  ]);
+  return {
+    rows: rows.map((row) => ({
+      id: row.id,
+      patientNumber: row.patient_number,
+      fullName: row.full_name,
+      phone: row.phone,
+      medicalAlert: row.medical_alert,
+    })),
+    total: Number(counted[0].c),
+  };
 }
 
 /**
@@ -594,21 +660,35 @@ export async function searchPatients(term: string, limit = 8): Promise<Patient[]
  * الرقم يُولَّد داخل الاستعلام من أكبر رقم موجود، لا من عدّ السجلات: العدّ يعيد استخدام
  * رقم مريض محذوف فيصير لمريضين الرقم نفسه في سجلات مطبوعة قديمة.
  */
-export async function createPatient(input: {
-  fullName: string;
-  phone: string | null;
-  note: string | null;
-}): Promise<Patient> {
+export async function createPatient(input: PatientInput): Promise<Patient> {
   await ensureSchema();
   const { rows } = await getPool().query<PatientRow>(
-    `INSERT INTO patients (patient_number, full_name, phone, note)
+    `INSERT INTO patients (patient_number, full_name, phone, alt_phone, gender, birth_year, address, medical_alert, note)
      VALUES (
        'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
-       $1, $2, $3)
-     RETURNING id, patient_number, full_name, phone`,
-    [input.fullName, normalizePatientPhone(input.phone), input.note],
+       $1, $2::text, $3::text, $4, $5::int, $6::text, $7::text, $8::text)
+     RETURNING ${PATIENT_COLUMNS}`,
+    [
+      input.fullName,
+      normalizePatientPhone(input.phone),
+      normalizePatientPhone(input.altPhone),
+      input.gender,
+      input.birthYear,
+      input.address,
+      input.medicalAlert,
+      input.note,
+    ],
   );
   return toPatient(rows[0]);
+}
+
+/** مريض بعينه — لشاشة التعديل ولكشف الحساب. */
+export async function getPatient(id: number): Promise<Patient | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PatientRow>(
+    `SELECT ${PATIENT_COLUMNS} FROM patients WHERE id = $1`, [id],
+  );
+  return rows[0] ? toPatient(rows[0]) : null;
 }
 
 interface AppointmentRow {
@@ -935,7 +1015,7 @@ export async function confirmBookingRequest(input: {
 // ─── ملف المريض ──────────────────────────────────────────────────────────────
 
 export interface PatientFile {
-  patient: Patient & { note: string | null; createdAt: string };
+  patient: Patient;
   visits: Visit[];
   appointments: Appointment[];
 }
@@ -953,9 +1033,8 @@ export interface PatientFile {
 export async function getPatientFile(id: number): Promise<PatientFile | null> {
   await ensureSchema();
   const pool = getPool();
-  const { rows: patients } = await pool.query<PatientRow & { note: string | null; created_at: Date }>(
-    `SELECT id, patient_number, full_name, phone, note, created_at FROM patients WHERE id = $1`,
-    [id],
+  const { rows: patients } = await pool.query<PatientRow>(
+    `SELECT ${PATIENT_COLUMNS} FROM patients WHERE id = $1`, [id],
   );
   if (!patients[0]) return null;
 
@@ -972,11 +1051,7 @@ export async function getPatientFile(id: number): Promise<PatientFile | null> {
   ]);
 
   return {
-    patient: {
-      ...toPatient(patients[0]),
-      note: patients[0].note,
-      createdAt: patients[0].created_at.toISOString(),
-    },
+    patient: toPatient(patients[0]),
     visits: visitRows.map(toVisit),
     appointments: appointmentRows.map(toAppointment),
   };
@@ -988,26 +1063,36 @@ export async function getPatientFile(id: number): Promise<PatientFile | null> {
  * الاسم والرقم يُكتبان على عجل في يوم مزدحم، وبلا تصحيح يبقى الخطأ إلى الأبد ويُنشأ
  * سجل ثانٍ بدلًا منه. الرقم يُوحَّد كما في كل مكان آخر يكتب سجل مريض.
  */
-export async function updatePatient(id: number, input: {
-  fullName?: string;
-  phone?: string | null;
-  note?: string | null;
-}): Promise<Patient | null> {
+export async function updatePatient(
+  id: number,
+  input: Partial<PatientInput>,
+): Promise<Patient | null> {
   await ensureSchema();
+  // التحديث الجزئي بعلَم لكل حقل: `COALESCE` وحده لا يفرّق بين «لم يُرسَل» و«أُرسل
+  // فارغًا عمدًا»، فمسحُ رقم بديل خاطئ كان مستحيلًا — يبقى إلى الأبد.
+  const has = (key: keyof PatientInput) => input[key] !== undefined;
   const { rows } = await getPool().query<PatientRow>(
     `UPDATE patients SET
-       full_name = COALESCE($2, full_name),
-       phone     = CASE WHEN $3::boolean THEN $4::text ELSE phone END,
-       note      = CASE WHEN $5::boolean THEN $6::text ELSE note  END
+       full_name     = COALESCE($2::text, full_name),
+       phone         = CASE WHEN $3::boolean  THEN $4::text  ELSE phone         END,
+       alt_phone     = CASE WHEN $5::boolean  THEN $6::text  ELSE alt_phone     END,
+       gender        = COALESCE($7::text, gender),
+       birth_year    = CASE WHEN $8::boolean  THEN $9::int   ELSE birth_year    END,
+       address       = CASE WHEN $10::boolean THEN $11::text ELSE address       END,
+       medical_alert = CASE WHEN $12::boolean THEN $13::text ELSE medical_alert END,
+       note          = CASE WHEN $14::boolean THEN $15::text ELSE note          END
      WHERE id = $1
-     RETURNING id, patient_number, full_name, phone`,
+     RETURNING ${PATIENT_COLUMNS}`,
     [
       id,
       input.fullName ?? null,
-      input.phone !== undefined,
-      input.phone !== undefined ? normalizePatientPhone(input.phone) : null,
-      input.note !== undefined,
-      input.note !== undefined ? input.note : null,
+      has("phone"), has("phone") ? normalizePatientPhone(input.phone) : null,
+      has("altPhone"), has("altPhone") ? normalizePatientPhone(input.altPhone) : null,
+      input.gender ?? null,
+      has("birthYear"), has("birthYear") ? input.birthYear : null,
+      has("address"), has("address") ? input.address : null,
+      has("medicalAlert"), has("medicalAlert") ? input.medicalAlert : null,
+      has("note"), has("note") ? input.note : null,
     ],
   );
   return rows[0] ? toPatient(rows[0]) : null;
