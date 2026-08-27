@@ -3,6 +3,7 @@ import { CLINIC_TIME_ZONE, getSettings, listExpensesBetween, recordExpense } fro
 import { isExpenseCategory } from "@/lib/expenses";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
+import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,11 @@ function rateFor(currency: Currency, base: Currency, settings: Record<string, st
 }
 
 export async function GET(request: Request) {
-  if (!(await requireSession())) return denied();
+  const session = await requireSession();
+  if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
   const params = new URL(request.url).searchParams;
   const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
   const from = DATE_PATTERN.test(params.get("from") ?? "") ? params.get("from")! : today;
@@ -35,6 +40,9 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
 
   let body: unknown;
   try { body = await request.json(); } catch {

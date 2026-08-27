@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
 import { getInvoice, setInvoiceStatus } from "@/lib/db";
+import { canHandleMoney, isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
-  if (!(await requireSession())) {
+  const session = await requireSession();
+  if (!session) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
+  }
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
   }
   const { id: rawId } = await context.params;
   const id = Number(rawId);
@@ -27,6 +32,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (!session) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
   const { id: rawId } = await context.params;
   const id = Number(rawId);
   if (!Number.isInteger(id) || id <= 0) {
@@ -42,7 +50,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return NextResponse.json({ message: "حالة غير معروفة." }, { status: 400 });
   }
   // الإلغاء يمسح مبلغًا من رصيد المريض، فهو للمدير وحده.
-  if (status === "cancelled" && session.role !== "admin") {
+  if (status === "cancelled" && !isAdmin(session.role)) {
     return NextResponse.json({ message: "إلغاء الفاتورة للمدير وحده." }, { status: 403 });
   }
 

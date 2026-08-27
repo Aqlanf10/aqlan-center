@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { updateParty } from "@/lib/db";
+import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +10,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (!session) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
-  if (session.role !== "admin") {
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "إدارة الجهات للمدير وحده." }, { status: 403 });
   }
 

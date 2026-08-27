@@ -4,6 +4,7 @@ import { CURRENCY_LABEL, formatMoney, isCurrency } from "@/lib/money";
 import { friendlyDateLong, friendlyTime } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
 import { PrintButton } from "@/components/PrintButton";
+import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,10 @@ export const dynamic = "force-dynamic";
  * يرى في ورقته أنه دفع مئة دولار، لا رقمًا بالريال لا يعرف من أين جاء.
  */
 export default async function ReceiptPage({ params }: { params: Promise<{ id: string }> }) {
-  if (!(await requireSession())) notFound();
+  // الطبيب لا يرى السندات والفواتير: صفحة الطباعة بابٌ خلفي إلى المال لو تُركت
+  // مفتوحة لكل من يملك جلسة.
+  const session = await requireSession();
+  if (!session || !canHandleMoney(session.role)) notFound();
 
   const { id: rawId } = await params;
   const id = Number(rawId);

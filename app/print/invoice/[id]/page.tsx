@@ -4,13 +4,17 @@ import { formatMoney, isCurrency } from "@/lib/money";
 import { friendlyDateLong } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
 import { PrintButton } from "@/components/PrintButton";
+import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 /** الفاتورة — ورقة A4 كاملة لأنها تحمل بنودًا وقد تُحفظ في ملف المريض. */
 export default async function InvoicePage({ params }: { params: Promise<{ id: string }> }) {
-  if (!(await requireSession())) notFound();
+  // الطبيب لا يرى السندات والفواتير: صفحة الطباعة بابٌ خلفي إلى المال لو تُركت
+  // مفتوحة لكل من يملك جلسة.
+  const session = await requireSession();
+  if (!session || !canHandleMoney(session.role)) notFound();
 
   const { id: rawId } = await params;
   const id = Number(rawId);

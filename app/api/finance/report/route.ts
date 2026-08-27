@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { CLINIC_TIME_ZONE, financeSummary } from "@/lib/db";
 import { clinicDateString } from "@/lib/schedule";
+import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
   // التقارير المالية تكشف دخل العيادة كاملًا — للمدير وحده لا لكل من يملك جلسة.
-  if (session.role !== "admin") {
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "التقارير المالية للمدير وحده." }, { status: 403 });
   }
 

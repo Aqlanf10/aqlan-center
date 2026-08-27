@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings, saveSettings } from "@/lib/db";
 import { ALL_SETTING_KEYS, validateSetting, type SettingKey } from "@/lib/settings";
+import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +23,7 @@ export async function PATCH(request: Request) {
   if (!session) return denied();
   // الإعدادات تحكم المال والتشغيل معًا: سعر صرف خاطئ يفسد كل تقرير بعده، وعدد كراسٍ
   // خاطئ يفسد كل حجز. فالتعديل للمدير وحده لا لكل من يملك جلسة.
-  if (session.role !== "admin") {
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "تعديل الإعدادات للمدير وحده." }, { status: 403 });
   }
 

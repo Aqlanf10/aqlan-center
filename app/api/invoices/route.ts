@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createInvoice, getSettings, listPatientInvoices, listParties, listServices } from "@/lib/db";
 import { isCurrency, parseAmount } from "@/lib/money";
+import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +10,11 @@ const denied = () =>
   NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
 
 export async function GET(request: Request) {
-  if (!(await requireSession())) return denied();
+  const session = await requireSession();
+  if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
   const patientId = Number(new URL(request.url).searchParams.get("patientId"));
   if (!Number.isInteger(patientId) || patientId <= 0) {
     return NextResponse.json({ message: "رقم المريض غير صالح." }, { status: 400 });
@@ -24,6 +29,9 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
 
   let body: unknown;
   try { body = await request.json(); } catch {

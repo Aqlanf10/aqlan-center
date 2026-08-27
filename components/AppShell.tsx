@@ -3,6 +3,8 @@
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { useClinicName } from "./SettingsProvider";
+import { useSession } from "./SessionProvider";
+import { canHandleMoney, isAdmin, ROLE_LABEL, type Role } from "@/lib/roles";
 
 /**
  * قشرة البرنامج — تنقّل واحد لكل الشاشات.
@@ -20,18 +22,20 @@ interface NavItem {
   label: string;
   icon: string;
   badge?: "requests" | "lab";
+  /** من يرى هذا الرابط. الغياب يعني الجميع. */
+  needs?: "money" | "admin";
 }
 
 const NAV: NavItem[] = [
   { href: "/", label: "اليوم", icon: "🦷" },
   { href: "/appointments", label: "المواعيد", icon: "🗓" },
   { href: "/patients", label: "المرضى", icon: "👤" },
-  { href: "/finance", label: "الصندوق", icon: "💵" },
+  { href: "/finance", label: "الصندوق", icon: "💵", needs: "money" },
   { href: "/lab", label: "المختبر", icon: "🔧", badge: "lab" },
   { href: "/recall", label: "المتابعة", icon: "📞" },
   { href: "/requests", label: "الطلبات", icon: "📥", badge: "requests" },
   { href: "/report", label: "التقرير", icon: "📊" },
-  { href: "/settings", label: "الإعدادات", icon: "⚙️" },
+  { href: "/settings", label: "الإعدادات", icon: "⚙️", needs: "admin" },
 ];
 
 /**
@@ -44,6 +48,14 @@ const BARE_PATHS = ["/login", "/setup", "/display", "/book", "/print"];
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const clinicName = useClinicName();
+  const session = useSession();
+
+  // القائمة تُبنى مما يستطيع صاحبها فعله: قائمةٌ نصفها يعطي «ممنوع» تُعلّم المستخدم
+  // ألّا يثق بها.
+  const nav = NAV.filter((item) =>
+    item.needs === "admin" ? isAdmin(session?.role)
+      : item.needs === "money" ? canHandleMoney(session?.role)
+      : true);
   const [badges, setBadges] = useState<{ requests: number; lab: number }>({ requests: 0, lab: 0 });
   const [moreOpen, setMoreOpen] = useState(false);
 
@@ -87,7 +99,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
   // شاشة من الشاشات المخفية خلف «المزيد» مفتوحة الآن — فيُضاء الزر.
-  const restActive = NAV.slice(4).some((item) => isActive(item.href));
+  const restActive = nav.slice(4).some((item) => isActive(item.href));
 
   return (
     <div className="min-h-full lg:flex">
@@ -95,7 +107,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <p className="mb-1 text-sm font-extrabold text-navy-900">عيادة عقلان</p>
         <p className="mb-5 line-clamp-2 text-[11px] leading-relaxed text-slate-400">{clinicName}</p>
         <nav className="space-y-1">
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <a
               key={item.href}
               href={item.href}
@@ -111,6 +123,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="mt-5 space-y-1 border-t border-slate-100 pt-4">
+          {session ? (
+            <p className="px-3 pb-1 text-[11px] font-bold text-slate-400">
+              {session.username} · {ROLE_LABEL[session.role as Role] ?? session.role}
+            </p>
+          ) : null}
           <a href="/display" target="_blank" rel="noopener"
             className="block rounded-xl px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50">
             شاشة الصالة ↗
@@ -150,7 +167,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur lg:hidden">
         {moreOpen ? (
           <div className="border-b border-slate-100 p-2">
-            {NAV.slice(4).map((item) => (
+            {nav.slice(4).map((item) => (
               <a
                 key={item.href}
                 href={item.href}
@@ -173,7 +190,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         ) : null}
 
         <div className="flex justify-around">
-          {NAV.slice(0, 4).map((item) => (
+          {nav.slice(0, 4).map((item) => (
             <a
               key={item.href}
               href={item.href}

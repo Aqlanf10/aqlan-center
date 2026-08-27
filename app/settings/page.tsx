@@ -103,6 +103,11 @@ export default function SettingsPage() {
       <header className="mb-4">
         <h1 className="text-xl font-extrabold leading-tight">الإعدادات</h1>
         <p className="text-xs text-slate-500">هوية المركز وأسعار الصرف وقواعد التشغيل</p>
+        <div className="mt-2">
+          <a href="/settings/users" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">
+            المستخدمون والصلاحيات
+          </a>
+        </div>
       </header>
 
       {error ? (

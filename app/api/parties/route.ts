@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createParty, listParties } from "@/lib/db";
 import { isPartyKind } from "@/lib/expenses";
+import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
   // نسبة العمولة تحكم ما يُصرف للأطباء شهريًا، فإنشاء الجهات وتعديلها للمدير وحده.
-  if (session.role !== "admin") {
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "إدارة الجهات للمدير وحده." }, { status: 403 });
   }
 

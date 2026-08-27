@@ -3,6 +3,8 @@ import "./globals.css";
 import { getSettingsSafe } from "@/lib/db";
 import { publicSubset } from "@/lib/settings";
 import { SettingsProvider } from "@/components/SettingsProvider";
+import { SessionProvider } from "@/components/SessionProvider";
+import { requireSession } from "@/lib/session";
 import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
@@ -23,13 +25,19 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1 };
 export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const settings = await getSettingsSafe();
+  const [settings, session] = await Promise.all([
+    getSettingsSafe(),
+    // الجلسة قد تكون غائبة — صفحة الدخول والشاشات العامة تُصيَّر بلا واحدة.
+    requireSession().catch(() => null),
+  ]);
 
   return (
     <html lang="ar" dir="rtl">
       <body className="min-h-full text-navy-900 antialiased">
         <SettingsProvider value={publicSubset(settings)}>
-          <AppShell>{children}</AppShell>
+          <SessionProvider value={session ? { username: session.username, role: session.role } : null}>
+            <AppShell>{children}</AppShell>
+          </SessionProvider>
         </SettingsProvider>
       </body>
     </html>

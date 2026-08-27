@@ -2795,3 +2795,77 @@ export async function partyStatement(partyId: number): Promise<{
   ]);
   return { payables: rows.map(toPayable), expenses };
 }
+
+// ─── المستخدمون ──────────────────────────────────────────────────────────────
+
+export interface StaffAccount {
+  id: number;
+  username: string;
+  displayName: string;
+  role: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export async function listUsers(): Promise<StaffAccount[]> {
+  await ensureSchema();
+  // كلمة المرور المجزّأة لا تخرج من هذه الدالة إطلاقًا: قائمة المستخدمين تُعرض في
+  // شاشة، وما يُرسَل إلى المتصفّح يُقرأ.
+  const { rows } = await getPool().query<{
+    id: number; username: string; display_name: string;
+    role: string; is_active: boolean; created_at: Date;
+  }>(
+    `SELECT id, username, display_name, role, is_active, created_at
+       FROM users ORDER BY is_active DESC, created_at`,
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    role: row.role,
+    isActive: row.is_active,
+    createdAt: row.created_at.toISOString(),
+  }));
+}
+
+export async function updateUser(id: number, input: {
+  displayName?: string; role?: string; isActive?: boolean; passwordHash?: string;
+}): Promise<StaffAccount | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    id: number; username: string; display_name: string;
+    role: string; is_active: boolean; created_at: Date;
+  }>(
+    `UPDATE users SET
+       display_name  = COALESCE($2::text, display_name),
+       role          = COALESCE($3::text, role),
+       is_active     = COALESCE($4::boolean, is_active),
+       password_hash = COALESCE($5::text, password_hash)
+     WHERE id = $1
+     RETURNING id, username, display_name, role, is_active, created_at`,
+    [id, input.displayName ?? null, input.role ?? null, input.isActive ?? null, input.passwordHash ?? null],
+  );
+  if (!rows[0]) return null;
+  return {
+    id: rows[0].id,
+    username: rows[0].username,
+    displayName: rows[0].display_name,
+    role: rows[0].role,
+    isActive: rows[0].is_active,
+    createdAt: rows[0].created_at.toISOString(),
+  };
+}
+
+/**
+ * عدد المديرين الفاعلين.
+ *
+ * يُفحص قبل إيقاف مدير أو تغيير دوره: عيادة بلا مدير فاعل لا يستطيع أحد فيها فتح
+ * الإعدادات ولا رؤية التقارير — ولا إعادة تعيين مدير، لأن ذلك نفسه يحتاج مديرًا.
+ */
+export async function countActiveAdmins(): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ c: string }>(
+    `SELECT count(*)::int AS c FROM users WHERE role = 'admin' AND is_active`,
+  );
+  return Number(rows[0].c);
+}

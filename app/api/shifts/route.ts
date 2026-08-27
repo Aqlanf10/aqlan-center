@@ -10,6 +10,7 @@ import {
 } from "@/lib/db";
 import { expenseTotals } from "@/lib/expenses";
 import { parseAmount, shiftTotals, type Currency } from "@/lib/money";
+import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +33,11 @@ function readAmounts(source: Record<string, unknown>, key: string): Record<Curre
 }
 
 export async function GET() {
-  if (!(await requireSession())) return denied();
+  const session = await requireSession();
+  if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
   try {
     const open = await getOpenShift();
     const [payments, expenses] = open
@@ -56,6 +61,9 @@ export async function GET() {
 export async function POST(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
 
   let body: unknown;
   try { body = await request.json(); } catch {
@@ -82,6 +90,9 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
 
   let body: unknown;
   try { body = await request.json(); } catch {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings, updateService } from "@/lib/db";
 import { isCurrency, parseAmount } from "@/lib/money";
+import { canHandleMoney, isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +11,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (!session) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
-  if (session.role !== "admin") {
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "تعديل الأسعار للمدير وحده." }, { status: 403 });
   }
 

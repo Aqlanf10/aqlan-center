@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createService, listServices } from "@/lib/db";
 import { isCurrency, parseAmount } from "@/lib/money";
 import { getSettings } from "@/lib/db";
+import { canHandleMoney, isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +11,11 @@ const denied = () =>
   NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
 
 export async function GET(request: Request) {
-  if (!(await requireSession())) return denied();
+  const session = await requireSession();
+  if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
   const includeInactive = new URL(request.url).searchParams.get("all") === "1";
   try {
     return NextResponse.json(await listServices(includeInactive));
@@ -22,8 +27,11 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
+  if (!canHandleMoney(session.role)) {
+    return NextResponse.json({ message: "الصندوق والفواتير للإدارة والاستقبال." }, { status: 403 });
+  }
   // قائمة الأسعار تحكم كل فاتورة بعدها، فتحريرها للمدير وحده.
-  if (session.role !== "admin") {
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "تعديل الأسعار للمدير وحده." }, { status: 403 });
   }
 

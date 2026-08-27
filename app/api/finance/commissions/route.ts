@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { CLINIC_TIME_ZONE, commissionReport, getSettings } from "@/lib/db";
 import { isCurrency } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
+import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function GET(request: Request) {
   if (!session) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
-  if (session.role !== "admin") {
+  if (!isAdmin(session.role)) {
     return NextResponse.json({ message: "تقرير العمولات للمدير وحده." }, { status: 403 });
   }
 
