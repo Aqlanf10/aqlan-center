@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createLabOrder, labCounts, listLabNames, listLabOrders } from "@/lib/db";
+import { createLabOrder, getSettings, labCounts, listLabNames, listLabOrders, listParties } from "@/lib/db";
+import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { toWhatsAppNumber } from "@/lib/reminders";
 import { requireSession } from "@/lib/session";
 
@@ -25,7 +26,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!(await requireSession())) return denied();
+  const session = await requireSession();
+  if (!session) return denied();
   let body: unknown;
   try { body = await request.json(); } catch {
     return NextResponse.json({ message: "طلب غير صالح." }, { status: 400 });
@@ -64,9 +66,48 @@ export async function POST(request: Request) {
   const note = typeof source.note === "string" && source.note.trim()
     ? source.note.trim().slice(0, 300) : null;
 
+  // تكلفة العمل اختيارية، لكن متى ذُكرت لزم معها المختبر المسجّل: تكلفةٌ بلا جهة
+  // لا تصير التزامًا يُطالَب به، فتظهر العيادة رابحة وهي مدينة.
+  const settings = await getSettings();
+  const base = settings["finance.base_currency"];
+  if (!isCurrency(base)) {
+    return NextResponse.json({ message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 });
+  }
+
+  const partyIdRaw = Number(source.partyId);
+  const labParties = new Set((await listParties("lab")).map((party) => party.id));
+  const partyId = Number.isInteger(partyIdRaw) && labParties.has(partyIdRaw) ? partyIdRaw : null;
+
+  let costMinor: number | null = null;
+  let costCurrency: Currency | null = null;
+  let exchangeRate = 1;
+  if (source.cost !== undefined && String(source.cost).trim() !== "") {
+    costCurrency = isCurrency(source.costCurrency) ? source.costCurrency : base;
+    costMinor = parseAmount(String(source.cost), costCurrency);
+    if (costMinor === null || costMinor <= 0) {
+      return NextResponse.json({ message: "اكتب تكلفة صحيحة أو اتركها فارغة." }, { status: 400 });
+    }
+    if (!partyId) {
+      return NextResponse.json(
+        { message: "اختر المختبر من قائمة الجهات لتُسجَّل التكلفة عليه." },
+        { status: 400 },
+      );
+    }
+    if (costCurrency !== base) {
+      const raw = costCurrency === "SAR" ? settings["finance.rate.SAR"] : settings["finance.rate.USD"];
+      const rate = Number(raw);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        return NextResponse.json({ message: "سعر الصرف غير مضبوط في الإعدادات." }, { status: 409 });
+      }
+      exchangeRate = rate;
+    }
+  }
+
   try {
     const created = await createLabOrder({
       patientId, labName, labPhone, workType, details, sentDate, dueDate, note,
+      partyId, costMinor, costCurrency, baseCurrency: base, exchangeRate,
+      createdBy: session.username,
     });
     if (!created) return NextResponse.json({ message: "تعذّر حفظ العمل." }, { status: 500 });
     return NextResponse.json(created, { status: 201 });

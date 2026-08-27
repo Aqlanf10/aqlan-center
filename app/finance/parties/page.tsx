@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PARTY_KIND_LABEL, type PartyKind } from "@/lib/expenses";
+import { formatMoney, isCurrency, type Currency } from "@/lib/money";
 
 /**
  * الجهات: مختبرات وموردون وأطباء.
@@ -20,6 +21,8 @@ const KINDS: PartyKind[] = ["lab", "supplier", "doctor"];
 
 export default function PartiesPage() {
   const [parties, setParties] = useState<Party[]>([]);
+  const [balances, setBalances] = useState<Map<number, number>>(new Map());
+  const [base, setBase] = useState<Currency>("YER");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,10 +31,19 @@ export default function PartiesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/parties", { cache: "no-store" });
+      const [response, balancesResponse] = await Promise.all([
+        fetch("/api/parties", { cache: "no-store" }),
+        fetch("/api/payables", { cache: "no-store" }),
+      ]);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
       setParties(payload as Party[]);
+      if (balancesResponse.ok) {
+        const data = await balancesResponse.json();
+        setBalances(new Map((data.balances as { partyId: number; dueMinor: number }[])
+          .map((row) => [row.partyId, row.dueMinor])));
+        if (isCurrency(data.baseCurrency)) setBase(data.baseCurrency);
+      }
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
@@ -143,6 +155,23 @@ export default function PartiesPage() {
                       <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">
                         عمولة {party.commissionPercent}%
                       </span>
+                    ) : null}
+                    {/* الرصيد بجانب الاسم لا في شاشة أخرى: من يفتح قائمة الجهات
+                        يسأل عن المستحق، لا عن أسمائها. والأطباء مستثنون لأن
+                        مستحقهم يُحسب من نسبتهم على المحصّل في تقرير العمولات. */}
+                    {kind !== "doctor" && (balances.get(party.id) ?? 0) !== 0 ? (
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${
+                        (balances.get(party.id) ?? 0) > 0 ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-600"
+                      }`}>
+                        {(balances.get(party.id) ?? 0) > 0
+                          ? `علينا ${formatMoney(balances.get(party.id) ?? 0, base)}`
+                          : `زيادة ${formatMoney(-(balances.get(party.id) ?? 0), base)}`}
+                      </span>
+                    ) : null}
+                    {kind === "doctor" ? (
+                      <a href="/finance/commissions" className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-navy-800">
+                        عمولاته
+                      </a>
                     ) : null}
                     <button
                       onClick={() => send(() => fetch(`/api/parties/${party.id}`, {

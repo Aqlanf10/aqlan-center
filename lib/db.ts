@@ -303,6 +303,34 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS expenses_created_idx ON expenses (created_at);
       CREATE INDEX IF NOT EXISTS expenses_party_idx ON expenses (party_id, created_at DESC);
 
+      -- الالتزامات: ما على العيادة لجهةٍ ما. الوجه الآخر لمديونية المرضى — أن تعرف
+      -- كم عليك كما تعرف كم لك. عيادة تعرف مديونية مرضاها ولا تعرف ما عليها
+      -- للمختبرات تحسب نفسها رابحة وهي مدينة.
+      CREATE TABLE IF NOT EXISTS payables (
+        id                SERIAL PRIMARY KEY,
+        party_id          INTEGER     NOT NULL REFERENCES parties(id) ON DELETE RESTRICT,
+        category          TEXT        NOT NULL DEFAULT 'supplier',
+        description       TEXT        NOT NULL,
+        amount_minor      BIGINT      NOT NULL,
+        currency          TEXT        NOT NULL,
+        exchange_rate     NUMERIC(18,6) NOT NULL DEFAULT 1,
+        base_amount_minor BIGINT      NOT NULL,
+        base_currency     TEXT        NOT NULL DEFAULT 'YER',
+        lab_order_id      INTEGER     REFERENCES lab_orders(id) ON DELETE SET NULL,
+        due_date          DATE,
+        created_by        TEXT,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS payables_party_idx ON payables (party_id, created_at DESC);
+      -- التزام واحد لكل أمر مختبر: تسجيل التكلفة مرتين يضاعف ما على العيادة.
+      CREATE UNIQUE INDEX IF NOT EXISTS payables_lab_order_uniq
+        ON payables (lab_order_id) WHERE lab_order_id IS NOT NULL;
+
+      -- ربط أمر المختبر بالمختبر المسجّل وتكلفته.
+      ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS party_id   INTEGER REFERENCES parties(id);
+      ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_minor BIGINT;
+      ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_currency TEXT;
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -1294,6 +1322,12 @@ export async function listLabOrders(): Promise<LabOrder[]> {
   return rows.map(toLabOrder);
 }
 
+/**
+ * ينشئ أمر مختبر، ويسجّل تكلفته التزامًا على العيادة في نفس المعاملة.
+ *
+ * التكلفة والالتزام معًا أو لا شيء: أمرٌ سُجّل وتكلفته ضاعت يعني عملًا يُنتظر بلا
+ * أثر مالي، ثم يأتي المختبر بحسابه آخر الشهر فلا يُقابَل بشيء يُراجَع.
+ */
 export async function createLabOrder(input: {
   patientId: number;
   labName: string;
@@ -1303,18 +1337,57 @@ export async function createLabOrder(input: {
   sentDate: string;
   dueDate: string;
   note: string | null;
+  partyId: number | null;
+  costMinor: number | null;
+  costCurrency: Currency | null;
+  baseCurrency: Currency;
+  exchangeRate: number;
+  createdBy: string;
 }): Promise<LabOrder | null> {
   await ensureSchema();
-  const { rows } = await getPool().query<{ id: number }>(
-    `INSERT INTO lab_orders (patient_id, lab_name, lab_phone, work_type, details, sent_date, due_date, note)
-     VALUES ($1, $2, $3::text, $4, $5::text, $6::date, $7::date, $8::text) RETURNING id`,
-    [
-      input.patientId, input.labName, input.labPhone, input.workType,
-      input.details, input.sentDate, input.dueDate, input.note,
-    ],
-  );
-  const { rows: full } = await getPool().query<LabOrderRow>(`${LAB_SELECT} WHERE l.id = $1`, [rows[0].id]);
-  return full[0] ? toLabOrder(full[0]) : null;
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO lab_orders (patient_id, lab_name, lab_phone, work_type, details, sent_date,
+                               due_date, note, party_id, cost_minor, cost_currency)
+       VALUES ($1, $2, $3::text, $4, $5::text, $6::date, $7::date, $8::text, $9::int, $10::bigint, $11::text)
+       RETURNING id`,
+      [
+        input.patientId, input.labName, input.labPhone, input.workType,
+        input.details, input.sentDate, input.dueDate, input.note,
+        input.partyId, input.costMinor, input.costCurrency,
+      ],
+    );
+    const orderId = rows[0].id;
+
+    if (input.partyId && input.costMinor && input.costCurrency) {
+      const baseAmount = toBaseAmount(
+        input.costMinor, input.costCurrency, input.baseCurrency, input.exchangeRate,
+      );
+      await client.query(
+        `INSERT INTO payables (party_id, category, description, amount_minor, currency,
+                               exchange_rate, base_amount_minor, base_currency, lab_order_id, due_date, created_by)
+         VALUES ($1, 'lab', $2, $3, $4, $5, $6, $7, $8, $9::date, $10)
+         ON CONFLICT (lab_order_id) WHERE lab_order_id IS NOT NULL DO NOTHING`,
+        [
+          input.partyId,
+          `${input.workType}${input.details ? ` — ${input.details}` : ""}`,
+          input.costMinor, input.costCurrency, input.exchangeRate, baseAmount,
+          input.baseCurrency, orderId, input.dueDate, input.createdBy,
+        ],
+      );
+    }
+
+    await client.query("COMMIT");
+    const { rows: full } = await getPool().query<LabOrderRow>(`${LAB_SELECT} WHERE l.id = $1`, [orderId]);
+    return full[0] ? toLabOrder(full[0]) : null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -2589,4 +2662,136 @@ export async function financeSummary(from: string, to: string): Promise<FinanceS
       totalMinor: toMinor(row.total),
     })),
   };
+}
+
+// ─── الالتزامات وحسابات الجهات ───────────────────────────────────────────────
+
+export interface Payable {
+  id: number;
+  partyId: number;
+  partyName: string;
+  category: string;
+  description: string;
+  amountMinor: number;
+  currency: Currency;
+  exchangeRate: number;
+  baseAmountMinor: number;
+  labOrderId: number | null;
+  dueDate: string | null;
+  createdAt: string;
+}
+
+interface PayableRow {
+  id: number; party_id: number; party_name: string; category: string; description: string;
+  amount_minor: string; currency: string; exchange_rate: string; base_amount_minor: string;
+  lab_order_id: number | null; due_date: Date | null; created_at: Date;
+}
+
+const toPayable = (row: PayableRow): Payable => ({
+  id: row.id,
+  partyId: row.party_id,
+  partyName: row.party_name,
+  category: row.category,
+  description: row.description,
+  amountMinor: toMinor(row.amount_minor),
+  currency: row.currency as Currency,
+  exchangeRate: Number(row.exchange_rate),
+  baseAmountMinor: toMinor(row.base_amount_minor),
+  labOrderId: row.lab_order_id,
+  dueDate: row.due_date ? dateText(row.due_date) : null,
+  createdAt: row.created_at.toISOString(),
+});
+
+const PAYABLE_SELECT = `
+  SELECT b.id, b.party_id, t.name AS party_name, b.category, b.description, b.amount_minor,
+         b.currency, b.exchange_rate, b.base_amount_minor, b.lab_order_id, b.due_date, b.created_at
+    FROM payables b JOIN parties t ON t.id = b.party_id`;
+
+export async function createPayable(input: {
+  partyId: number;
+  category: string;
+  description: string;
+  amountMinor: number;
+  currency: Currency;
+  baseCurrency: Currency;
+  exchangeRate: number;
+  labOrderId: number | null;
+  dueDate: string | null;
+  createdBy: string;
+}): Promise<Payable | null> {
+  await ensureSchema();
+  const baseAmount = toBaseAmount(
+    input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
+  );
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO payables (party_id, category, description, amount_minor, currency,
+                           exchange_rate, base_amount_minor, base_currency, lab_order_id, due_date, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::int, $10::date, $11)
+     ON CONFLICT (lab_order_id) WHERE lab_order_id IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [
+      input.partyId, input.category, input.description, input.amountMinor, input.currency,
+      input.exchangeRate, baseAmount, input.baseCurrency, input.labOrderId, input.dueDate, input.createdBy,
+    ],
+  );
+  if (!rows[0]) return null;
+  const { rows: full } = await getPool().query<PayableRow>(`${PAYABLE_SELECT} WHERE b.id = $1`, [rows[0].id]);
+  return full[0] ? toPayable(full[0]) : null;
+}
+
+export interface PartyBalance {
+  partyId: number;
+  partyName: string;
+  kind: string;
+  owedMinor: number;
+  paidMinor: number;
+  dueMinor: number;
+}
+
+/**
+ * ما على العيادة لكل جهة.
+ *
+ * الوجه الآخر لمديونية المرضى: أن تعرف كم عليك كما تعرف كم لك. عيادة تعرف مديونية
+ * مرضاها ولا تعرف ما عليها للمختبرات تحسب نفسها رابحة وهي مدينة.
+ *
+ * والمقارنة بالعملة الأساسية: الالتزام قد يكون بالدولار والسداد بالريال، وكلاهما
+ * محفوظ بسعر يومه — فالطرح بالمكافئ الأساسي هو الوحيد الذي يعطي رقمًا صحيحًا.
+ */
+export async function partyBalances(): Promise<PartyBalance[]> {
+  await ensureSchema();
+  // الأطباء مستثنون: مستحقهم لا يأتي من التزامات مسجّلة بل يُحسب من نسبتهم على
+  // المحصّل، وهو حسابٌ بمدى تاريخي مكانه تقرير العمولات. إدراجهم هنا كان يُظهر
+  // «دُفع زيادة» لطبيب مستحقُّه محسوب في مكان آخر — رقمٌ صحيح حسابيًا وكاذب معنى.
+  const { rows } = await getPool().query<{
+    id: number; name: string; kind: string; owed: string; paid: string;
+  }>(
+    `SELECT t.id, t.name, t.kind,
+            COALESCE((SELECT SUM(base_amount_minor) FROM payables WHERE party_id = t.id), 0) AS owed,
+            COALESCE((SELECT SUM(base_amount_minor) FROM expenses WHERE party_id = t.id), 0) AS paid
+       FROM parties t
+      WHERE t.kind <> 'doctor'
+      ORDER BY t.kind, t.name`,
+  );
+  return rows.map((row) => ({
+    partyId: row.id,
+    partyName: row.name,
+    kind: row.kind,
+    owedMinor: toMinor(row.owed),
+    paidMinor: toMinor(row.paid),
+    dueMinor: toMinor(row.owed) - toMinor(row.paid),
+  }));
+}
+
+/** كشف حساب جهة: التزاماتها وما دُفع لها. */
+export async function partyStatement(partyId: number): Promise<{
+  payables: Payable[]; expenses: Expense[];
+}> {
+  await ensureSchema();
+  const [{ rows }, expenses] = await Promise.all([
+    getPool().query<PayableRow>(
+      `${PAYABLE_SELECT} WHERE b.party_id = $1 ORDER BY b.created_at DESC LIMIT 200`, [partyId],
+    ),
+    listPartyExpenses(partyId),
+  ]);
+  return { payables: rows.map(toPayable), expenses };
 }

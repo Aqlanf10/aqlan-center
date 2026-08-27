@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { CURRENCIES, CURRENCY_LABEL, isCurrency, type Currency } from "@/lib/money";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import {
@@ -34,6 +35,7 @@ const FILTERS: LabFilter[] = ["late", "outstanding", "received", "all"];
 
 export default function LabPage() {
   const clinicName = useClinicName();
+  const baseSettingValue = useSetting("finance.base_currency");
   const clinicPhone = useSetting("clinic.phone");
   const labDays = Number(useSetting("lab.default_days")) || 7;
   const [feed, setFeed] = useState<LabFeed>({ orders: [], labs: [] });
@@ -53,6 +55,12 @@ export default function LabPage() {
   const [patient, setPatient] = useState<Patient | null>(null);
   const [labName, setLabName] = useState("");
   const [labPhone, setLabPhone] = useState("");
+  const [labParties, setLabParties] = useState<{ id: number; name: string }[]>([]);
+  const [partyId, setPartyId] = useState("");
+  const [cost, setCost] = useState("");
+  const [costCurrency, setCostCurrency] = useState<Currency>(
+    isCurrency(baseSettingValue) ? baseSettingValue : "YER",
+  );
   const [workType, setWorkType] = useState(WORK_TYPES[0]);
   const [details, setDetails] = useState("");
   const [sentDate, setSentDate] = useState(today);
@@ -74,6 +82,17 @@ export default function LabPage() {
   }, []);
 
   useEffect(() => { void load(true); }, [load]);
+
+  // المختبرات المسجّلة كجهات: التكلفة لا تُسجَّل إلا عليها، وإلا صارت رقمًا بلا
+  // مَن يُطالَب به.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/parties?kind=lab", { cache: "no-store" });
+        if (response.ok) setLabParties(await response.json());
+      } catch { /* القائمة تبقى فارغة والتكلفة تبقى اختيارية */ }
+    })();
+  }, []);
 
   useEffect(() => {
     if (patient || query.trim().length < 2) { setMatches([]); return; }
@@ -114,15 +133,16 @@ export default function LabPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         patientId: patient.id, labName, labPhone, workType, details, sentDate, dueDate,
+        partyId: partyId || undefined, cost, costCurrency,
       }),
     }));
     if (ok) {
-      setPatient(null); setQuery(""); setDetails("");
+      setPatient(null); setQuery(""); setDetails(""); setCost("");
       setSentDate(today); setDueDate(addDays(today, labDays));
       setAdding(false);
       setFilter("outstanding");
     }
-  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays]);
+  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, cost, costCurrency]);
 
   const summary = useMemo(() => labSummary(feed.orders, today), [feed.orders, today]);
   const visible = useMemo(
@@ -226,6 +246,46 @@ export default function LabPage() {
             placeholder="تفاصيل — مثل: 6 علوي يمين، لون A2"
             className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
           />
+
+          <label className="mb-1 block text-[11px] font-bold text-slate-500">المختبر المسجّل (لتسجيل التكلفة عليه)</label>
+          <select
+            value={partyId}
+            onChange={(event) => {
+              setPartyId(event.target.value);
+              const party = labParties.find((item) => String(item.id) === event.target.value);
+              if (party) setLabName(party.name);
+            }}
+            className="mb-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="">— بلا تسجيل تكلفة —</option>
+            {labParties.map((party) => (
+              <option key={party.id} value={party.id}>{party.name}</option>
+            ))}
+          </select>
+
+          {partyId ? (
+            <div className="mb-3 flex flex-wrap gap-2">
+              <input
+                value={cost}
+                onChange={(event) => setCost(event.target.value)}
+                placeholder="تكلفة العمل"
+                aria-label="تكلفة العمل"
+                inputMode="decimal"
+                dir="ltr"
+                className="min-w-[8rem] flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              />
+              <select
+                value={costCurrency}
+                onChange={(event) => setCostCurrency(event.target.value as Currency)}
+                aria-label="عملة التكلفة"
+                className="w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+              >
+                {CURRENCIES.map((currency) => (
+                  <option key={currency} value={currency}>{CURRENCY_LABEL[currency]}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           <div className="mb-3 flex flex-wrap gap-2">
             <label className="min-w-[8rem] flex-1">
