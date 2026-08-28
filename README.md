@@ -118,6 +118,7 @@ npm run verify:concurrency   # ترقيم المستندات تحت التزام
 npm run verify:audit         # سجل التدقيق يرفض التعديل والحذف من اتصالٍ مباشر
 npm run verify:clinical      # توقيعٌ واحد ← فاتورة ← مخطط، وكلها تسقط معًا
 npm run verify:plans         # الخطة: اشتقاق الإجمالي، قفل الموافقة، شطبها بالزيارة
+npm run verify:identity      # مريضٌ واحد بسجلٍّ واحد — ولا دمج بالاسم صامتًا
 ```
 
 ### الرحلات — ما لا تقوله الفحوص
@@ -129,6 +130,7 @@ npm run verify:plans         # الخطة: اشتقاق الإجمالي، قف�
 npm i -g playwright                 # ليست تبعية عمدًا — انظر أدناه
 npm run journey:visit ./shots       # وصول ← كرسي ← توثيق ← توقيع ← كشف حساب
 npm run journey:plan  ./shots       # خطة ← موافقة ← مخطط ← زيارة تشطب بندًا
+npm run journey:identity ./shots    # مريضٌ مسجَّل يصل بلا رقم — بلا ملفٍّ ثانٍ
 ```
 
 وليست Playwright تبعيةً في `package.json` عمدًا: إضافتها تجعل `npm ci` داخل Docker

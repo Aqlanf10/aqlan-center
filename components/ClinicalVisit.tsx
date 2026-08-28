@@ -306,6 +306,17 @@ export function ClinicalVisit({ visitId, onSigned }: {
             * زيارةٍ بإجراءاتٍ من بنودها يُصدر فاتورةً ثانيةً للعمل نفسه. ولا يُمنع
             * بالقوة — قد يكون الإجراء خارج الاتفاق فعلًا — لكنه لا يمرّ صامتًا.
             */}
+          {/*
+            * زيارةٌ بلا ملف: التوقيع سيُنشئ ملفًّا جديدًا.
+            *
+            * وهي آخر لحظةٍ يمكن فيها منع الملف الثاني. المريض المشي الحقيقي يستحقّ
+            * ملفًّا جديدًا، والمسجَّل الذي وصل بلا رقم لا — والفرق بينهما لا يعرفه
+            * البرنامج، فيسأل بدل أن يخمّن.
+            */}
+          {visit.patientId === null ? (
+            <LinkPatient visitId={visit.id} suggestion={visit.patientName} onLinked={() => void load()} />
+          ) : null}
+
           {visit.planWarning ? (
             <p role="alert" className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">
               {visit.planWarning}
@@ -357,5 +368,93 @@ function Field({ label, value, onChange, disabled }: {
       <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={2} disabled={disabled}
         className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-blue disabled:bg-slate-50 disabled:text-slate-500" />
     </label>
+  );
+}
+
+/**
+ * يربط زيارةً بملفٍّ قائم قبل التوقيع.
+ *
+ * لا مطابقة صامتة بالاسم: «محمد أحمد» اسمُ رجلين، ودمجُ ملفَّي شخصين يخلط تاريخين
+ * طبيّين — وهو أسوأ من تكرار ملفٍّ واحد يُدمج لاحقًا. فالبرنامج يعرض، والطبيب يقرّر.
+ */
+function LinkPatient({ visitId, suggestion, onLinked }: {
+  visitId: number; suggestion: string; onLinked: () => void;
+}) {
+  const [term, setTerm] = useState(suggestion);
+  const [matches, setMatches] = useState<{ id: number; patientNumber: string; fullName: string; phone: string | null }[]>([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const text = term.trim();
+    if (text.length < 2) { setMatches([]); return; }
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const response = await fetch(`/api/patients?q=${encodeURIComponent(text)}`, { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json();
+          setMatches(Array.isArray(payload) ? payload.slice(0, 5) : []);
+        } catch {
+          // البحث مساعدةٌ لا شرط — تعذّره لا يمنع التوقيع.
+        }
+      })();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [term, open]);
+
+  const link = async (patientId: number) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/visits/${visitId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "link", patientId }),
+      });
+      if (response.ok) { setOpen(false); onLinked(); }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2">
+      <p className="text-xs font-bold text-amber-900">
+        هذه الزيارة غير مربوطة بملف — والتوقيع سيُنشئ ملفًّا جديدًا.
+        {open ? "" : " إن كان المريض مسجّلًا فاربطه بملفّه."}
+        {open ? null : (
+          <button type="button" onClick={() => setOpen(true)}
+            className="mr-2 rounded-lg border border-amber-400 bg-white px-2 py-0.5 font-bold text-amber-800">
+            ابحث عن ملفّه
+          </button>
+        )}
+      </p>
+
+      {open ? (
+        <div className="mt-2">
+          <input value={term} onChange={(event) => setTerm(event.target.value)}
+            aria-label="ابحث عن ملف المريض" autoFocus
+            className="mb-1.5 w-full rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 text-xs" />
+          {matches.length === 0 ? (
+            <p className="text-[11px] text-amber-800">لا ملفّات مطابقة — سيُنشأ له ملفٌ جديد عند التوقيع.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-1.5">
+              {matches.map((match) => (
+                <li key={match.id}>
+                  <button type="button" disabled={busy} onClick={() => void link(match.id)}
+                    className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-bold text-navy-800 disabled:opacity-40">
+                    {match.fullName}
+                    <span className="mr-1.5 font-normal text-slate-500">
+                      {match.patientNumber}{match.phone ? ` · ${match.phone}` : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }

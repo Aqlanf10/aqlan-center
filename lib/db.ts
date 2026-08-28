@@ -680,14 +680,68 @@ export async function addVisit(input: {
   patientName: string;
   patientPhone: string | null;
   note: string | null;
+  /** ملفُّ المريض إن اختارته الاستقبال من القائمة — وهو ما يمنع الملف الثاني. */
+  patientId?: number | null;
 }): Promise<Visit> {
   await ensureSchema();
   const { rows } = await getPool().query<VisitRow>(
-    `INSERT INTO visits (patient_name, patient_phone, note)
-     VALUES ($1, $2, $3) RETURNING *`,
-    [input.patientName, input.patientPhone, input.note],
+    `INSERT INTO visits (patient_name, patient_phone, note, patient_id)
+     VALUES ($1, $2, $3, $4::int) RETURNING *`,
+    [input.patientName, input.patientPhone, input.note, input.patientId ?? null],
   );
   return toVisit(rows[0]);
+}
+
+/**
+ * يربط زيارةً بملفٍّ قائم.
+ *
+ * **العلّة التي يعالجها**: المريض المسجَّل الذي يصل بلا رقم جوال كان يُنشأ له ملفٌ
+ * ثانٍ عند التوقيع، لأن حلّ الملف يطابق بالهاتف وحده. فتذهب فاتورته ومخططه إلى ملفٍ
+ * غير ملفّه، ويصير له تاريخان — وهو نقيض المبدأ الأول: مريضٌ واحد بسجلٍّ واحد.
+ *
+ * ولا يطابق البرنامج بالاسم من تلقاء نفسه: «محمد أحمد» اسمُ رجلين، ودمجُ ملفَّي
+ * شخصين أسوأ من تكرار ملفٍّ واحد — الأول يخلط تاريخين طبيّين، والثاني يُدمج لاحقًا.
+ * فالربط **قرارٌ بشري**: البرنامج يعرض المرشّحين، والاستقبال تختار.
+ *
+ * ولا يُربط بعد التوقيع: الفاتورة صدرت لملفٍّ بعينه، وتحويلُ الزيارة بعدها يترك
+ * فاتورةً في ملفٍ وعملًا في آخر.
+ */
+export async function linkVisitToPatient(visitId: number, patientId: number): Promise<
+  { ok: true; patientName: string } | { ok: false; message: string }
+> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: visits } = await client.query<{ signed_at: Date | null; patient_id: number | null }>(
+      `SELECT signed_at, patient_id FROM visits WHERE id = $1 FOR UPDATE`, [visitId],
+    );
+    if (!visits[0]) { await client.query("ROLLBACK"); return { ok: false, message: "الزيارة غير موجودة." }; }
+    if (visits[0].signed_at) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "الزيارة موقَّعة — وفاتورتها صدرت لملفٍّ بعينه فلا تُحوَّل." };
+    }
+
+    const { rows: patients } = await client.query<{ full_name: string; phone: string | null }>(
+      `SELECT full_name, phone FROM patients WHERE id = $1`, [patientId],
+    );
+    if (!patients[0]) { await client.query("ROLLBACK"); return { ok: false, message: "الملف غير موجود." }; }
+
+    // الاسم والهاتف يتبعان الملف: ما يظهر على اللوحة يجب أن يوافق ما في السجل.
+    await client.query(
+      `UPDATE visits SET patient_id = $2, patient_name = $3,
+              patient_phone = COALESCE(NULLIF(patient_phone, ''), $4::text)
+        WHERE id = $1`,
+      [visitId, patientId, patients[0].full_name, patients[0].phone],
+    );
+    await client.query("COMMIT");
+    return { ok: true, patientName: patients[0].full_name };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

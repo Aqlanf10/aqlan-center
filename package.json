@@ -17,7 +17,9 @@
     "verify:clinical": "tsx scripts/verify-clinical.mjs",
     "verify:plans": "tsx scripts/verify-plans.mjs",
     "journey:visit": "node scripts/journeys/visit.mjs",
-    "journey:plan": "node scripts/journeys/plan.mjs"
+    "journey:plan": "node scripts/journeys/plan.mjs",
+    "verify:identity": "tsx scripts/verify-identity.mjs",
+    "journey:identity": "node scripts/journeys/identity.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
