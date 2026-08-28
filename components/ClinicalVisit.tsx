@@ -26,6 +26,7 @@ interface Visit {
   doctorId: number | null; status: "open" | "signed";
   signedAt: string | null; signedBy: string | null; invoiceId: number | null;
   procedures: ProcedureLine[]; totalMinor: number;
+  planItemsMatched: number; planTitle: string | null; planWarning: string | null;
 }
 
 interface Draft { serviceId: number; toothCode: string; surfaces: string; quantity: number; price: string; doctorId: number | null }
@@ -297,6 +298,24 @@ export function ClinicalVisit({ visitId, onSigned }: {
           ) : null}
         </section>
       ) : canWrite ? (
+        <>
+          {/*
+            * ما علاقة هذا العمل بخطة المريض — يُقال قبل الضغط لا بعده.
+            *
+            * والتحذير الأحمر هو الأهم: خطةٌ لها أقساط تُفوتَر بأقساطها، فتوقيعُ
+            * زيارةٍ بإجراءاتٍ من بنودها يُصدر فاتورةً ثانيةً للعمل نفسه. ولا يُمنع
+            * بالقوة — قد يكون الإجراء خارج الاتفاق فعلًا — لكنه لا يمرّ صامتًا.
+            */}
+          {visit.planWarning ? (
+            <p role="alert" className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">
+              {visit.planWarning}
+            </p>
+          ) : visit.planItemsMatched > 0 ? (
+            <p className="mb-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-800">
+              يشطب هذا العمل {visit.planItemsMatched} من بنود
+              {visit.planTitle ? ` «${visit.planTitle}»` : " خطة العلاج"}.
+            </p>
+          ) : null}
         <div className="flex flex-wrap gap-2">
           <button onClick={() => void send(payload())} disabled={busy}
             className="flex-1 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-bold text-navy-800 disabled:opacity-40">
@@ -314,6 +333,7 @@ export function ClinicalVisit({ visitId, onSigned }: {
             وقّع الزيارة{total > 0 ? ` وأصدر فاتورة ${formatMoney(total, base)}` : ""}
           </button>
         </div>
+        </>
       ) : (
         <p className="text-[11px] font-semibold text-slate-400">التوثيق السريري يُكتب من الطبيب.</p>
       )}

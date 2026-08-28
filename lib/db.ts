@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { toWhatsAppNumber } from "./reminders";
 import type { Visit, VisitStatus } from "./flow";
 
@@ -393,6 +393,38 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS plan_installments_uniq ON plan_installments (plan_id, number);
       CREATE INDEX IF NOT EXISTS plan_installments_due_idx ON plan_installments (due_date);
+
+      -- بنود الخطة السريرية: ما سيُعمل، على أيّ سن، وبكم. والإجمالي يُشتقّ منها لا
+      -- يُكتب باليد — رقمان لعملٍ واحد هما بذرة كل خلافٍ لاحق مع المريض.
+      -- واسم الخدمة وسعرها **منسوخان** لحظة الاتفاق: الدليل يتغيّر غدًا، والاتفاق لا.
+      CREATE TABLE IF NOT EXISTS plan_items (
+        id               SERIAL PRIMARY KEY,
+        plan_id          INTEGER NOT NULL REFERENCES treatment_plans(id) ON DELETE CASCADE,
+        service_id       INTEGER REFERENCES services(id),
+        service_name     TEXT    NOT NULL,
+        category         TEXT,
+        tooth_code       SMALLINT,
+        surfaces         TEXT,
+        quantity         INTEGER NOT NULL DEFAULT 1,
+        unit_price_minor BIGINT  NOT NULL DEFAULT 0,
+        status           TEXT    NOT NULL DEFAULT 'planned',
+        visit_id         INTEGER REFERENCES visits(id),
+        done_at          TIMESTAMPTZ,
+        note             TEXT,
+        sort_order       INTEGER NOT NULL DEFAULT 100,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS plan_items_plan_idx ON plan_items (plan_id, sort_order, id);
+      CREATE INDEX IF NOT EXISTS plan_items_open_idx ON plan_items (status, service_id, tooth_code);
+
+      -- الموافقة: متى وُقّعت وبيد من سُجّلت وكيف وُثّقت. وخطةٌ بلا موافقة تبقى
+      -- مسوّدةً لا اتفاقًا — وهذا فرقٌ يظهر يوم الخلاف لا قبله.
+      ALTER TABLE treatment_plans ADD COLUMN IF NOT EXISTS consent_at   TIMESTAMPTZ;
+      ALTER TABLE treatment_plans ADD COLUMN IF NOT EXISTS consent_by   TEXT;
+      ALTER TABLE treatment_plans ADD COLUMN IF NOT EXISTS consent_note TEXT;
+      -- خطةٌ إجماليّها من بنودها لا من لوحة المفاتيح. تُرفع مرةً عند أول بند ولا
+      -- تُخفض: خفضها يعيد الإجمالي إلى رقمٍ يدويٍّ لا سند له.
+      ALTER TABLE treatment_plans ADD COLUMN IF NOT EXISTS total_from_items BOOLEAN NOT NULL DEFAULT FALSE;
 
       -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
       ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
@@ -2006,6 +2038,16 @@ export async function listServices(includeInactive = false): Promise<Service[]> 
       ORDER BY sort_order, name`,
   );
   return rows.map(toService);
+}
+
+/** خدمةٌ واحدة من الدليل — لأن سعرًا يأتي من المتصفّح سعرٌ يمكن تغييره في المتصفّح. */
+export async function getService(id: number): Promise<Service | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ServiceRow>(
+    `SELECT id, name, category, price_minor, is_active, sort_order FROM services WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ? toService(rows[0]) : null;
 }
 
 export async function createService(input: {
@@ -3788,10 +3830,15 @@ export interface ClinicalVisit {
   arrivedAt: string;
   procedures: ProcedureLine[];
   totalMinor: number;
+  /** بنود خطةٍ موافَقٍ عليها تشطبها هذه الزيارة. */
+  planItemsMatched: number;
+  planTitle: string | null;
+  /** تحذير فوترةٍ مزدوجة إن كانت البنود المطابِقة على خطة أقساط. */
+  planWarning: string | null;
 }
 
 interface ClinicalRow {
-  id: number; patient_id: number | null; patient_name: string;
+  id: number; patient_id: number | null; patient_name: string; patient_phone: string | null;
   chief_complaint: string | null; examination: string | null; diagnosis: string | null;
   treatment_done: string | null; next_plan: string | null; addendum: string | null;
   doctor_id: number | null; signed_at: Date | null; signed_by: string | null;
@@ -3820,7 +3867,7 @@ export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit |
   await ensureSchema();
   const pool = getPool();
   const { rows } = await pool.query<ClinicalRow>(
-    `SELECT id, patient_id, patient_name, chief_complaint, examination, diagnosis,
+    `SELECT id, patient_id, patient_name, patient_phone, chief_complaint, examination, diagnosis,
             treatment_done, next_plan, addendum, doctor_id, signed_at, signed_by,
             invoice_id, arrived_at
        FROM visits WHERE id = $1`,
@@ -3837,6 +3884,7 @@ export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit |
   );
   const procedures = procedureRows.map(toProcedureLine);
   const row = rows[0];
+  const plan = await visitPlanContext(pool, await previewPatientId(pool, row), procedures);
   return {
     id: row.id,
     patientId: row.patient_id,
@@ -3855,6 +3903,93 @@ export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit |
     arrivedAt: row.arrived_at.toISOString(),
     procedures,
     totalMinor: visitTotal(procedures),
+    planItemsMatched: plan.matched,
+    planTitle: plan.title,
+    planWarning: plan.warning,
+  };
+}
+
+/**
+ * أيّ ملفٍّ **سيؤول إليه** هذا المريض عند التوقيع؟
+ *
+ * زيارة المريض المشي بلا `patient_id` حتى تُوقَّع، وحينها يُحلّ ملفّها بالهاتف.
+ * والعرض قبل التوقيع يحتاج الجواب نفسه — بلا أن يكتب شيئًا: قراءةٌ فقط، فلا يُنشئ
+ * ملفًّا ولا يربط زيارة. وبلا هذا يبقى تحذير الفوترة المزدوجة مخفيًّا عن أكثر من
+ * يحتاجه: المريض الذي وصل من الباب لا من الموعد.
+ */
+async function previewPatientId(
+  pool: Pool,
+  visit: { patient_id: number | null; patient_phone?: string | null },
+): Promise<number | null> {
+  if (visit.patient_id) return visit.patient_id;
+  const phone = visit.patient_phone ?? null;
+  if (!normalizePatientPhone(phone)) return null;
+  const { rows } = await pool.query<{ id: number }>(
+    `SELECT id FROM patients WHERE phone = ANY($1::text[]) ORDER BY id LIMIT 1`,
+    [phoneLookupForms(phone)],
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * ما علاقة هذه الزيارة بخطة علاج المريض؟
+ *
+ * جوابان مطلوبان قبل الضغط على زر التوقيع:
+ *
+ * ١) **أيّ بنود الخطة تشطبها هذه الزيارة** — ليرى الطبيب أن ما يعمله محسوبٌ من
+ *    الاتفاق لا خارجه.
+ *
+ * ٢) **تحذير الفوترة المزدوجة**، وهو الأهم. خطةٌ لها جدول أقساط تُفوتَر بأقساطها؛
+ *    فإن وُقّعت زيارةٌ بإجراءاتٍ من بنودها صدرت فاتورةٌ ثانية للعمل نفسه — ويُطالَب
+ *    المريض بالمبلغ مرتين. ولا يُمنع هنا بالقوة: قد يكون الإجراء خارج الاتفاق فعلًا
+ *    ويستحقّ فاتورته. لكنه لا يمرّ صامتًا — والصمت هو ما يُنتج مطالبةً مكرّرة يكتشفها
+ *    المريض قبل المحاسب.
+ */
+async function visitPlanContext(
+  pool: Pool,
+  patientId: number | null,
+  procedures: ProcedureLine[],
+): Promise<{ matched: number; title: string | null; warning: string | null }> {
+  if (!patientId || procedures.length === 0) return { matched: 0, title: null, warning: null };
+
+  const { rows } = await pool.query<{
+    id: number; plan_id: number; title: string; service_id: number | null;
+    tooth_code: number | null; quantity: number; unit_price_minor: string;
+    status: string; installments: string;
+  }>(
+    `SELECT i.id, i.plan_id, t.title, i.service_id, i.tooth_code, i.quantity,
+            i.unit_price_minor, i.status,
+            (SELECT COUNT(*) FROM plan_installments n WHERE n.plan_id = t.id)::text AS installments
+       FROM plan_items i JOIN treatment_plans t ON t.id = i.plan_id
+      WHERE t.patient_id = $1 AND t.status = 'active' AND t.consent_at IS NOT NULL
+        AND i.status = 'planned'
+      ORDER BY i.id`,
+    [patientId],
+  );
+  if (rows.length === 0) return { matched: 0, title: null, warning: null };
+
+  const matchedIds = matchPlanItems(
+    rows.map((row) => ({
+      id: row.id, serviceId: row.service_id, toothCode: row.tooth_code,
+      quantity: row.quantity, unitPriceMinor: toMinor(row.unit_price_minor),
+      status: row.status as PlanItemStatus,
+    })),
+    procedures.map((line) => ({
+      serviceId: line.serviceId, toothCode: line.toothCode, quantity: line.quantity,
+    })),
+  );
+  if (matchedIds.length === 0) return { matched: 0, title: null, warning: null };
+
+  const matchedSet = new Set(matchedIds);
+  const hit = rows.find((row) => matchedSet.has(row.id));
+  const onInstalments = rows.some((row) => matchedSet.has(row.id) && Number(row.installments) > 0);
+
+  return {
+    matched: matchedIds.length,
+    title: hit?.title ?? null,
+    warning: onInstalments
+      ? "هذه الإجراءات ضمن خطة لها جدول أقساط — والتوقيع سيصدر فاتورة إضافية عليها. إن كان العمل داخل الاتفاق فحصّله بقسط لا بفاتورة."
+      : null,
   };
 }
 
@@ -3934,12 +4069,14 @@ export async function signClinicalVisit(input: {
   visit: ClinicalVisit | null;
   invoiceId: number | null;
   chartUpdates: number;
+  /** بنود خطة العلاج التي شطبتها هذه الزيارة. */
+  planItemsDone: number;
   reason: "not_found" | "already_signed" | "empty" | "no_patient" | null;
 }> {
   const existing = await getClinicalVisit(input.visitId);
-  if (!existing) return { visit: null, invoiceId: null, chartUpdates: 0, reason: "not_found" };
+  if (!existing) return { visit: null, invoiceId: null, chartUpdates: 0, planItemsDone: 0, reason: "not_found" };
   if (existing.status === "signed") {
-    return { visit: existing, invoiceId: existing.invoiceId, chartUpdates: 0, reason: "already_signed" };
+    return { visit: existing, invoiceId: existing.invoiceId, chartUpdates: 0, planItemsDone: 0, reason: "already_signed" };
   }
   const check = canSign({
     status: existing.status,
@@ -3947,7 +4084,7 @@ export async function signClinicalVisit(input: {
     diagnosis: existing.diagnosis,
     treatmentDone: existing.treatmentDone,
   });
-  if (!check.ok) return { visit: existing, invoiceId: null, chartUpdates: 0, reason: "empty" };
+  if (!check.ok) return { visit: existing, invoiceId: null, chartUpdates: 0, planItemsDone: 0, reason: "empty" };
 
   const client = await getPool().connect();
   try {
@@ -3962,7 +4099,7 @@ export async function signClinicalVisit(input: {
     );
     if (!locked[0]) {
       await client.query("ROLLBACK");
-      return { visit: existing, invoiceId: null, chartUpdates: 0, reason: "already_signed" };
+      return { visit: existing, invoiceId: null, chartUpdates: 0, planItemsDone: 0, reason: "already_signed" };
     }
 
     /*
@@ -4016,6 +4153,55 @@ export async function signClinicalVisit(input: {
       }
     }
 
+    /*
+     * بنود خطة العلاج تُشطب من نفسها.
+     *
+     * وهذا ما يفرّق بين خطةٍ حيّة وورقةٍ تُكتب وتُنسى: الطبيب يعمل في الزيارة كما
+     * يعمل دائمًا، فتُعلَّم بنود الخطة التي نفّذها هذه الزيارة **منفَّذةً** ومربوطةً
+     * بها. وبلا هذا يبقى على أحدٍ أن يتذكّر تحديث الخطة يدويًّا — فلا يتذكّر، فتُظهر
+     * الخطة بعد سنةٍ عملًا أُنجز كأنه لم يبدأ، ويُشرح للمريض تقدّمٌ يخالف ملفّه.
+     *
+     * ولا يُشطب إلا من خطةٍ **موافَقٍ عليها**: المسوّدة ليست اتفاقًا بعد.
+     */
+    let planItemsDone = 0;
+    if (existing.procedures.length > 0) {
+      const { rows: openItems } = await client.query<{
+        id: number; service_id: number | null; tooth_code: number | null;
+        quantity: number; unit_price_minor: string; status: string;
+      }>(
+        `SELECT i.id, i.service_id, i.tooth_code, i.quantity, i.unit_price_minor, i.status
+           FROM plan_items i JOIN treatment_plans t ON t.id = i.plan_id
+          WHERE t.patient_id = $1 AND t.status = 'active' AND t.consent_at IS NOT NULL
+            AND i.status = 'planned'
+          ORDER BY i.id
+            FOR UPDATE OF i`,
+        [patientId],
+      );
+
+      const matched = matchPlanItems(
+        openItems.map((row) => ({
+          id: row.id,
+          serviceId: row.service_id,
+          toothCode: row.tooth_code,
+          quantity: row.quantity,
+          unitPriceMinor: toMinor(row.unit_price_minor),
+          status: row.status as PlanItemStatus,
+        })),
+        existing.procedures.map((line) => ({
+          serviceId: line.serviceId, toothCode: line.toothCode, quantity: line.quantity,
+        })),
+      );
+
+      if (matched.length > 0) {
+        const { rowCount } = await client.query(
+          `UPDATE plan_items SET status = 'done', visit_id = $2, done_at = NOW()
+            WHERE id = ANY($1::int[]) AND status = 'planned'`,
+          [matched, input.visitId],
+        );
+        planItemsDone = rowCount ?? 0;
+      }
+    }
+
     await client.query(
       `UPDATE visits SET signed_at = NOW(), signed_by = $2, invoice_id = $3::int,
               status = 'done', finished_at = COALESCE(finished_at, NOW())
@@ -4024,7 +4210,10 @@ export async function signClinicalVisit(input: {
     );
 
     await client.query("COMMIT");
-    return { visit: await getClinicalVisit(input.visitId), invoiceId, chartUpdates, reason: null };
+    return {
+      visit: await getClinicalVisit(input.visitId),
+      invoiceId, chartUpdates, planItemsDone, reason: null,
+    };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     throw error;
@@ -4272,7 +4461,11 @@ export async function clearPatientOpeningBalance(patientId: number): Promise<boo
 
 // ─── خطط العلاج والأقساط ─────────────────────────────────────────────────────
 
-import { planProgress, type PlanStatus, type PlanProgress } from "./plans";
+import {
+  canConsent, canEditItems, itemsTotal, matchPlanItems, planItemsProgress, planProgress,
+  splitInstallments,
+  type PlanItemLike, type PlanItemStatus, type PlanItemsProgress, type PlanStatus, type PlanProgress,
+} from "./plans";
 
 export interface TreatmentPlan {
   id: number;
@@ -4289,17 +4482,43 @@ export interface TreatmentPlan {
   installments: { id: number; number: number; dueDate: string; amountMinor: number }[];
   paidMinor: number;
   progress: PlanProgress;
+  items: PlanItem[];
+  itemsProgress: PlanItemsProgress;
+  totalFromItems: boolean;
+  consentAt: string | null;
+  consentBy: string | null;
+  consentNote: string | null;
+}
+
+/** بندٌ في الخطة: خدمةٌ على سنّ بسعرٍ منسوخ لحظة الاتفاق. */
+export interface PlanItem {
+  id: number;
+  serviceId: number | null;
+  serviceName: string;
+  category: string | null;
+  toothCode: number | null;
+  surfaces: string | null;
+  quantity: number;
+  unitPriceMinor: number;
+  totalMinor: number;
+  status: PlanItemStatus;
+  visitId: number | null;
+  doneAt: string | null;
+  note: string | null;
 }
 
 interface PlanRow {
   id: number; patient_id: number; full_name: string; phone: string | null;
   title: string; total_minor: string; base_currency: string; status: string;
   start_date: Date; note: string | null; created_at: Date; paid_minor: string;
+  total_from_items: boolean; consent_at: Date | null; consent_by: string | null;
+  consent_note: string | null;
 }
 
 const PLAN_SELECT = `
   SELECT t.id, t.patient_id, p.full_name, p.phone, t.title, t.total_minor, t.base_currency,
          t.status, t.start_date, t.note, t.created_at,
+         t.total_from_items, t.consent_at, t.consent_by, t.consent_note,
          COALESCE((SELECT SUM(CASE WHEN y.kind = 'refund' THEN -y.base_amount_minor ELSE y.base_amount_minor END)
                      FROM payments y WHERE y.plan_id = t.id), 0) AS paid_minor
     FROM treatment_plans t JOIN patients p ON p.id = t.patient_id`;
@@ -4314,6 +4533,17 @@ async function hydratePlans(rows: PlanRow[], today: string): Promise<TreatmentPl
     [rows.map((row) => row.id)],
   );
 
+  const { rows: itemRows } = await getPool().query<PlanItemRow & { plan_id: number }>(
+    `${PLAN_ITEM_SELECT} WHERE plan_id = ANY($1::int[]) ORDER BY plan_id, sort_order, id`,
+    [rows.map((row) => row.id)],
+  );
+  const itemsByPlan = new Map<number, PlanItem[]>();
+  for (const row of itemRows) {
+    const list = itemsByPlan.get(row.plan_id) ?? [];
+    list.push(toPlanItem(row));
+    itemsByPlan.set(row.plan_id, list);
+  }
+
   const byPlan = new Map<number, { id: number; number: number; dueDate: string; amountMinor: number }[]>();
   for (const row of installmentRows) {
     const list = byPlan.get(row.plan_id) ?? [];
@@ -4326,6 +4556,7 @@ async function hydratePlans(rows: PlanRow[], today: string): Promise<TreatmentPl
 
   return rows.map((row) => {
     const installments = byPlan.get(row.id) ?? [];
+    const items = itemsByPlan.get(row.id) ?? [];
     const paidMinor = toMinor(row.paid_minor);
     return {
       id: row.id,
@@ -4346,8 +4577,46 @@ async function hydratePlans(rows: PlanRow[], today: string): Promise<TreatmentPl
         paidMinor,
         today,
       ),
+      items,
+      itemsProgress: planItemsProgress(items),
+      totalFromItems: row.total_from_items,
+      consentAt: row.consent_at ? row.consent_at.toISOString() : null,
+      consentBy: row.consent_by,
+      consentNote: row.consent_note,
     };
   });
+}
+
+interface PlanItemRow {
+  id: number; service_id: number | null; service_name: string; category: string | null;
+  tooth_code: number | null; surfaces: string | null; quantity: number;
+  unit_price_minor: string; status: string; visit_id: number | null;
+  done_at: Date | null; note: string | null;
+}
+
+const PLAN_ITEM_SELECT = `
+  SELECT id, plan_id, service_id, service_name, category, tooth_code, surfaces, quantity,
+         unit_price_minor, status, visit_id, done_at, note, sort_order
+    FROM plan_items`;
+
+function toPlanItem(row: PlanItemRow): PlanItem {
+  const quantity = Math.max(1, row.quantity);
+  const unitPriceMinor = toMinor(row.unit_price_minor);
+  return {
+    id: row.id,
+    serviceId: row.service_id,
+    serviceName: row.service_name,
+    category: row.category,
+    toothCode: row.tooth_code,
+    surfaces: row.surfaces,
+    quantity,
+    unitPriceMinor,
+    totalMinor: quantity * unitPriceMinor,
+    status: row.status as PlanItemStatus,
+    visitId: row.visit_id,
+    doneAt: row.done_at ? row.done_at.toISOString() : null,
+    note: row.note,
+  };
 }
 
 export async function listPatientPlans(patientId: number, today: string): Promise<TreatmentPlan[]> {
@@ -4423,6 +4692,278 @@ export async function setPlanStatus(id: number, status: PlanStatus): Promise<boo
     `UPDATE treatment_plans SET status = $2 WHERE id = $1`, [id, status],
   );
   return (rowCount ?? 0) > 0;
+}
+
+/* ────────────────── بنود الخطة السريرية وموافقتها ────────────────── */
+
+type PlanGuard = { ok: true } | { ok: false; message: string };
+
+/** حالة الخطة كما تحتاجها الحُرّاس — تُقرأ مع قفلٍ كي لا تتغيّر بين الفحص والتنفيذ. */
+async function lockPlan(client: PoolClient, planId: number): Promise<{
+  id: number; patientId: number; status: PlanStatus; consentAt: Date | null;
+  baseCurrency: Currency; totalFromItems: boolean;
+} | null> {
+  const { rows } = await client.query<{
+    id: number; patient_id: number; status: string; consent_at: Date | null;
+    base_currency: string; total_from_items: boolean;
+  }>(
+    `SELECT id, patient_id, status, consent_at, base_currency, total_from_items
+       FROM treatment_plans WHERE id = $1 FOR UPDATE`,
+    [planId],
+  );
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    id: row.id, patientId: row.patient_id, status: row.status as PlanStatus,
+    consentAt: row.consent_at, baseCurrency: row.base_currency as Currency,
+    totalFromItems: row.total_from_items,
+  };
+}
+
+/**
+ * يعيد حساب إجمالي الخطة من بنودها.
+ *
+ * يُستدعى بعد كل تغيّر في البنود — وهو ما يجعل «الإجمالي» و«مجموع البنود» رقمًا
+ * واحدًا لا رقمين يفترقان بعد أول تعديل يُنسى.
+ */
+async function recomputePlanTotal(client: PoolClient, planId: number): Promise<number> {
+  const { rows } = await client.query<{ id: number; quantity: number; unit_price_minor: string; status: string }>(
+    `SELECT id, quantity, unit_price_minor, status FROM plan_items WHERE plan_id = $1`, [planId],
+  );
+  const total = itemsTotal(rows.map((row): PlanItemLike => ({
+    serviceId: null, toothCode: null,
+    quantity: row.quantity, unitPriceMinor: toMinor(row.unit_price_minor),
+    status: row.status as PlanItemStatus,
+  })));
+  await client.query(
+    `UPDATE treatment_plans SET total_minor = $2, total_from_items = TRUE WHERE id = $1`,
+    [planId, total],
+  );
+  return total;
+}
+
+export async function addPlanItem(input: {
+  planId: number;
+  serviceId: number | null;
+  serviceName: string;
+  category: string | null;
+  toothCode: number | null;
+  surfaces: string | null;
+  quantity: number;
+  unitPriceMinor: number;
+  note: string | null;
+}): Promise<PlanGuard & { totalMinor?: number }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const plan = await lockPlan(client, input.planId);
+    if (!plan) { await client.query("ROLLBACK"); return { ok: false, message: "الخطة غير موجودة." }; }
+
+    const allowed = canEditItems({ status: plan.status, consentAt: plan.consentAt?.toISOString() ?? null });
+    if (!allowed.ok) { await client.query("ROLLBACK"); return allowed; }
+
+    if (input.toothCode !== null && !isValidTooth(input.toothCode)) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "رقم سنّ غير صحيح بالترقيم الدولي." };
+    }
+
+    await client.query(
+      `INSERT INTO plan_items
+         (plan_id, service_id, service_name, category, tooth_code, surfaces,
+          quantity, unit_price_minor, note, sort_order)
+       VALUES ($1, $2, $3, $4::text, $5, $6::text, $7, $8, $9::text,
+               COALESCE((SELECT MAX(sort_order) + 1 FROM plan_items WHERE plan_id = $1), 100))`,
+      [
+        input.planId, input.serviceId, input.serviceName.trim(), input.category,
+        input.toothCode, normalizeSurfaces(input.surfaces),
+        Math.max(1, Math.round(input.quantity)), Math.max(0, Math.round(input.unitPriceMinor)),
+        input.note?.trim() || null,
+      ],
+    );
+    const totalMinor = await recomputePlanTotal(client, input.planId);
+    await client.query("COMMIT");
+    return { ok: true, totalMinor };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * يحذف بندًا **قبل** الموافقة فقط.
+ *
+ * ما قبل الموافقة مسوّدة يُصحَّح فيها بحرّية، وما بعدها وثيقةٌ وقّعها المريض. ولذلك
+ * لا يوجد «حذف بند» بعد الموافقة أصلًا — لا إلغاء ولا شطب: الوثيقة تبقى كما وُقّعت،
+ * والمستجدّ يُوثَّق بخطةٍ جديدة.
+ */
+export async function removePlanItem(planId: number, itemId: number): Promise<PlanGuard> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const plan = await lockPlan(client, planId);
+    if (!plan) { await client.query("ROLLBACK"); return { ok: false, message: "الخطة غير موجودة." }; }
+
+    const allowed = canEditItems({ status: plan.status, consentAt: plan.consentAt?.toISOString() ?? null });
+    if (!allowed.ok) { await client.query("ROLLBACK"); return allowed; }
+
+    const { rowCount } = await client.query(
+      `DELETE FROM plan_items WHERE id = $1 AND plan_id = $2`, [itemId, planId],
+    );
+    if ((rowCount ?? 0) === 0) { await client.query("ROLLBACK"); return { ok: false, message: "البند غير موجود." }; }
+
+    await recomputePlanTotal(client, planId);
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * يسجّل موافقة المريض — وهي اللحظة التي تصير فيها المسوّدة اتفاقًا.
+ *
+ * وفيها تنتقل بنود الخطة إلى **المخطط السني** بوصفها حالاتٍ مخطَّطة: قبل الموافقة
+ * كانت نيّةً في رأس الطبيب، وبعدها صارت عملًا متفَقًا عليه يجب أن يراه كل من يفتح
+ * ملف المريض — بما فيهم طبيبٌ آخر يستلم الحالة غدًا.
+ */
+export async function recordPlanConsent(input: {
+  planId: number;
+  actor: string;
+  note: string | null;
+}): Promise<PlanGuard & { itemCount?: number; totalMinor?: number }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const plan = await lockPlan(client, input.planId);
+    if (!plan) { await client.query("ROLLBACK"); return { ok: false, message: "الخطة غير موجودة." }; }
+
+    const { rows: itemRows } = await client.query<{
+      id: number; category: string | null; tooth_code: number | null;
+      surfaces: string | null; quantity: number; unit_price_minor: string; status: string;
+    }>(
+      `SELECT id, category, tooth_code, surfaces, quantity, unit_price_minor, status
+         FROM plan_items WHERE plan_id = $1 ORDER BY sort_order, id`,
+      [input.planId],
+    );
+
+    const guard = canConsent({
+      status: plan.status,
+      consentAt: plan.consentAt?.toISOString() ?? null,
+      items: itemRows.map((row) => ({
+        serviceId: null, toothCode: row.tooth_code,
+        quantity: row.quantity, unitPriceMinor: toMinor(row.unit_price_minor),
+        status: row.status as PlanItemStatus,
+      })),
+    });
+    if (!guard.ok) { await client.query("ROLLBACK"); return guard; }
+
+    const totalMinor = await recomputePlanTotal(client, input.planId);
+    await client.query(
+      `UPDATE treatment_plans SET consent_at = NOW(), consent_by = $2, consent_note = $3::text
+         WHERE id = $1`,
+      [input.planId, input.actor, input.note?.trim() || null],
+    );
+
+    // البنود على المخطط: حالاتٌ مخطَّطة لا منجَزة — والفرق بينهما نصف قيمة المخطط.
+    let charted = 0;
+    for (const row of itemRows) {
+      const condition = conditionForCategory(row.category);
+      if (!condition || row.tooth_code === null) continue;
+      await client.query(
+        `INSERT INTO tooth_conditions
+           (patient_id, tooth_code, condition, stage, surfaces, note, recorded_by)
+         VALUES ($1, $2, $3, 'planned', $4::text, $5::text, $6)`,
+        [
+          plan.patientId, row.tooth_code, condition, normalizeSurfaces(row.surfaces),
+          `من خطة العلاج رقم ${input.planId}`, input.actor,
+        ],
+      );
+      charted += 1;
+    }
+
+    await client.query("COMMIT");
+    void recordAudit({
+      action: "plan.consent",
+      entity: "treatment_plans",
+      entityId: input.planId,
+      entityLabel: `خطة رقم ${input.planId}`,
+      details: { البنود: itemRows.length, "على المخطط": charted },
+      actor: input.actor,
+    });
+    return { ok: true, itemCount: itemRows.length, totalMinor };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * يبني جدول الأقساط لخطةٍ موافَقٍ عليها.
+ *
+ * ولا يُبنى قبل الموافقة عمدًا: الأقساط تُشتقّ من الإجمالي، والإجمالي لا يستقرّ إلا
+ * بالموافقة. وجدولٌ يُبنى على رقمٍ ما زال يتغيّر جدولٌ يُعاد بناؤه — وكل إعادةٍ فرصةٌ
+ * لأن يبقى قسطٌ قديمٌ معلّقًا في مكانٍ ما.
+ */
+export async function schedulePlanInstallments(input: {
+  planId: number;
+  count: number;
+  everyDays: number;
+  firstDueDate: string;
+}): Promise<PlanGuard & { count?: number }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const plan = await lockPlan(client, input.planId);
+    if (!plan) { await client.query("ROLLBACK"); return { ok: false, message: "الخطة غير موجودة." }; }
+    if (!plan.consentAt) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "سجّل موافقة المريض قبل جدولة الأقساط." };
+    }
+
+    const { rows: existing } = await client.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM plan_installments WHERE plan_id = $1`, [input.planId],
+    );
+    if (Number(existing[0].count) > 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "للخطة جدول أقساط سلفًا." };
+    }
+
+    const { rows: totals } = await client.query<{ total_minor: string }>(
+      `SELECT total_minor FROM treatment_plans WHERE id = $1`, [input.planId],
+    );
+    const totalMinor = toMinor(totals[0].total_minor);
+    if (totalMinor <= 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "لا يمكن جدولة أقساط لخطة بلا مبلغ." };
+    }
+
+    const parts = splitInstallments(totalMinor, input.count, input.firstDueDate, input.everyDays);
+    for (const part of parts) {
+      await client.query(
+        `INSERT INTO plan_installments (plan_id, number, due_date, amount_minor)
+         VALUES ($1, $2, $3::date, $4)`,
+        [input.planId, part.number, part.dueDate, part.amountMinor],
+      );
+    }
+    await client.query("COMMIT");
+    return { ok: true, count: parts.length };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**
