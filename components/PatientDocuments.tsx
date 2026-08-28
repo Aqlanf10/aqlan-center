@@ -127,9 +127,16 @@ export function PatientDocuments({ patientId }: { patientId: number }) {
         * وبلا هذا كان الرفع سينجح ظاهريًّا ثم تختفي الأشعة عند أول إعادة نشر.
         */}
       {!ready && storageMessage ? (
-        <p className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-900">
-          {storageMessage}
-        </p>
+        <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
+          {storageMessage.split("\n").map((line, index) => (
+            <p key={index}
+              className={index === 0
+                ? "mb-1 text-sm font-bold text-amber-900"
+                : "text-[11px] leading-6 text-amber-800"}>
+              {line}
+            </p>
+          ))}
+        </div>
       ) : null}
 
       <form onSubmit={upload} className="mb-3 rounded-2xl border border-slate-200 bg-white p-3">

@@ -21,6 +21,21 @@ import { isSafeKey, storageKey } from "./storage";
  * والثاني يُكتشف بعد شهور حين تُطلب الأشعة ولا تُوجد.
  */
 
+/**
+ * رسالةُ التهيئة تقول **الخطوات** لا الشرط.
+ *
+ * «اضبط DOCUMENTS_DIR» جملةٌ تفترض أن قارئها يعرف أين يضبطه وبأيّ قيمة — وقارئها
+ * طبيبٌ أمام مريض. فتُكتب الخطوات كما تُنقر على الشاشة، فيحلّها بنفسه في دقيقة بدل
+ * أن ينتظر من يشرحها له.
+ */
+export const STORAGE_SETUP = [
+  "تخزين الأشعة غير مهيَّأ بعد، ولذلك يُرفض الرفع — وبلا قرصٍ دائم تضيع الصور عند أول تحديث للبرنامج.",
+  "الحلّ في لوحة Railway، خطوتان:",
+  "١) في خدمة البرنامج ← Volumes ← أضف قرصًا واجعل مساره /data",
+  "٢) في Variables ← أضف: DOCUMENTS_DIR = /data/documents",
+  "ستُعيد الخدمة تشغيل نفسها، ثم يعمل الرفع.",
+].join("\n");
+
 export interface StorageStatus {
   ready: boolean;
   directory: string | null;
@@ -38,7 +53,7 @@ export async function storageStatus(): Promise<StorageStatus> {
     return {
       ready: false,
       directory: null,
-      message: "تخزين الملفّات غير مهيَّأ. اضبط DOCUMENTS_DIR على مجلّدٍ دائم — وبلا ذلك تضيع الأشعة عند أول إعادة نشر.",
+      message: STORAGE_SETUP,
     };
   }
   try {
