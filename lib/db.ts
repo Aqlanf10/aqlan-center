@@ -66,6 +66,17 @@ export function getPool(): Pool {
 let schemaReady: Promise<void> | null = null;
 
 /**
+ * يُنسي البرنامج أنه أنشأ المخطط — لفحوص الإقلاع وحدها.
+ *
+ * `ensureSchema` تُنفَّذ مرة لكل عملية، وهذا هو الصحيح في التشغيل. لكن فحصَ «هل يُعاد
+ * الإنشاء بسلامة فوق بيانات قائمة؟» يحتاج إقلاعًا ثانيًا في العملية نفسها — وهو
+ * السؤال الذي فات فحصنا مرة، فمرّ خطأ لا يظهر إلا على قاعدة فيها صفوف.
+ */
+export function schemaReadyReset(): void {
+  schemaReady = null;
+}
+
+/**
  * ينشئ الجدول عند أول طلب.
  *
  * أداة الطوارئ بلا نظام هجرات عمدًا: إضافة أداة هجرات هنا تعني خطوة نشر إضافية قبل أن
@@ -420,19 +431,19 @@ export function ensureSchema(): Promise<void> {
       -- مستعمل، وهو ما يُفشل الإدراج بدل أن يُصلحه.
       SELECT setval('patient_number_seq', GREATEST(
         (SELECT last_value FROM patient_number_seq),
-        (SELECT COALESCE(MAX(NULLIF(regexp_replace(patient_number, '\D', '', 'g'), '')::bigint), 0) FROM patients)
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::bigint), 0) FROM patients)
       ), true);
       SELECT setval('invoice_number_seq', GREATEST(
         (SELECT last_value FROM invoice_number_seq),
-        (SELECT COALESCE(MAX(NULLIF(regexp_replace(invoice_number, '\D', '', 'g'), '')::bigint), 0) FROM invoices)
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(invoice_number, '\\D', '', 'g'), '')::bigint), 0) FROM invoices)
       ), true);
       SELECT setval('receipt_number_seq', GREATEST(
         (SELECT last_value FROM receipt_number_seq),
-        (SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_number, '\D', '', 'g'), '')::bigint), 0) FROM payments)
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_number, '\\D', '', 'g'), '')::bigint), 0) FROM payments)
       ), true);
       SELECT setval('voucher_number_seq', GREATEST(
         (SELECT last_value FROM voucher_number_seq),
-        (SELECT COALESCE(MAX(NULLIF(regexp_replace(voucher_number, '\D', '', 'g'), '')::bigint), 0) FROM expenses)
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(voucher_number, '\\D', '', 'g'), '')::bigint), 0) FROM expenses)
       ), true);
 
       CREATE TABLE IF NOT EXISTS settings (
@@ -788,6 +799,7 @@ export async function createStaffUser(input: {
 import type { Appointment, AppointmentStatus } from "./schedule";
 
 import type { Gender, Patient, PatientInput } from "./patient";
+import type { CandidatePatient } from "./duplicates";
 
 /** ما يكفي لقائمة بحث: الحقول الثقيلة لا تُحمَّل لعشرين نتيجة لن تُقرأ. */
 export interface PatientSummary {
@@ -920,6 +932,54 @@ export async function listPatients(offset: number, limit: number): Promise<{
  * الرقم يُولَّد داخل الاستعلام من أكبر رقم موجود، لا من عدّ السجلات: العدّ يعيد استخدام
  * رقم مريض محذوف فيصير لمريضين الرقم نفسه في سجلات مطبوعة قديمة.
  */
+/**
+ * مرشّحو التكرار لمريض على وشك الإنشاء.
+ *
+ * الاستعلام واسعٌ عمدًا ثم يُصفّى في الذاكرة: القاعدة تُرجّح بالهاتف وبأول كلمة من
+ * الاسم، والمنطق العربي (الهمزات، التاء المربوطة، «عبد الله») يُطبَّق في
+ * `lib/duplicates` حيث يُختبر. ولو صُفّي في SQL وحده لاحتاج امتدادات وفهارس نصّية
+ * لا يستحقّها حجم عيادة، ولصار المنطق غير قابل للاختبار بلا قاعدة.
+ */
+export async function duplicateCandidates(input: {
+  fullName: string; phone: string | null; altPhone: string | null;
+}): Promise<CandidatePatient[]> {
+  await ensureSchema();
+  const phones = [
+    ...phoneLookupForms(input.phone),
+    ...phoneLookupForms(input.altPhone),
+  ];
+  /*
+   * **كل** كلمات الاسم لا أولاها.
+   *
+   * الأولى وحدها كانت تفوّت أشيع حالتين: «عبدالله محمد» ملتصقةً لا تطابق «عبد الله
+   * محمد» مفصولةً، والاسم المختصر يبدأ بكلمة أخرى. والبحث بكل الكلمات يجد السجل من
+   * أي كلمة مشتركة، ثم يفصل المنطقُ العربي في `lib/duplicates` أهو نفس الشخص.
+   */
+  const words = input.fullName.trim().split(/\s+/).filter((w) => w.length > 1).slice(0, 6);
+  const patterns = words.map((word) => `%${word}%`);
+
+  const { rows } = await getPool().query<{
+    id: number; patient_number: string; full_name: string;
+    phone: string | null; alt_phone: string | null; birth_year: number | null;
+  }>(
+    `SELECT id, patient_number, full_name, phone, alt_phone, birth_year
+       FROM patients
+      WHERE ($1::text[] <> '{}' AND (phone = ANY($1::text[]) OR alt_phone = ANY($1::text[])))
+         OR ($2::text[] <> '{}' AND full_name ILIKE ANY($2::text[]))
+      ORDER BY id DESC
+      LIMIT 60`,
+    [phones, patterns],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    patientNumber: row.patient_number,
+    fullName: row.full_name,
+    phone: row.phone,
+    altPhone: row.alt_phone,
+    birthYear: row.birth_year,
+  }));
+}
+
 export async function createPatient(input: PatientInput): Promise<Patient> {
   await ensureSchema();
   const { rows } = await getPool().query<PatientRow>(

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { GENDER_LABEL, type Gender } from "@/lib/patient";
+import { MATCH_LABEL, type DuplicateMatch } from "@/lib/duplicates";
 
 /**
  * المرضى: بحث، وتصفّح، وإنشاء.
@@ -174,18 +175,23 @@ function NewPatientForm({ onCreated, onCancel }: {
   const [medicalAlert, setMedicalAlert] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateMatch[]>([]);
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const send = async (confirmDuplicate: boolean) => {
     if (busy) return;
     setBusy(true);
     try {
       const response = await fetch("/api/patients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, phone, gender, birthYear, medicalAlert }),
+        body: JSON.stringify({ fullName, phone, gender, birthYear, medicalAlert, confirmDuplicate }),
       });
       const payload = await response.json().catch(() => null);
+      if (response.status === 409 && Array.isArray(payload?.duplicates)) {
+        setDuplicates(payload.duplicates as DuplicateMatch[]);
+        setError(payload?.message ?? null);
+        return;
+      }
       if (!response.ok) { setError(payload?.message ?? "تعذّر الحفظ."); return; }
       onCreated(payload as { id: number });
     } catch {
@@ -195,11 +201,58 @@ function NewPatientForm({ onCreated, onCancel }: {
     }
   };
 
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    // الاسم أو الهاتف تغيّر بعد التحذير: يُعاد الفحص بدل أن يمرّ التأكيد القديم.
+    setDuplicates([]);
+    void send(false);
+  };
+
   return (
     <form onSubmit={submit} className="mb-4 rounded-2xl border border-brand-blue bg-white p-4">
       {/* الحد الأدنى فقط هنا: الاسم يكفي لفتح سجل، والبقية تُكمَّل من الملف لاحقًا.
           نموذجٌ من ثمانية حقول أمام مريض واقف ينتهي بسجلات نصف فارغة أو بلا سجل. */}
       <h2 className="mb-3 text-sm font-bold">مريض جديد</h2>
+
+      {/*
+        التحذير يُعرض **قبل** الحفظ لا بعده: بعد الحفظ يصير دمج ملفين عملًا محاسبيًا
+        لا زرًّا. وكلٌّ منهم رابطٌ يُفتح — لأن القرار يحتاج النظر في الملف نفسه، لا
+        في سطر يقول «قد يكون مكررًا».
+      */}
+      {duplicates.length > 0 ? (
+        <div className="mb-3 rounded-xl border-2 border-warning-300 bg-warning-50 p-3">
+          <p className="mb-2 text-xs font-bold text-warning-900">
+            {error ?? "قد يكون هذا المريض مسجّلًا سلفًا."}
+          </p>
+          <ul className="mb-3 space-y-1.5">
+            {duplicates.map((match) => (
+              <li key={match.patient.id}>
+                <a href={`/patients/${match.patient.id}`} target="_blank" rel="noopener"
+                  className="flex flex-wrap items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs hover:bg-slate-50">
+                  <span className="font-bold text-navy-900">{match.patient.fullName}</span>
+                  <span className="font-semibold text-slate-400 ltr-nums">{match.patient.patientNumber}</span>
+                  {match.patient.phone ? (
+                    <span className="font-semibold text-slate-400 ltr-nums">{match.patient.phone}</span>
+                  ) : null}
+                  <span className="mr-auto rounded-full bg-warning-100 px-2 py-0.5 font-bold text-warning-900">
+                    {MATCH_LABEL[match.reason]}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => void send(true)} disabled={busy}
+              className="rounded-xl bg-warning-500 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
+              ليس أحدهم — أضف مريضًا جديدًا
+            </button>
+            <button type="button" onClick={() => { setDuplicates([]); setError(null); }}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-navy-800">
+              تراجع
+            </button>
+          </div>
+        </div>
+      ) : null}
       <input
         value={fullName}
         onChange={(event) => setFullName(event.target.value)}

@@ -53,7 +53,7 @@ try {
 
   const target = withDatabase(source, temporary);
   process.env.DATABASE_URL = target;
-  const { ensureSchema, getPool } = await import("../lib/db.ts");
+  const { ensureSchema, getPool, schemaReadyReset } = await import("../lib/db.ts");
 
   await ensureSchema();
   console.log("نجح إنشاء المخطط من الصفر.");
@@ -69,6 +69,40 @@ try {
   } else {
     console.log(`كل الجداول المطلوبة موجودة (${REQUIRED.length}).`);
   }
+
+  /*
+   * ثم يُعاد الإنشاء على قاعدة **فيها بيانات**.
+   *
+   * هذه هي الحالة التي فاتت الفحص الأول: كلّ ما يُصفّي أو يُحوّل صفوفًا قائمة —
+   * مواءمة العدّادات مثلًا — لا يُنفَّذ أصلًا على قاعدة فارغة، فيمرّ الخطأ ويظهر
+   * أول مرة على قاعدة الإنتاج وحدها. وقد وقع هذا فعلًا.
+   */
+  const { createPatient, recordPayment, openShift } = await import("../lib/db.ts");
+  const seeded = await createPatient({
+    fullName: "فحص المخطط", phone: null, altPhone: null, gender: "male",
+    birthYear: null, address: null, medicalAlert: null, note: null,
+  });
+  await openShift({ openedBy: "فحص", opening: { YER: 0, SAR: 0, USD: 0 } });
+  await recordPayment({
+    patientId: seeded.id, invoiceId: null, kind: "payment", amountMinor: 100,
+    currency: "YER", baseCurrency: "YER", exchangeRate: 1, method: "cash",
+    note: null, createdBy: "فحص",
+  });
+
+  // إقلاعٌ ثانٍ فوق بيانات قائمة — كما يحدث في كل نشرة إنتاج.
+  schemaReadyReset();
+  await ensureSchema();
+  const after = await createPatient({
+    fullName: "بعد الإقلاع الثاني", phone: null, altPhone: null, gender: "male",
+    birthYear: null, address: null, medicalAlert: null, note: null,
+  });
+  if (after.patientNumber === seeded.patientNumber) {
+    console.error("خلل: تكرّر رقم الملف بعد إعادة الإقلاع.");
+    failed = true;
+  } else {
+    console.log(`أُعيد الإنشاء فوق بيانات قائمة: ${seeded.patientNumber} ← ${after.patientNumber}.`);
+  }
+
   await getPool().end();
 } catch (error) {
   console.error(`فشل إنشاء المخطط: ${error.message}`);
