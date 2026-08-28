@@ -5,6 +5,7 @@ import { useClinicName, useSetting } from "@/components/SettingsProvider";
 import { PERIOD_LABELS, confirmationText, type BookingRequest } from "@/lib/booking";
 import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { minutesSince } from "@/lib/flow";
+import { PageHeader } from "@/components/PageHeader";
 
 /**
  * صندوق طلبات المرضى.
@@ -143,13 +144,11 @@ export default function RequestsPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">طلبات المرضى</h1>
-        <p className="text-xs text-slate-500">وصلت من صفحة الحجز، الأقدم أولًا</p>
-        <p className="mt-1 text-[11px] text-slate-400">
-          رابط الحجز للمرضى: <a href="/book" target="_blank" rel="noopener" className="font-bold text-brand-blue underline">/book</a>
-        </p>
-      </header>
+      <PageHeader
+        title="طلبات المرضى"
+        subtitle="وصلت من صفحة الحجز، الأقدم أولًا"
+        links={[{ href: "/book", label: "افتح صفحة الحجز" }]}
+      />
 
       {oldest >= 240 ? (
         <p className="mb-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">

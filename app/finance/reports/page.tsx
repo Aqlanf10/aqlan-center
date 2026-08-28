@@ -6,6 +6,8 @@ import { EXPENSE_CATEGORIES, EXPENSE_CATEGORY_LABEL, type ExpenseCategory } from
 import { useSetting } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * التقرير المالي — يومي وشهري بنفس الشاشة.
@@ -68,15 +70,11 @@ export default function FinanceReportsPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">التقرير المالي</h1>
-        <p className="text-xs text-slate-500">الدخل والمصروف والصافي</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/finance" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الصندوق</a>
-          <a href="/finance/debts" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المديونية</a>
-          <a href="/finance/commissions" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">العمولات</a>
-        </nav>
-      </header>
+      <PageHeader
+        title="التقرير المالي"
+        subtitle="الدخل والمصروف والصافي"
+        links={[...financeLinks("/finance/reports"), { href: "/finance/commissions", label: "العمولات" }]}
+      />
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         {presets.map(([label, start, end]) => (

@@ -6,6 +6,8 @@ import { installmentReminderText, type PlanStatus } from "@/lib/plans";
 import { useClinicName, useSetting } from "@/components/SettingsProvider";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * أقساط العلاج المستحقة.
@@ -88,14 +90,11 @@ export default function PlansPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">أقساط العلاج</h1>
-        <p className="text-xs text-slate-500">الخطط الجارية وما استحقّ منها</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/finance" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الصندوق</a>
-          <a href="/finance/debts" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المديونية</a>
-        </nav>
-      </header>
+      <PageHeader
+        title="أقساط العلاج"
+        subtitle="الخطط الجارية وما استحقّ منها"
+        links={financeLinks("/finance/plans")}
+      />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>

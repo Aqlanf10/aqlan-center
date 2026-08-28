@@ -12,6 +12,7 @@ import {
   type LapseWeeks,
   type RecallRow,
 } from "@/lib/recall";
+import { PageHeader } from "@/components/PageHeader";
 
 /**
  * من يجب الاتصال به اليوم.
@@ -80,10 +81,10 @@ export default function RecallPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">المتابعة والاستدعاء</h1>
-        <p className="text-xs text-slate-500">من يجب الاتصال به — الأقدم أولًا</p>
-      </header>
+      <PageHeader
+        title="المتابعة والاستدعاء"
+        subtitle="من يجب الاتصال به — الأقدم أولًا"
+      />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>

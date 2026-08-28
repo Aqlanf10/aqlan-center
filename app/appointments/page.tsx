@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dayLoad, type Appointment } from "@/lib/schedule";
 import { whatsAppLink } from "@/lib/reminders";
 import { useChairCount } from "@/components/SettingsProvider";
+import { PageHeader } from "@/components/PageHeader";
 
 /**
  * المواعيد — الشاشة التي تعالج «ينتظرون أيامًا».
@@ -134,10 +135,10 @@ export default function AppointmentsPage() {
 
   return (
     <main className="mx-auto max-w-4xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">المواعيد</h1>
-        <p className="text-xs text-slate-500">الحجز محكوم بعدد الكراسي — لا يُوعَد بما لا يتسع له اليوم.</p>
-      </header>
+      <PageHeader
+        title="المواعيد"
+        subtitle="الحجز محكوم بعدد الكراسي — لا يُوعَد بما لا يتسع له اليوم."
+      />
 
       <div className="mb-4 flex items-center gap-2">
         <button onClick={() => shift(-1)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold">السابق</button>

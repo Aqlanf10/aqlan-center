@@ -21,6 +21,8 @@ import {
 } from "@/lib/expenses";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * الصندوق: وردية واحدة مفتوحة، وجرد آخر اليوم.
@@ -192,29 +194,11 @@ export default function FinancePage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-extrabold leading-tight">الصندوق</h1>
-          <p className="text-xs text-slate-500">{friendlyDateLong(today)}</p>
-        </div>
-        <div className="flex shrink-0 gap-1.5">
-          <a href="/finance/services" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
-            الأسعار
-          </a>
-          <a href="/finance/parties" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
-            الجهات
-          </a>
-          <a href="/finance/reports" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
-            التقارير
-          </a>
-          <a href="/finance/plans" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
-            الأقساط
-          </a>
-          <a href="/finance/accounting" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-navy-800">
-            الدفاتر
-          </a>
-        </div>
-      </header>
+      <PageHeader
+        title="الصندوق"
+        subtitle={friendlyDateLong(today)}
+        links={financeLinks("/finance")}
+      />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
@@ -287,8 +271,11 @@ export default function FinancePage() {
 
             {!closing ? (
               <div className="mt-3 flex flex-wrap gap-2">
+                {/* الصرف عملية يومية لا عملية خطر. كان بأحمر التلف، والأحمر الذي
+                    يُضغط عشر مرات في اليوم يُفقد الأحمر معناه — فحين يظهر أحمرٌ
+                    حقيقي (حذف، عكس قيد) لا يراه أحد. */}
                 <button onClick={() => setSpending((open) => !open)}
-                  className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-extrabold text-white">
+                  className="flex-1 rounded-xl bg-navy-900 py-2.5 text-sm font-extrabold text-white hover:bg-navy-800">
                   {spending ? "إغلاق" : "سند صرف"}
                 </button>
                 <button onClick={() => setClosing(true)}
@@ -360,7 +347,7 @@ export default function FinancePage() {
           ) : null}
 
           {spending ? (
-            <section className="mb-4 rounded-2xl border-2 border-red-400 bg-white p-4" aria-label="سند صرف">
+            <section className="mb-4 rounded-2xl border-2 border-navy-800 bg-white p-4" aria-label="سند صرف">
               <h2 className="mb-3 text-sm font-bold">سند صرف</h2>
 
               <label className="mb-2 block">

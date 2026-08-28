@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useClinicName } from "./SettingsProvider";
 import { useSession } from "./SessionProvider";
 import { canHandleMoney, isAdmin, ROLE_LABEL, type Role } from "@/lib/roles";
+import { Icon, Logo, type IconName } from "./Icon";
 
 /**
  * قشرة البرنامج — تنقّل واحد لكل الشاشات.
@@ -20,22 +21,22 @@ import { canHandleMoney, isAdmin, ROLE_LABEL, type Role } from "@/lib/roles";
 interface NavItem {
   href: string;
   label: string;
-  icon: string;
+  icon: IconName;
   badge?: "requests" | "lab";
   /** من يرى هذا الرابط. الغياب يعني الجميع. */
   needs?: "money" | "admin";
 }
 
 const NAV: NavItem[] = [
-  { href: "/", label: "اليوم", icon: "🦷" },
-  { href: "/appointments", label: "المواعيد", icon: "🗓" },
-  { href: "/patients", label: "المرضى", icon: "👤" },
-  { href: "/finance", label: "الصندوق", icon: "💵", needs: "money" },
-  { href: "/lab", label: "المختبر", icon: "🔧", badge: "lab" },
-  { href: "/recall", label: "المتابعة", icon: "📞" },
-  { href: "/requests", label: "الطلبات", icon: "📥", badge: "requests" },
-  { href: "/report", label: "التقرير", icon: "📊" },
-  { href: "/settings", label: "الإعدادات", icon: "⚙️", needs: "admin" },
+  { href: "/", label: "اليوم", icon: "tooth" },
+  { href: "/appointments", label: "المواعيد", icon: "calendar" },
+  { href: "/patients", label: "المرضى", icon: "user" },
+  { href: "/finance", label: "الصندوق", icon: "wallet", needs: "money" },
+  { href: "/lab", label: "المختبر", icon: "flask", badge: "lab" },
+  { href: "/recall", label: "المتابعة", icon: "phone" },
+  { href: "/requests", label: "الطلبات", icon: "inbox", badge: "requests" },
+  { href: "/report", label: "التقرير", icon: "chart" },
+  { href: "/settings", label: "الإعدادات", icon: "settings", needs: "admin" },
 ];
 
 /**
@@ -103,50 +104,79 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-full lg:flex">
-      <aside className="hidden w-56 shrink-0 border-l border-slate-200 bg-white p-4 lg:block">
-        <p className="mb-1 text-sm font-extrabold text-navy-900">عيادة عقلان</p>
-        <p className="mb-5 line-clamp-2 text-[11px] leading-relaxed text-slate-400">{clinicName}</p>
-        <nav className="space-y-1">
+      <aside className="hidden w-60 shrink-0 border-l border-slate-200 bg-white lg:flex lg:flex-col">
+        {/* هوية المركز في أعلى كل شاشة: الشعار والاسم الكامل — لا اختصارًا، لأن هذه
+            هي واجهة المركز أمام من يعمل فيه ثماني ساعات يوميًا. */}
+        <div className="flex items-start gap-2.5 border-b border-slate-100 p-4">
+          <Logo className="mt-0.5 h-9 w-9 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[13px] font-bold leading-tight text-navy-900">{clinicName}</p>
+            <p className="mt-0.5 text-[10px] font-semibold text-slate-400">نظام إدارة المركز</p>
+          </div>
+        </div>
+        <nav className="flex-1 space-y-0.5 p-3">
           {nav.map((item) => (
             <a
               key={item.href}
               href={item.href}
               aria-current={isActive(item.href) ? "page" : undefined}
-              className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold ${
-                isActive(item.href) ? "bg-navy-800 text-white" : "text-slate-600 hover:bg-slate-50"
+              className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors ${
+                isActive(item.href)
+                  ? "bg-navy-900 text-white shadow-card"
+                  : "text-slate-600 hover:bg-navy-50 hover:text-navy-900"
               }`}
             >
-              <span aria-hidden>{item.icon}</span>
+              <Icon name={item.icon} className="h-[18px] w-[18px] shrink-0" />
               <span className="flex-1">{item.label}</span>
               <Badge item={item} badges={badges} />
             </a>
           ))}
         </nav>
-        <div className="mt-5 space-y-1 border-t border-slate-100 pt-4">
-          {session ? (
-            <p className="px-3 pb-1 text-[11px] font-bold text-slate-400">
-              {session.username} · {ROLE_LABEL[session.role as Role] ?? session.role}
-            </p>
-          ) : null}
+        <div className="space-y-0.5 border-t border-slate-100 p-3">
           <a href="/display" target="_blank" rel="noopener"
-            className="block rounded-xl px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50">
-            شاشة الصالة ↗
+            className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50">
+            <Icon name="screen" className="h-4 w-4 shrink-0" /> شاشة الصالة
           </a>
           <a href="/book" target="_blank" rel="noopener"
-            className="block rounded-xl px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50">
-            صفحة حجز المرضى ↗
+            className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50">
+            <Icon name="link" className="h-4 w-4 shrink-0" /> صفحة حجز المرضى
           </a>
-          <button onClick={signOut}
-            className="block w-full rounded-xl px-3 py-2 text-right text-xs font-bold text-slate-500 hover:bg-slate-50">
-            خروج
-          </button>
         </div>
+
+        {/* من يستعمل البرنامج الآن: يظهر أسفل القائمة لا فوقها — الشاشة للعمل،
+            والهوية تُراجَع عند الحاجة. وزر الخروج بجانبها حيث يُتوقَّع. */}
+        {session ? (
+          <div className="flex items-center gap-2 border-t border-slate-100 p-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-navy-100 text-[11px] font-bold text-navy-800">
+              {session.username.slice(0, 2)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-bold text-navy-900">{session.username}</p>
+              <p className="text-[10px] font-semibold text-slate-400">
+                {ROLE_LABEL[session.role as Role] ?? session.role}
+              </p>
+            </div>
+            <button onClick={signOut} aria-label="خروج"
+              className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-danger-50 hover:text-danger-700">
+              <Icon name="logout" className="h-4 w-4" />
+            </button>
+          </div>
+        ) : null}
       </aside>
 
       <div className="flex-1 pb-20 lg:pb-0">
-        <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-2 lg:hidden">
-          <span className="truncate text-xs font-bold text-slate-500">{clinicName}</span>
-          <button onClick={signOut} className="shrink-0 text-xs font-bold text-slate-400">خروج</button>
+        {/* شريط الهاتف: كان الاسم الطويل يُقصّ إلى «…وتجميل ا» بجانب كلمة «خروج»،
+            فلا هوية ظهرت ولا زر وُضّح. الشعار يحمل الهوية في مساحة ثابتة، والاسم
+            يأخذ سطرين إن احتاج. */}
+        <div className="flex items-center gap-2.5 border-b border-slate-200 bg-white px-3 py-2 lg:hidden">
+          <Logo className="h-7 w-7 shrink-0" />
+          <span className="line-clamp-2 flex-1 text-[11px] font-bold leading-tight text-navy-900">
+            {clinicName}
+          </span>
+          <button onClick={signOut} aria-label="خروج"
+            className="shrink-0 rounded-lg p-1.5 text-slate-400">
+            <Icon name="logout" className="h-4 w-4" />
+          </button>
         </div>
         {children}
       </div>
@@ -171,20 +201,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <a
                 key={item.href}
                 href={item.href}
-                className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700"
+                className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700"
               >
-                <span aria-hidden>{item.icon}</span>
+                <Icon name={item.icon} className="h-[18px] w-[18px] shrink-0" />
                 <span className="flex-1">{item.label}</span>
                 <Badge item={item} badges={badges} />
               </a>
             ))}
             <a href="/display" target="_blank" rel="noopener"
-              className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-500">
-              <span aria-hidden>📺</span> شاشة الصالة ↗
+              className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-500">
+              <Icon name="screen" className="h-[18px] w-[18px] shrink-0" /> شاشة الصالة
             </a>
             <a href="/book" target="_blank" rel="noopener"
-              className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-500">
-              <span aria-hidden>🔗</span> صفحة حجز المرضى ↗
+              className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-500">
+              <Icon name="link" className="h-[18px] w-[18px] shrink-0" /> صفحة حجز المرضى
             </a>
           </div>
         ) : null}
@@ -199,7 +229,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 isActive(item.href) ? "text-navy-900" : "text-slate-400"
               }`}
             >
-              <span aria-hidden className="text-lg leading-none">{item.icon}</span>
+              <Icon name={item.icon} className="h-5 w-5" />
               {item.label}
               <Badge item={item} badges={badges} floating />
             </a>
@@ -211,10 +241,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               moreOpen || restActive ? "text-navy-900" : "text-slate-400"
             }`}
           >
-            <span aria-hidden className="text-lg leading-none">{moreOpen ? "✕" : "☰"}</span>
+            <Icon name="menu" className="h-5 w-5" />
             المزيد
             {!moreOpen && badges.requests > 0 ? (
-              <span className="absolute -top-0.5 left-1/4 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+              <span className="absolute -top-0.5 left-1/4 rounded-full bg-accent-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
                 {badges.requests}
               </span>
             ) : null}
@@ -234,7 +264,7 @@ function Badge({ item, badges, floating = false }: {
   const count = badges[item.badge];
   if (!count) return null;
   return (
-    <span className={`rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white ${
+    <span className={`rounded-full bg-accent-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white ${
       floating ? "absolute -top-0.5 left-1/4" : ""
     }`}>
       {count}

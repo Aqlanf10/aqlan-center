@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { useClinicName, useSetting } from "@/components/SettingsProvider";
 import { toWhatsAppNumber } from "@/lib/reminders";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * مديونية المرضى.
@@ -76,19 +78,16 @@ export default function DebtsPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">مديونية المرضى</h1>
-        <p className="text-xs text-slate-500">كم من مال العيادة عند الناس — ومنذ متى</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/finance" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الصندوق</a>
-          <a href="/finance/reports" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">التقرير</a>
-          <a href="/finance/opening" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الأرصدة الافتتاحية</a>
-        </nav>
-      </header>
+      <PageHeader
+        title="مديونية المرضى"
+        subtitle="كم من مال العيادة عند الناس — ومنذ متى"
+        links={financeLinks("/finance/debts")}
+      />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
       ) : null}
+
 
       <section className="mb-4 rounded-2xl border-2 border-amber-300 bg-amber-50 p-4 text-center">
         <p className="text-2xl font-extrabold text-amber-900">{formatMoney(totals.total, base)}</p>

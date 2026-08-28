@@ -18,6 +18,7 @@ import {
   type LabFilter,
   type LabOrder,
 } from "@/lib/lab";
+import { PageHeader } from "@/components/PageHeader";
 
 /**
  * أعمال المختبر — «تراكم التراكيب» بنصّ كلام المالك.
@@ -152,10 +153,10 @@ export default function LabPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">أعمال المختبر</h1>
-        <p className="text-xs text-slate-500">التراكيب والأجهزة — ما تأخّر أولًا</p>
-      </header>
+      <PageHeader
+        title="أعمال المختبر"
+        subtitle="التراكيب والأجهزة — ما تأخّر أولًا"
+      />
 
       <section className="mb-4 grid grid-cols-3 gap-2" aria-label="ملخص المختبر">
         <Stat label="متأخرة" value={summary.late} tone={summary.late > 0 ? "bad" : "calm"} />

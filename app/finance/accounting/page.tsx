@@ -6,6 +6,8 @@ import { useSetting } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import type { Account, AccountBalance, BalanceSheet, IncomeStatement } from "@/lib/accounting";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * الدفاتر المحاسبية.
@@ -89,16 +91,11 @@ export default function AccountingPage() {
 
   return (
     <main className="mx-auto max-w-4xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">الدفاتر المحاسبية</h1>
-        <p className="text-xs text-slate-500">قيد مزدوج · ميزان مراجعة · قائمة دخل · ميزانية</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/finance" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الصندوق</a>
-          <a href="/finance/reports" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">التقرير</a>
-          <a href="/finance/fx" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">إعادة تقييم العملات</a>
-          <a href="/finance/opening" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الأرصدة الافتتاحية</a>
-        </nav>
-      </header>
+      <PageHeader
+        title="الدفاتر المحاسبية"
+        subtitle="قيد مزدوج · ميزان مراجعة · قائمة دخل · ميزانية"
+        links={financeLinks("/finance/accounting")}
+      />
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         {([["هذا الشهر", monthStart, today],

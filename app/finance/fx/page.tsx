@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { CURRENCY_LABEL, formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * إعادة تقييم النقد الأجنبي.
@@ -83,16 +85,11 @@ export default function FxPage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-5">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">إعادة تقييم العملات</h1>
-        <p className="text-xs text-slate-500">
-          {report ? friendlyDateLong(report.asOf) : "…"} — ما في الصندوق من عملات بسعر اليوم
-        </p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/finance/accounting" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الدفاتر</a>
-          <a href="/settings" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الأسعار في الإعدادات</a>
-        </nav>
-      </header>
+      <PageHeader
+        title="إعادة تقييم العملات"
+        subtitle={`${report ? friendlyDateLong(report.asOf) : "…"} — ما في الصندوق من عملات بسعر اليوم`}
+        links={financeLinks("/finance/fx")}
+      />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>

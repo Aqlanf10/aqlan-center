@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { friendlyDateLong } from "@/lib/reminders";
 import { useSetting } from "@/components/SettingsProvider";
+import { PageHeader } from "@/components/PageHeader";
+import { financeLinks } from "@/components/financeLinks";
 
 /**
  * الأرصدة الافتتاحية — لوحة مراجعة لا لوحة إدخال.
@@ -55,14 +57,11 @@ export default function OpeningBalancesPage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-5">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">الأرصدة الافتتاحية</h1>
-        <p className="text-xs text-slate-500">ما كان على المرضى قبل بدء العمل بالبرنامج</p>
-        <nav className="mt-2 flex flex-wrap gap-1.5">
-          <a href="/finance/debts" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">المديونية</a>
-          <a href="/finance/accounting" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">الدفاتر</a>
-        </nav>
-      </header>
+      <PageHeader
+        title="الأرصدة الافتتاحية"
+        subtitle="ما كان على المرضى قبل بدء العمل بالبرنامج"
+        links={financeLinks("/finance/opening")}
+      />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>

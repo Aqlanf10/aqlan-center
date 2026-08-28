@@ -6,6 +6,7 @@ import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString, type DayLoad } from "@/lib/schedule";
 import { appointmentsCountText, reportText, type DayReport } from "@/lib/report";
 import type { LabSummary } from "@/lib/lab";
+import { PageHeader } from "@/components/PageHeader";
 
 /**
  * تقرير اليوم.
@@ -66,10 +67,10 @@ export default function ReportPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
-      <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">تقرير اليوم</h1>
-        <p className="text-xs text-slate-500">أرقام اليوم وحِمل الغد</p>
-      </header>
+      <PageHeader
+        title="تقرير اليوم"
+        subtitle="أرقام اليوم وحِمل الغد"
+      />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <button onClick={() => setDate((current) => addDays(current, -1))}
