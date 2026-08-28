@@ -27,7 +27,8 @@ export type AuditAction =
   | "settings.update"
   | "user.create" | "user.update" | "user.disable"
   | "backup.download" | "export.download"
-  | "document.reprint";
+  | "document.reprint"
+  | "chart.record";
 
 export const AUDIT_LABEL: Record<AuditAction, string> = {
   "invoice.create": "إنشاء فاتورة",
@@ -53,6 +54,7 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "backup.download": "تنزيل نسخة احتياطية",
   "export.download": "تصدير بيانات",
   "document.reprint": "إعادة طباعة مستند",
+  "chart.record": "تثبيت حالة سن",
 };
 
 /**

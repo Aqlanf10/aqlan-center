@@ -460,6 +460,27 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS document_prints_doc_idx ON document_prints (doc_type, doc_id);
 
+      -- حالات الأسنان — سجلٌّ زمني لا حالة واحدة لكل سن.
+      --
+      -- الجدول **يُضاف إليه ولا يُعدَّل**: حالةُ السن اليوم تُعرف من آخر سطر لا من
+      -- حقلٍ يُكتب فوقه. والفرق أن تاريخ السن يبقى: متى وُجد التسوّس، ومتى حُشي،
+      -- ومن سجّل كلًّا منهما. وحقلٌ واحد يُكتب فوقه يمحو التاريخ مع كل تحديث —
+      -- والدستور يمنع التعديل الصامت على الحركات السريرية.
+      CREATE TABLE IF NOT EXISTS tooth_conditions (
+        id          BIGSERIAL   PRIMARY KEY,
+        patient_id  INTEGER     NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        tooth_code  SMALLINT    NOT NULL,
+        condition   TEXT        NOT NULL,
+        stage       TEXT        NOT NULL DEFAULT 'existing',
+        surfaces    TEXT,
+        note        TEXT,
+        visit_id    INTEGER     REFERENCES visits(id),
+        recorded_by TEXT        NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS tooth_conditions_patient_idx
+        ON tooth_conditions (patient_id, tooth_code, recorded_at);
+
       -- سجل التدقيق — يُكتب ولا يُعدَّل ولا يُحذف.
       --
       -- لا عمود updated_at ولا حالة ولا حذف منطقي: كلها أبوابٌ للتعديل، وسجلٌّ
@@ -3682,6 +3703,82 @@ export async function auditActors(): Promise<string[]> {
     `SELECT DISTINCT actor FROM audit_log ORDER BY actor LIMIT 50`,
   );
   return rows.map((row) => row.actor);
+}
+
+// ─── مخطط الأسنان ────────────────────────────────────────────────────────────
+
+import {
+  buildChart, chartSummary, isValidTooth, normalizeSurfaces,
+  type ChartSummary, type ConditionStage, type ToothCondition,
+  type ToothRecord, type ToothState,
+} from "./dental";
+
+interface ToothRow {
+  id: string; tooth_code: number; condition: string; stage: string;
+  surfaces: string | null; note: string | null; visit_id: number | null;
+  recorded_by: string; recorded_at: Date;
+}
+
+const toToothRecord = (row: ToothRow): ToothRecord => ({
+  id: Number(row.id),
+  toothCode: row.tooth_code,
+  condition: row.condition as ToothCondition,
+  stage: row.stage as ConditionStage,
+  surfaces: row.surfaces,
+  note: row.note,
+  visitId: row.visit_id,
+  recordedBy: row.recorded_by,
+  recordedAt: row.recorded_at.toISOString(),
+});
+
+export async function patientChart(patientId: number): Promise<{
+  records: ToothRecord[];
+  chart: [number, ToothState][];
+  summary: ChartSummary;
+}> {
+  await ensureSchema();
+  const { rows } = await getPool().query<ToothRow>(
+    `SELECT id, tooth_code, condition, stage, surfaces, note, visit_id, recorded_by, recorded_at
+       FROM tooth_conditions WHERE patient_id = $1 ORDER BY recorded_at, id`,
+    [patientId],
+  );
+  const records = rows.map(toToothRecord);
+  const chart = buildChart(records);
+  return { records, chart: [...chart.entries()], summary: chartSummary(chart) };
+}
+
+/**
+ * يثبّت حالة سن.
+ *
+ * إضافة لا تعديل: لا دالة في البرنامج تحدّث سطرًا في هذا الجدول أو تحذف منه. وتصحيح
+ * خطأ يكون بتثبيت الحالة الصحيحة فوقه — فيبقى الخطأ وتصحيحه ظاهرين، وهو ما يجعل
+ * السجل السريري قابلًا للتدقيق.
+ */
+export async function recordToothCondition(input: {
+  patientId: number;
+  toothCode: number;
+  condition: ToothCondition;
+  stage: ConditionStage;
+  surfaces?: string | null;
+  note?: string | null;
+  visitId?: number | null;
+  recordedBy: string;
+}): Promise<ToothRecord | null> {
+  if (!isValidTooth(input.toothCode)) return null;
+  await ensureSchema();
+  const { rows } = await getPool().query<ToothRow>(
+    `INSERT INTO tooth_conditions
+       (patient_id, tooth_code, condition, stage, surfaces, note, visit_id, recorded_by)
+     SELECT $1, $2, $3, $4, $5::text, $6::text, $7::int, $8
+      WHERE EXISTS (SELECT 1 FROM patients WHERE id = $1)
+     RETURNING id, tooth_code, condition, stage, surfaces, note, visit_id, recorded_by, recorded_at`,
+    [
+      input.patientId, input.toothCode, input.condition, input.stage,
+      normalizeSurfaces(input.surfaces), input.note?.trim() || null,
+      input.visitId ?? null, input.recordedBy,
+    ],
+  );
+  return rows[0] ? toToothRecord(rows[0]) : null;
 }
 
 // ─── طبعات المستندات ─────────────────────────────────────────────────────────
