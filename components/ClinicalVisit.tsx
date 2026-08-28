@@ -8,6 +8,24 @@ import { useSetting } from "./SettingsProvider";
 import { useSession } from "./SessionProvider";
 import { isAdmin } from "@/lib/roles";
 import { Icon } from "./Icon";
+import { PHASE_LABEL, type OrthoPhase } from "@/lib/ortho";
+
+const orthoPhaseLabel = (phase: string): string =>
+  PHASE_LABEL[phase as OrthoPhase] ?? phase;
+
+/**
+ * «آخر شدّ قبل ٠ يومًا» جملةٌ لا يقولها إنسان.
+ *
+ * والطبيب يقرأ هذا السطر عشرات المرّات في اليوم، فركاكته تُقرأ في كل مرة.
+ */
+function sinceText(days: number | null): string {
+  if (days === null) return "لا شدّات مسجّلة بعد";
+  if (days <= 0) return "آخر شدّ اليوم";
+  if (days === 1) return "آخر شدّ أمس";
+  if (days === 2) return "آخر شدّ قبل يومين";
+  if (days <= 10) return `آخر شدّ قبل ${days} أيام`;
+  return `آخر شدّ قبل ${days} يومًا`;
+}
 
 /**
  * الزيارة السريرية — الشاشة التي تُغلق الحلقة.
@@ -27,6 +45,12 @@ interface Visit {
   signedAt: string | null; signedBy: string | null; invoiceId: number | null;
   procedures: ProcedureLine[]; totalMinor: number;
   planItemsMatched: number; planTitle: string | null; planWarning: string | null;
+  ortho: {
+    caseId: number; appliance: string; phase: string; slot: string;
+    upperWire: string | null; lowerWire: string | null;
+    lastAdjustment: string | null; daysSinceLast: number | null;
+    lastDone: string | null; elastics: string | null; elasticNote: string | null;
+  } | null;
 }
 
 interface Draft { serviceId: number; toothCode: string; surfaces: string; quantity: number; price: string; doctorId: number | null }
@@ -315,6 +339,43 @@ export function ClinicalVisit({ visitId, onSigned }: {
             */}
           {visit.patientId === null ? (
             <LinkPatient visitId={visit.id} suggestion={visit.patientName} onLinked={() => void load()} />
+          ) : null}
+
+          {/*
+            * شريط التقويم — قبل زرّ التوقيع مباشرةً.
+            *
+            * مريض التقويم لا يأتي في زيارةٍ مستقلّة، بل في الشدّة الحادية عشرة من
+            * علاجٍ بدأ قبل سنة. فيُقرأ سلكاه وآخر ما عُمل له هنا، لا في تبويبٍ آخر
+            * يُفتح ويُبحث فيه — أو، وهو الأسوأ، يُخمَّن.
+            */}
+          {visit.ortho ? (
+            <div className="mb-2 rounded-xl border border-navy-200 bg-navy-50 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-navy-900">
+                  مريض تقويم · {orthoPhaseLabel(visit.ortho.phase)}
+                </span>
+                {/* السلكان موسومان: «014 / 012» وحدها لا تقول أيّهما العلوي. */}
+                <span className="flex items-center gap-2 text-sm font-extrabold text-navy-900">
+                  {visit.ortho.upperWire || visit.ortho.lowerWire ? (
+                    <>
+                      <span>علوي <span dir="ltr">{visit.ortho.upperWire ?? "—"}</span></span>
+                      <span className="text-navy-300">·</span>
+                      <span>سفلي <span dir="ltr">{visit.ortho.lowerWire ?? "—"}</span></span>
+                    </>
+                  ) : "بلا سلك بعد"}
+                </span>
+              </div>
+              <p className="mt-0.5 text-[11px] text-navy-800">
+                {visit.ortho.lastAdjustment
+                  ? `${sinceText(visit.ortho.daysSinceLast)}${visit.ortho.lastDone ? ` — ${visit.ortho.lastDone}` : ""}`
+                  : "لا شدّات مسجّلة بعد"}
+                {visit.ortho.elasticNote ? ` · مطاطات: ${visit.ortho.elasticNote}` : ""}
+              </p>
+              <a href={`/patients/${visit.patientId}?tab=ortho`}
+                className="mt-1 inline-block text-[11px] font-bold text-navy-800 underline decoration-navy-300 underline-offset-4">
+                افتح ملف التقويم لتسجيل الشدّة
+              </a>
+            </div>
           ) : null}
 
           {visit.planWarning ? (

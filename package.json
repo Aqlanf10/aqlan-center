@@ -21,7 +21,9 @@
     "verify:identity": "tsx scripts/verify-identity.mjs",
     "journey:identity": "node scripts/journeys/identity.mjs",
     "verify:documents": "tsx scripts/verify-documents.mjs",
-    "journey:documents": "node scripts/journeys/documents.mjs"
+    "journey:documents": "node scripts/journeys/documents.mjs",
+    "verify:ortho": "tsx scripts/verify-ortho.mjs",
+    "journey:ortho": "node scripts/journeys/ortho.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",

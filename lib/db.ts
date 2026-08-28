@@ -454,6 +454,63 @@ export function ensureSchema(): Promise<void> {
         ON patient_documents (patient_id, uploaded_at DESC);
       CREATE INDEX IF NOT EXISTS patient_documents_visit_idx ON patient_documents (visit_id);
 
+      -- حالة التقويم: علاجٌ يمتدّ سنتين لا زيارةً واحدة.
+      -- والفرق الحاكم أن السؤال ليس «ماذا عُمل اليوم» بل «أين نحن من الخطة»: في أيّ
+      -- مرحلة، وعلى أيّ سلك، وكم مضى وكم بقي.
+      CREATE TABLE IF NOT EXISTS ortho_cases (
+        id             SERIAL PRIMARY KEY,
+        patient_id     INTEGER NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        appliance      TEXT    NOT NULL DEFAULT 'fixed_metal',
+        arches         TEXT    NOT NULL DEFAULT 'both',
+        slot           TEXT    NOT NULL DEFAULT '022',
+        bracket_system TEXT,
+        status         TEXT    NOT NULL DEFAULT 'active',
+        phase          TEXT    NOT NULL DEFAULT 'aligning',
+        start_date     DATE    NOT NULL DEFAULT CURRENT_DATE,
+        planned_months INTEGER NOT NULL DEFAULT 18,
+        -- السلك الحالي في كل فك: أول ما يحتاجه الطبيب على الكرسي، ويُقرأ بلا حساب
+        -- من سجل الشدّات. ويُحدَّث مع كل شدّة في المعاملة نفسها.
+        upper_wire     TEXT,
+        lower_wire     TEXT,
+        -- خطة الأقساط التي تموّل هذه الحالة — والاثنان وجهان لاتفاق واحد.
+        plan_id        INTEGER REFERENCES treatment_plans(id),
+        retainer       TEXT,
+        retainer_on    DATE,
+        note           TEXT,
+        closed_at      TIMESTAMPTZ,
+        closed_by      TEXT,
+        closed_note    TEXT,
+        created_by     TEXT    NOT NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ortho_cases_patient_idx ON ortho_cases (patient_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ortho_cases_status_idx ON ortho_cases (status);
+      -- حالةٌ جاريةٌ واحدة لكل مريض. وحالتان مفتوحتان تعنيان سجلَّي أسلاك لفمٍ
+      -- واحد، فلا يُعرف أيّهما الحقيقي — والقاعدة تمنعه لا الشاشة.
+      CREATE UNIQUE INDEX IF NOT EXISTS ortho_cases_one_open
+        ON ortho_cases (patient_id) WHERE status IN ('active', 'retention');
+
+      -- زيارات الشدّ: سجلّ العلاج نفسه، لا ملحقًا به.
+      CREATE TABLE IF NOT EXISTS ortho_adjustments (
+        id           SERIAL PRIMARY KEY,
+        case_id      INTEGER NOT NULL REFERENCES ortho_cases(id) ON DELETE CASCADE,
+        visit_id     INTEGER REFERENCES visits(id),
+        done_on      DATE    NOT NULL DEFAULT CURRENT_DATE,
+        phase        TEXT,
+        upper_wire   TEXT,
+        lower_wire   TEXT,
+        elastics     TEXT    NOT NULL DEFAULT 'none',
+        elastic_note TEXT,
+        done         TEXT,
+        next_weeks   INTEGER NOT NULL DEFAULT 4,
+        note         TEXT,
+        recorded_by  TEXT    NOT NULL,
+        recorded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ortho_adjustments_case_idx
+        ON ortho_adjustments (case_id, done_on DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS ortho_adjustments_visit_idx ON ortho_adjustments (visit_id);
+
       -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
       ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
       CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
@@ -1040,6 +1097,7 @@ export async function createStaffUser(input: {
 
 // ─── المرضى والمواعيد ────────────────────────────────────────────────────────
 
+import { clinicDateString } from "./schedule";
 import type { Appointment, AppointmentStatus } from "./schedule";
 
 import type { Gender, Patient, PatientInput } from "./patient";
@@ -3917,6 +3975,24 @@ export interface ClinicalVisit {
   planTitle: string | null;
   /** تحذير فوترةٍ مزدوجة إن كانت البنود المطابِقة على خطة أقساط. */
   planWarning: string | null;
+  /** حالة التقويم المفتوحة إن كان المريض مريض تقويم. */
+  ortho: VisitOrtho | null;
+}
+
+export interface VisitOrtho {
+  caseId: number;
+  appliance: string;
+  phase: string;
+  slot: string;
+  upperWire: string | null;
+  lowerWire: string | null;
+  lastAdjustment: string | null;
+  daysSinceLast: number | null;
+  lastDone: string | null;
+  elastics: string | null;
+  elasticNote: string | null;
+  suggestedUpper: string | null;
+  suggestedLower: string | null;
 }
 
 interface ClinicalRow {
@@ -3966,7 +4042,9 @@ export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit |
   );
   const procedures = procedureRows.map(toProcedureLine);
   const row = rows[0];
-  const plan = await visitPlanContext(pool, await previewPatientId(pool, row), procedures);
+  const patientId = await previewPatientId(pool, row);
+  const plan = await visitPlanContext(pool, patientId, procedures);
+  const ortho = await visitOrthoContext(patientId);
   return {
     id: row.id,
     patientId: row.patient_id,
@@ -3988,6 +4066,37 @@ export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit |
     planItemsMatched: plan.matched,
     planTitle: plan.title,
     planWarning: plan.warning,
+    ortho,
+  };
+}
+
+/**
+ * حالة التقويم كما تُقرأ على الكرسي.
+ *
+ * مريض التقويم لا يأتي في زيارةٍ مستقلّة — يأتي في **الشدّة الحادية عشرة** من علاجٍ
+ * بدأ قبل سنة. والطبيب يحتاج قبل أن يفتح فمه: على أيّ سلكٍ هو، وماذا عُمل آخر مرة،
+ * وكم مضى منذاك. وبلا ذلك يُفتح تبويبٌ آخر ويُبحث ويُقرأ — أو، وهو الأسوأ، يُخمَّن.
+ */
+async function visitOrthoContext(patientId: number | null): Promise<VisitOrtho | null> {
+  if (!patientId) return null;
+  const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
+  const open = await openOrthoCaseFor(patientId, today);
+  if (!open) return null;
+  const last = open.adjustments[0] ?? null;
+  return {
+    caseId: open.id,
+    appliance: open.appliance,
+    phase: open.phase,
+    slot: open.slot,
+    upperWire: open.upperWire,
+    lowerWire: open.lowerWire,
+    lastAdjustment: last?.doneOn ?? null,
+    daysSinceLast: open.progress.daysSinceLast,
+    lastDone: last?.done ?? null,
+    elastics: last?.elastics ?? null,
+    elasticNote: last?.elasticNote ?? null,
+    suggestedUpper: nextWire(open.slot, open.upperWire)?.code ?? null,
+    suggestedLower: nextWire(open.slot, open.lowerWire)?.code ?? null,
   };
 }
 
@@ -5294,4 +5403,353 @@ export async function documentsForArchive(): Promise<{
     uploadedAt: row.uploaded_at,
     storageKey: row.storage_key,
   }));
+}
+
+// ─── التقويم ─────────────────────────────────────────────────────────────────
+
+import {
+  canComplete, caseProgress, nextWire,
+  type Appliance, type Arches, type CaseProgress, type CaseStatus,
+  type ElasticClass, type OrthoPhase, type RetainerType, type SlotSize,
+} from "./ortho";
+
+export interface OrthoCase {
+  id: number;
+  patientId: number;
+  patientName: string;
+  appliance: Appliance;
+  arches: Arches;
+  slot: SlotSize;
+  bracketSystem: string | null;
+  status: CaseStatus;
+  phase: OrthoPhase;
+  startDate: string;
+  plannedMonths: number;
+  upperWire: string | null;
+  lowerWire: string | null;
+  planId: number | null;
+  retainer: RetainerType | null;
+  retainerOn: string | null;
+  note: string | null;
+  closedAt: string | null;
+  closedBy: string | null;
+  closedNote: string | null;
+  adjustments: OrthoAdjustment[];
+  progress: CaseProgress;
+}
+
+export interface OrthoAdjustment {
+  id: number;
+  visitId: number | null;
+  doneOn: string;
+  phase: OrthoPhase | null;
+  upperWire: string | null;
+  lowerWire: string | null;
+  elastics: ElasticClass;
+  elasticNote: string | null;
+  done: string | null;
+  nextWeeks: number;
+  note: string | null;
+  recordedBy: string;
+}
+
+interface CaseRow {
+  id: number; patient_id: number; full_name: string; appliance: string; arches: string;
+  slot: string; bracket_system: string | null; status: string; phase: string;
+  start_date: Date; planned_months: number; upper_wire: string | null;
+  lower_wire: string | null; plan_id: number | null; retainer: string | null;
+  retainer_on: Date | null; note: string | null; closed_at: Date | null;
+  closed_by: string | null; closed_note: string | null;
+}
+
+interface AdjustmentRow {
+  id: number; case_id: number; visit_id: number | null; done_on: Date; phase: string | null;
+  upper_wire: string | null; lower_wire: string | null; elastics: string;
+  elastic_note: string | null; done: string | null; next_weeks: number;
+  note: string | null; recorded_by: string;
+}
+
+const CASE_SELECT = `
+  SELECT c.id, c.patient_id, p.full_name, c.appliance, c.arches, c.slot, c.bracket_system,
+         c.status, c.phase, c.start_date, c.planned_months, c.upper_wire, c.lower_wire,
+         c.plan_id, c.retainer, c.retainer_on, c.note, c.closed_at, c.closed_by, c.closed_note
+    FROM ortho_cases c JOIN patients p ON p.id = c.patient_id`;
+
+const toAdjustment = (row: AdjustmentRow): OrthoAdjustment => ({
+  id: row.id,
+  visitId: row.visit_id,
+  doneOn: dateText(row.done_on),
+  phase: (row.phase as OrthoPhase) ?? null,
+  upperWire: row.upper_wire,
+  lowerWire: row.lower_wire,
+  elastics: row.elastics as ElasticClass,
+  elasticNote: row.elastic_note,
+  done: row.done,
+  nextWeeks: row.next_weeks,
+  note: row.note,
+  recordedBy: row.recorded_by,
+});
+
+async function hydrateCases(rows: CaseRow[], today: string): Promise<OrthoCase[]> {
+  if (rows.length === 0) return [];
+  const { rows: adjustmentRows } = await getPool().query<AdjustmentRow>(
+    `SELECT id, case_id, visit_id, done_on, phase, upper_wire, lower_wire, elastics,
+            elastic_note, done, next_weeks, note, recorded_by
+       FROM ortho_adjustments WHERE case_id = ANY($1::int[])
+      ORDER BY case_id, done_on DESC, id DESC`,
+    [rows.map((row) => row.id)],
+  );
+  const byCase = new Map<number, OrthoAdjustment[]>();
+  for (const row of adjustmentRows) {
+    const list = byCase.get(row.case_id) ?? [];
+    list.push(toAdjustment(row));
+    byCase.set(row.case_id, list);
+  }
+
+  return rows.map((row) => {
+    const adjustments = byCase.get(row.id) ?? [];
+    return {
+      id: row.id,
+      patientId: row.patient_id,
+      patientName: row.full_name,
+      appliance: row.appliance as Appliance,
+      arches: row.arches as Arches,
+      slot: row.slot as SlotSize,
+      bracketSystem: row.bracket_system,
+      status: row.status as CaseStatus,
+      phase: row.phase as OrthoPhase,
+      startDate: dateText(row.start_date),
+      plannedMonths: row.planned_months,
+      upperWire: row.upper_wire,
+      lowerWire: row.lower_wire,
+      planId: row.plan_id,
+      retainer: (row.retainer as RetainerType) ?? null,
+      retainerOn: row.retainer_on ? dateText(row.retainer_on) : null,
+      note: row.note,
+      closedAt: row.closed_at ? row.closed_at.toISOString() : null,
+      closedBy: row.closed_by,
+      closedNote: row.closed_note,
+      adjustments,
+      progress: caseProgress({
+        startDate: dateText(row.start_date),
+        plannedMonths: row.planned_months,
+        adjustments: adjustments.length,
+        lastAdjustmentDate: adjustments[0]?.doneOn ?? null,
+        today,
+      }),
+    };
+  });
+}
+
+export async function listPatientOrthoCases(patientId: number, today: string): Promise<OrthoCase[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<CaseRow>(
+    `${CASE_SELECT} WHERE c.patient_id = $1 ORDER BY c.created_at DESC`, [patientId],
+  );
+  return hydrateCases(rows, today);
+}
+
+export async function getOrthoCase(id: number, today: string): Promise<OrthoCase | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<CaseRow>(`${CASE_SELECT} WHERE c.id = $1`, [id]);
+  return (await hydrateCases(rows, today))[0] ?? null;
+}
+
+/** الحالة المفتوحة لمريض — لشاشة الزيارة، فيرى الطبيب السلك قبل أن يبدأ. */
+export async function openOrthoCaseFor(patientId: number, today: string): Promise<OrthoCase | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<CaseRow>(
+    `${CASE_SELECT} WHERE c.patient_id = $1 AND c.status IN ('active','retention')
+      ORDER BY c.created_at DESC LIMIT 1`,
+    [patientId],
+  );
+  return (await hydrateCases(rows, today))[0] ?? null;
+}
+
+export async function listOrthoCases(today: string, status?: CaseStatus): Promise<OrthoCase[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<CaseRow>(
+    status
+      ? `${CASE_SELECT} WHERE c.status = $1 ORDER BY c.start_date DESC LIMIT 300`
+      : `${CASE_SELECT} WHERE c.status IN ('active','retention') ORDER BY c.start_date DESC LIMIT 300`,
+    status ? [status] : [],
+  );
+  return hydrateCases(rows, today);
+}
+
+export async function createOrthoCase(input: {
+  patientId: number;
+  appliance: Appliance;
+  arches: Arches;
+  slot: SlotSize;
+  bracketSystem: string | null;
+  startDate: string;
+  plannedMonths: number;
+  planId: number | null;
+  note: string | null;
+  createdBy: string;
+}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  try {
+    const { rows } = await getPool().query<{ id: number }>(
+      `INSERT INTO ortho_cases
+         (patient_id, appliance, arches, slot, bracket_system, start_date,
+          planned_months, plan_id, note, created_by)
+       VALUES ($1, $2, $3, $4, $5::text, $6::date, $7, $8::int, $9::text, $10)
+       RETURNING id`,
+      [
+        input.patientId, input.appliance, input.arches, input.slot,
+        input.bracketSystem?.trim() || null, input.startDate,
+        Math.max(1, Math.min(120, Math.round(input.plannedMonths))),
+        input.planId, input.note?.trim() || null, input.createdBy,
+      ],
+    );
+    return { ok: true, id: rows[0].id };
+  } catch (error) {
+    // الفهرس الفريد يمنع حالتين مفتوحتين — والرسالة تقول السبب لا رقم الخطأ.
+    if ((error as { code?: string }).code === "23505") {
+      return { ok: false, message: "للمريض حالة تقويم مفتوحة سلفًا. أغلقها قبل فتح حالة جديدة." };
+    }
+    throw error;
+  }
+}
+
+/**
+ * يسجّل شدّةً، ويحدّث سلك الحالة في المعاملة نفسها.
+ *
+ * السلك الحالي يُقرأ من صفّ الحالة لا يُحسب من السجل — فيُعرض على شاشة الزيارة بلا
+ * استعلامٍ ثانٍ. وثمن ذلك أن يبقى الاثنان متّفقين، ولذلك يُكتبان معًا: شدّةٌ تُسجَّل
+ * بلا تحديث السلك تجعل الشاشة تقول سلكًا والسجل يقول آخر.
+ */
+export async function recordAdjustment(input: {
+  caseId: number;
+  visitId: number | null;
+  doneOn: string;
+  phase: OrthoPhase | null;
+  upperWire: string | null;
+  lowerWire: string | null;
+  elastics: ElasticClass;
+  elasticNote: string | null;
+  done: string | null;
+  nextWeeks: number;
+  note: string | null;
+  recordedBy: string;
+}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: cases } = await client.query<{ status: string; upper_wire: string | null; lower_wire: string | null }>(
+      `SELECT status, upper_wire, lower_wire FROM ortho_cases WHERE id = $1 FOR UPDATE`,
+      [input.caseId],
+    );
+    if (!cases[0]) { await client.query("ROLLBACK"); return { ok: false, message: "الحالة غير موجودة." }; }
+    if (cases[0].status === "completed" || cases[0].status === "discontinued") {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "الحالة مغلقة — لا تُسجَّل عليها شدّات." };
+    }
+
+    // سلكٌ لم يُغيَّر يبقى كما هو: الطبيب يترك الحقل فارغًا حين لا يبدّل السلك،
+    // وتفسيرُ الفراغ «أُزيل السلك» يمحو الحقيقة بصمت.
+    const upper = input.upperWire?.trim() || cases[0].upper_wire;
+    const lower = input.lowerWire?.trim() || cases[0].lower_wire;
+
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO ortho_adjustments
+         (case_id, visit_id, done_on, phase, upper_wire, lower_wire, elastics,
+          elastic_note, done, next_weeks, note, recorded_by)
+       VALUES ($1, $2::int, $3::date, $4::text, $5::text, $6::text, $7, $8::text,
+               $9::text, $10, $11::text, $12)
+       RETURNING id`,
+      [
+        input.caseId, input.visitId, input.doneOn, input.phase, upper, lower,
+        input.elastics, input.elasticNote?.trim() || null, input.done?.trim() || null,
+        Math.max(1, Math.min(52, Math.round(input.nextWeeks))),
+        input.note?.trim() || null, input.recordedBy,
+      ],
+    );
+
+    await client.query(
+      `UPDATE ortho_cases SET upper_wire = $2::text, lower_wire = $3::text,
+              phase = COALESCE($4::text, phase)
+        WHERE id = $1`,
+      [input.caseId, upper, lower, input.phase],
+    );
+    await client.query("COMMIT");
+    return { ok: true, id: rows[0].id };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function setOrthoPhase(id: number, phase: OrthoPhase): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE ortho_cases SET phase = $2 WHERE id = $1 AND status IN ('active','retention')`,
+    [id, phase],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** يسجّل المثبّت — وهو شرط إغلاق الحالة. */
+export async function setRetainer(input: {
+  id: number; retainer: RetainerType; deliveredOn: string | null;
+}): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE ortho_cases SET retainer = $2, retainer_on = $3::date,
+            status = CASE WHEN status = 'active' THEN 'retention' ELSE status END
+      WHERE id = $1 AND status IN ('active','retention')`,
+    [input.id, input.retainer, input.deliveredOn],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * يُغلق الحالة.
+ *
+ * ويشترط المثبّت: حالةٌ تُغلق بلا مثبّت هي أكثر ما يُفسد نتيجة سنتين — الأسنان
+ * ترتدّ، ويعود المريض بعد عامٍ فيجد النتيجة ضاعت فيلوم المركز بحق.
+ */
+export async function closeOrthoCase(input: {
+  id: number; status: "completed" | "discontinued"; actor: string; note: string | null;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ status: string; retainer: string | null }>(
+      `SELECT status, retainer FROM ortho_cases WHERE id = $1 FOR UPDATE`, [input.id],
+    );
+    if (!rows[0]) { await client.query("ROLLBACK"); return { ok: false, message: "الحالة غير موجودة." }; }
+
+    // التوقّف غير الإكمال: مريضٌ سافر أو انقطع تُغلق حالته بلا مثبّت — والشرط
+    // على الإكمال وحده، لأنه الادّعاء بأن العلاج انتهى كما يجب.
+    if (input.status === "completed") {
+      const guard = canComplete({
+        status: rows[0].status as CaseStatus,
+        retainer: (rows[0].retainer as RetainerType) ?? null,
+      });
+      if (!guard.ok) { await client.query("ROLLBACK"); return guard; }
+    } else if (rows[0].status === "completed" || rows[0].status === "discontinued") {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "الحالة مغلقة سلفًا." };
+    }
+
+    await client.query(
+      `UPDATE ortho_cases SET status = $2, closed_at = NOW(), closed_by = $3, closed_note = $4::text
+        WHERE id = $1`,
+      [input.id, input.status, input.actor, input.note?.trim() || null],
+    );
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
