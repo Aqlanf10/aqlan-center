@@ -237,6 +237,25 @@ export function ensureSchema(): Promise<void> {
         total_minor      BIGINT  NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS invoice_items_invoice_idx ON invoice_items (invoice_id);
+      -- ترتيب الإنشاء ليس تجميلًا: جدولٌ يُشار إليه بمفتاح أجنبي يجب أن يُنشأ قبل
+      -- من يشير إليه. كان جدول الجهات يُنشأ بعد أول مرجع إليه، فلم يظهر الخلل أبدًا
+      -- على قاعدة قائمة — الجدول موجود من قبل — وظهر أول ما بُنيت قاعدة من الصفر:
+      -- «relation parties does not exist»، فسقط إنشاء المخطط كله ولم يُنشأ نظام جديد.
+      -- جهات التعامل: مختبرات وموردون وأطباء. جدول واحد لأن ما يُسأل عنه واحد:
+      -- كم لهذه الجهة عندنا، وكم دفعنا لها.
+      CREATE TABLE IF NOT EXISTS parties (
+        id         SERIAL PRIMARY KEY,
+        name       TEXT        NOT NULL,
+        kind       TEXT        NOT NULL DEFAULT 'supplier',
+        phone      TEXT,
+        note       TEXT,
+        -- نسبة عمولة الطبيب من قيمة عمله. تُحفظ في الجهة لا في الكود.
+        commission_percent NUMERIC(5,2) NOT NULL DEFAULT 0,
+        is_active  BOOLEAN     NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS parties_kind_idx ON parties (kind, is_active);
+
       -- الطبيب على مستوى البند لا الفاتورة: فاتورة واحدة قد تحمل عمل طبيبين — كشف
       -- من الأول وحشوة من الثانية — وعمولة كلٍّ على عمله وحده.
       ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS doctor_id INTEGER REFERENCES parties(id);
@@ -264,21 +283,6 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS payments_patient_idx ON payments (patient_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS payments_shift_idx ON payments (shift_id);
       CREATE INDEX IF NOT EXISTS payments_created_idx ON payments (created_at);
-
-      -- جهات التعامل: مختبرات وموردون وأطباء. جدول واحد لأن ما يُسأل عنه واحد:
-      -- كم لهذه الجهة عندنا، وكم دفعنا لها.
-      CREATE TABLE IF NOT EXISTS parties (
-        id         SERIAL PRIMARY KEY,
-        name       TEXT        NOT NULL,
-        kind       TEXT        NOT NULL DEFAULT 'supplier',
-        phone      TEXT,
-        note       TEXT,
-        -- نسبة عمولة الطبيب من قيمة عمله. تُحفظ في الجهة لا في الكود.
-        commission_percent NUMERIC(5,2) NOT NULL DEFAULT 0,
-        is_active  BOOLEAN     NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS parties_kind_idx ON parties (kind, is_active);
 
       -- المصروفات: سند صرف لكل مبلغ يخرج من الصندوق.
       CREATE TABLE IF NOT EXISTS expenses (
