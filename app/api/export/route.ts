@@ -1,10 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  CLINIC_TIME_ZONE,
-  getPool,
-  ensureSchema,
-  journalEntries,
-} from "@/lib/db";
+import { CLINIC_TIME_ZONE, ensureSchema, getPool, journalEntries, recordAudit } from "@/lib/db";
 import { csvFile, exportFileName } from "@/lib/csv";
 import { clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
@@ -181,6 +176,11 @@ export async function GET(request: Request) {
       ["التاريخ", "المصدر", "المرجع", "البيان", "الحساب", "مدين", "دائن"],
       rows,
     );
+    await recordAudit({
+      action: "export.download",
+      details: { الجدول: "journal", من: from, إلى: to, عدد_الأسطر: rows.length },
+      actor: session.username, actorRole: session.role,
+    });
     return new NextResponse(body, {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
@@ -210,6 +210,12 @@ export async function GET(request: Request) {
       rows.map((row) => Object.values(row).map((value) =>
         value instanceof Date ? value.toISOString().slice(0, 19).replace("T", " ") : value)),
     );
+    // خروج بيانات المرضى يُسجَّل: أي جدول ومتى وكم سطرًا وبيد من.
+    await recordAudit({
+      action: "export.download",
+      details: { الجدول: table, من: from, إلى: to, عدد_الأسطر: rows.length },
+      actor: session.username, actorRole: session.role,
+    });
     return new NextResponse(body, {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",

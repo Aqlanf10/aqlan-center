@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { CLINIC_TIME_ZONE, getSettings, listExpensesBetween, recordExpense } from "@/lib/db";
+import { CLINIC_TIME_ZONE, getSettings, listExpensesBetween, recordAudit, recordExpense } from "@/lib/db";
 import { isExpenseCategory } from "@/lib/expenses";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
@@ -93,6 +93,17 @@ export async function POST(request: Request) {
         { message: "لا توجد وردية مفتوحة. افتح الوردية من شاشة الصندوق أولًا." },
         { status: 409 },
       );
+    }
+    if (expense) {
+      await recordAudit({
+        action: "expense.create",
+        entity: "expense", entityId: expense.id, entityLabel: expense.voucherNumber,
+        details: {
+          البند: expense.category, المبلغ: expense.amountMinor, العملة: expense.currency,
+          المكافئ: expense.baseAmountMinor, الجهة: expense.partyId ?? expense.payeeText,
+        },
+        actor: session.username, actorRole: session.role,
+      });
     }
     return NextResponse.json(expense, { status: 201 });
   } catch {

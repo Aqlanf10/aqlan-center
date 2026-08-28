@@ -446,6 +446,43 @@ export function ensureSchema(): Promise<void> {
         (SELECT COALESCE(MAX(NULLIF(regexp_replace(voucher_number, '\\D', '', 'g'), '')::bigint), 0) FROM expenses)
       ), true);
 
+      -- سجل التدقيق — يُكتب ولا يُعدَّل ولا يُحذف.
+      --
+      -- لا عمود updated_at ولا حالة ولا حذف منطقي: كلها أبوابٌ للتعديل، وسجلٌّ
+      -- يمكن تعديله يشهد لمن يملك تعديله وحده. والحماية هنا في **غياب المسار**
+      -- لا في صلاحية تُمنح وتُمنع: لا دالة في البرنامج كله تحدّث هذا الجدول أو
+      -- تحذف منه — والقيود أدناه تجعل المحاولة تفشل في القاعدة نفسها.
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id         BIGSERIAL   PRIMARY KEY,
+        action     TEXT        NOT NULL,
+        entity     TEXT,
+        entity_id  TEXT,
+        summary    TEXT        NOT NULL,
+        details    JSONB,
+        actor      TEXT        NOT NULL,
+        actor_role TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS audit_log_time_idx ON audit_log (created_at DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_action_idx ON audit_log (action, created_at DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_entity_idx ON audit_log (entity, entity_id);
+
+      -- الحارس الأخير: قاعدة البيانات ترفض التعديل والحذف مهما كان مصدرهما — حتى
+      -- من اتصال مباشر بالقاعدة. وهذا ما يجعل السجل شهادةً لا مجرّد جدول.
+      CREATE OR REPLACE FUNCTION audit_log_is_append_only() RETURNS TRIGGER AS $audit$
+      BEGIN
+        RAISE EXCEPTION 'سجل التدقيق لا يُعدَّل ولا يُحذف منه.';
+      END;
+      $audit$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS audit_log_no_update ON audit_log;
+      CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log
+        FOR EACH ROW EXECUTE FUNCTION audit_log_is_append_only();
+
+      DROP TRIGGER IF EXISTS audit_log_no_delete ON audit_log;
+      CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
+        FOR EACH ROW EXECUTE FUNCTION audit_log_is_append_only();
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -3522,6 +3559,115 @@ export async function postRevaluation(input: {
     createdBy: input.createdBy,
   });
   return { entryId, reason: null };
+}
+
+// ─── سجل التدقيق ─────────────────────────────────────────────────────────────
+
+import {
+  describeAudit,
+  sanitizeDetails,
+  type AuditAction,
+  type AuditEntry,
+} from "./audit";
+
+/**
+ * يكتب سطرًا في سجل التدقيق.
+ *
+ * **لا يرمي أبدًا.** وهذا قرارٌ مقصود: فشلُ الكتابة في السجل يجب ألّا يُسقط قبضَ
+ * مبلغ من مريض واقف. سجلٌّ ناقص سطرًا أهون من صندوق لا يقبض — والعكس يجعل التدقيق
+ * نفسه سببًا لتعطيل العيادة.
+ *
+ * ويُستدعى **بعد** نجاح العملية لا قبلها: تسجيلُ ما لم يقع أسوأ من عدم تسجيل ما وقع.
+ */
+export async function recordAudit(input: {
+  action: AuditAction;
+  entity?: string | null;
+  entityId?: string | number | null;
+  entityLabel?: string | null;
+  details?: Record<string, unknown> | null;
+  actor: string;
+  actorRole?: string | null;
+}): Promise<void> {
+  try {
+    await ensureSchema();
+    await getPool().query(
+      `INSERT INTO audit_log (action, entity, entity_id, summary, details, actor, actor_role)
+       VALUES ($1, $2::text, $3::text, $4, $5::jsonb, $6, $7::text)`,
+      [
+        input.action,
+        input.entity ?? null,
+        input.entityId === null || input.entityId === undefined ? null : String(input.entityId),
+        describeAudit(input.action, input.entityLabel),
+        JSON.stringify(sanitizeDetails(input.details)),
+        input.actor,
+        input.actorRole ?? null,
+      ],
+    );
+  } catch {
+    // يُبتلع عمدًا — انظر التعليق أعلاه.
+  }
+}
+
+interface AuditRow {
+  id: string; action: string; entity: string | null; entity_id: string | null;
+  summary: string; details: Record<string, unknown> | null;
+  actor: string; actor_role: string | null; created_at: Date;
+}
+
+const toAuditEntry = (row: AuditRow): AuditEntry => ({
+  id: Number(row.id),
+  action: row.action as AuditAction,
+  entity: row.entity,
+  entityId: row.entity_id,
+  summary: row.summary,
+  details: row.details,
+  actor: row.actor,
+  actorRole: row.actor_role,
+  createdAt: row.created_at.toISOString(),
+});
+
+/**
+ * قراءة السجل — بتصفية تجعله مقروءًا.
+ *
+ * سجلٌّ يُعرض بألف سطر بلا تصفية لا يُقرأ، فلا يُراجَع، فلا يشهد. والمالك يفتحه
+ * بسؤال محدّد: ماذا فعل فلان؟ من ألغى هذه الفاتورة؟ ماذا جرى أمس؟
+ */
+export async function listAudit(input: {
+  from?: string | null;
+  to?: string | null;
+  action?: string | null;
+  actor?: string | null;
+  entity?: string | null;
+  entityId?: string | null;
+  limit?: number;
+} = {}): Promise<AuditEntry[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<AuditRow>(
+    `SELECT id, action, entity, entity_id, summary, details, actor, actor_role, created_at
+       FROM audit_log
+      WHERE ($1::date IS NULL OR (created_at AT TIME ZONE $7)::date >= $1::date)
+        AND ($2::date IS NULL OR (created_at AT TIME ZONE $7)::date <= $2::date)
+        AND ($3::text IS NULL OR action = $3::text)
+        AND ($4::text IS NULL OR actor = $4::text)
+        AND ($5::text IS NULL OR (entity = $5::text AND ($6::text IS NULL OR entity_id = $6::text)))
+      ORDER BY id DESC
+      LIMIT $8`,
+    [
+      input.from ?? null, input.to ?? null, input.action ?? null, input.actor ?? null,
+      input.entity ?? null, input.entityId ?? null, CLINIC_TIME_ZONE,
+      Math.min(Math.max(1, input.limit ?? 200), 500),
+    ],
+  );
+  return rows.map(toAuditEntry);
+}
+
+/** من عمل في هذه الفترة — لقائمة التصفية. */
+export async function auditActors(): Promise<string[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ actor: string }>(
+    `SELECT DISTINCT actor FROM audit_log ORDER BY actor LIMIT 50`,
+  );
+  return rows.map((row) => row.actor);
 }
 
 // ─── الأرصدة الافتتاحية للمرضى ───────────────────────────────────────────────

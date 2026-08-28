@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getInvoice, isPeriodLocked, setInvoiceStatus } from "@/lib/db";
+import { getInvoice, isPeriodLocked, recordAudit, setInvoiceStatus } from "@/lib/db";
 import { canHandleMoney, isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -71,6 +71,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         { message: "الفاتورة غير موجودة أو ملغاة — والملغاة لا تُعاد." },
         { status: 409 },
       );
+    }
+    if (status === "cancelled") {
+      await recordAudit({
+        action: "invoice.cancel", entity: "invoice", entityId: id,
+        entityLabel: updated.invoiceNumber,
+        details: { الصافي: updated.totalMinor - updated.discountMinor, المريض: updated.patientId },
+        actor: session.username, actorRole: session.role,
+      });
     }
     return NextResponse.json(updated);
   } catch {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createInvoice, getSettings, listPatientInvoices, listParties, listServices } from "@/lib/db";
+import { createInvoice, getSettings, listParties, listPatientInvoices, listServices, recordAudit } from "@/lib/db";
 import { isCurrency, parseAmount } from "@/lib/money";
 import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
@@ -119,6 +119,15 @@ export async function POST(request: Request) {
       createdBy: session.username, items,
     });
     if (!invoice) return NextResponse.json({ message: "تعذّر إنشاء الفاتورة." }, { status: 500 });
+    await recordAudit({
+      action: "invoice.create",
+      entity: "invoice", entityId: invoice.id, entityLabel: invoice.invoiceNumber,
+      details: {
+        المريض: patientId, الإجمالي: invoice.totalMinor, الخصم: invoice.discountMinor,
+        عدد_البنود: invoice.items.length,
+      },
+      actor: session.username, actorRole: session.role,
+    });
     return NextResponse.json(invoice, { status: 201 });
   } catch {
     return NextResponse.json({ message: "تعذّر إنشاء الفاتورة. تأكد من المريض." }, { status: 500 });

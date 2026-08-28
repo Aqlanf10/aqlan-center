@@ -1,13 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  CLINIC_TIME_ZONE,
-  clearPatientOpeningBalance,
-  getPatientOpeningBalance,
-  getSettings,
-  isPeriodLocked,
-  listOpeningBalances,
-  setPatientOpeningBalance,
-} from "@/lib/db";
+import { CLINIC_TIME_ZONE, clearPatientOpeningBalance, getPatientOpeningBalance, getSettings, isPeriodLocked, listOpeningBalances, recordAudit, setPatientOpeningBalance } from "@/lib/db";
 import { isCurrency, parseAmount } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
@@ -97,6 +89,12 @@ export async function POST(request: Request) {
     if (!balance) {
       return NextResponse.json({ message: "المريض غير موجود." }, { status: 404 });
     }
+    await recordAudit({
+      action: "opening_balance.set", entity: "patient", entityId: patientId,
+      entityLabel: balance.patientName,
+      details: { المبلغ: amountMinor, التاريخ: asOfDate, ملاحظة: note },
+      actor: session.username, actorRole: session.role,
+    });
     return NextResponse.json(balance, { status: 201 });
   } catch {
     return NextResponse.json({ message: "تعذّر حفظ الرصيد الافتتاحي." }, { status: 500 });
@@ -120,6 +118,12 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ message: "الفترة مقفلة. لا يُحذف رصيد افتتاحي داخلها." }, { status: 409 });
     }
     await clearPatientOpeningBalance(patientId);
+    await recordAudit({
+      action: "opening_balance.clear", entity: "patient", entityId: patientId,
+      entityLabel: existing.patientName,
+      details: { المبلغ_المحذوف: existing.amountMinor, التاريخ: existing.asOfDate },
+      actor: session.username, actorRole: session.role,
+    });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ message: "تعذّر حذف الرصيد الافتتاحي." }, { status: 500 });

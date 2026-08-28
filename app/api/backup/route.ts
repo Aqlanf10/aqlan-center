@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { CLINIC_TIME_ZONE, backupSqlLines } from "@/lib/db";
+import { CLINIC_TIME_ZONE, backupSqlLines, recordAudit } from "@/lib/db";
 import { backupFileName } from "@/lib/backup";
 import { clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
@@ -31,6 +31,17 @@ export async function GET() {
   const time = new Intl.DateTimeFormat("en-GB", {
     timeZone: CLINIC_TIME_ZONE, hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(now);
+
+  /*
+   * يُسجَّل **قبل** البثّ لا بعده: الملف يحمل كل مريض وكل مبلغ في المركز، وهو أخطر
+   * ما يخرج من النظام. ولو سُجّل بعد الاكتمال لما بقي أثرٌ لتنزيلٍ قُطع في منتصفه —
+   * وقد خرج نصف الأرشيف فعلًا.
+   */
+  await recordAudit({
+    action: "backup.download",
+    details: { التاريخ: date, الوقت: time },
+    actor: session.username, actorRole: session.role,
+  });
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({

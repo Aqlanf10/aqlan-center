@@ -1,13 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  asPaymentLikes,
-  closeShift,
-  getOpenShift,
-  listShiftExpenses,
-  listShiftPayments,
-  listShifts,
-  openShift,
-} from "@/lib/db";
+import { asPaymentLikes, closeShift, getOpenShift, listShiftExpenses, listShiftPayments, listShifts, openShift, recordAudit } from "@/lib/db";
 import { expenseTotals } from "@/lib/expenses";
 import { parseAmount, shiftTotals, type Currency } from "@/lib/money";
 import { canHandleMoney } from "@/lib/roles";
@@ -81,6 +73,11 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
+    await recordAudit({
+      action: "shift.open", entity: "shift", entityId: shift.id,
+      details: { الافتتاحي: shift.opening },
+      actor: session.username, actorRole: session.role,
+    });
     return NextResponse.json(shift, { status: 201 });
   } catch {
     return NextResponse.json({ message: "تعذّر فتح الوردية." }, { status: 500 });
@@ -114,6 +111,11 @@ export async function PATCH(request: Request) {
     if (!closed) {
       return NextResponse.json({ message: "الوردية مغلقة بالفعل أو غير موجودة." }, { status: 409 });
     }
+    await recordAudit({
+      action: "shift.close", entity: "shift", entityId: id,
+      details: { المعدود: counted, ملاحظة: note },
+      actor: session.username, actorRole: session.role,
+    });
     return NextResponse.json(closed);
   } catch {
     return NextResponse.json({ message: "تعذّر إغلاق الوردية." }, { status: 500 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createStaffUser, findUserByUsername, listUsers } from "@/lib/db";
+import { createStaffUser, findUserByUsername, listUsers, recordAudit } from "@/lib/db";
 import { hashPassword } from "@/lib/auth";
 import { isAdmin, isRole } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
@@ -61,6 +61,12 @@ export async function POST(request: Request) {
     const created = await createStaffUser({
       username, displayName, role: source.role,
       passwordHash: await hashPassword(password),
+    });
+    await recordAudit({
+      action: "user.create", entity: "user", entityId: created.id,
+      entityLabel: created.username,
+      details: { الدور: created.role, الاسم: created.displayName },
+      actor: session.username, actorRole: session.role,
     });
     return NextResponse.json({
       id: created.id, username: created.username,

@@ -107,6 +107,7 @@ export default function SettingsPage() {
         links={[
           { href: "/settings", label: "عام", current: true },
           { href: "/settings/users", label: "المستخدمون والصلاحيات" },
+          { href: "/settings/audit", label: "سجل التدقيق" },
           { href: "/settings/export", label: "النسخ والتصدير" },
         ]}
       />

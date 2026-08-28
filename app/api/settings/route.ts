@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSettings, saveSettings } from "@/lib/db";
+import { getSettings, recordAudit, saveSettings } from "@/lib/db";
 import { ALL_SETTING_KEYS, validateSetting, type SettingKey } from "@/lib/settings";
 import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
@@ -52,7 +52,15 @@ export async function PATCH(request: Request) {
   }
 
   try {
-    return NextResponse.json(await saveSettings(values));
+    const saved = await saveSettings(values);
+    // المفاتيح لا القيم: سعر الصرف قيمةٌ عادية، لكن قائمة المفاتيح تكفي للسؤال
+    // «من غيّر الإعدادات قبل الجرد؟» بلا نقل أي قيمة حسّاسة إلى سجل لا يُحذف منه.
+    await recordAudit({
+      action: "settings.update",
+      details: { المفاتيح: Object.keys(values) },
+      actor: session.username, actorRole: session.role,
+    });
+    return NextResponse.json(saved);
   } catch {
     return NextResponse.json({ message: "تعذّر حفظ الإعدادات. أعد المحاولة." }, { status: 500 });
   }

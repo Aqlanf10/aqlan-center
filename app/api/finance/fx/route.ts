@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { CLINIC_TIME_ZONE, fxReport, postRevaluation } from "@/lib/db";
+import { CLINIC_TIME_ZONE, fxReport, postRevaluation, recordAudit } from "@/lib/db";
 import { isCurrency } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
@@ -71,6 +71,12 @@ export async function POST(request: Request) {
         { message: "لا فرق يستحق قيدًا — الدفاتر مطابقة لسعر اليوم." }, { status: 409 },
       );
     }
+    await recordAudit({
+      action: "fx.revalue", entity: "journal", entityId: entryId,
+      entityLabel: source.currency,
+      details: { العملة: source.currency, التاريخ: asOf },
+      actor: session.username, actorRole: session.role,
+    });
     return NextResponse.json({ entryId }, { status: 201 });
   } catch {
     return NextResponse.json({ message: "تعذّر ترحيل قيد إعادة التقييم." }, { status: 500 });

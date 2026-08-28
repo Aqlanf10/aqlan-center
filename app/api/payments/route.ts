@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSettings, listPaymentsByDate, recordPayment } from "@/lib/db";
+import { getSettings, listPaymentsByDate, recordAudit, recordPayment } from "@/lib/db";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { CLINIC_TIME_ZONE } from "@/lib/db";
 import { clinicDateString } from "@/lib/schedule";
@@ -90,6 +90,19 @@ export async function POST(request: Request) {
         { message: "لا توجد وردية مفتوحة. افتح الوردية من شاشة المالية أولًا." },
         { status: 409 },
       );
+    }
+    // بعد النجاح لا قبله: تسجيلُ ما لم يقع أسوأ من عدم تسجيل ما وقع.
+    if (payment) {
+      await recordAudit({
+        action: payment.kind === "refund" ? "payment.refund" : "payment.create",
+        entity: "payment", entityId: payment.id, entityLabel: payment.receiptNumber,
+        details: {
+          المريض: patientId, المبلغ: payment.amountMinor, العملة: payment.currency,
+          سعر_الصرف: payment.exchangeRate, المكافئ: payment.baseAmountMinor,
+          الطريقة: payment.method,
+        },
+        actor: session.username, actorRole: session.role,
+      });
     }
     return NextResponse.json(payment, { status: 201 });
   } catch {
