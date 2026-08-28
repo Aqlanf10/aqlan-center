@@ -511,6 +511,26 @@ export function ensureSchema(): Promise<void> {
         ON ortho_adjustments (case_id, done_on DESC, id DESC);
       CREATE INDEX IF NOT EXISTS ortho_adjustments_visit_idx ON ortho_adjustments (visit_id);
 
+      -- التتبّع السيفالومتري: **النقاط تُخزَّن والقياسات تُشتقّ**.
+      -- ولو خُزّنت الزوايا لصار للحقيقة مصدران: يُصحَّح موضع نقطةٍ بعد مراجعة،
+      -- فتبقى الزاوية القديمة في الجدول وتُبنى عليها خطة علاجٍ لسنتين.
+      -- تتبّعٌ واحد لكل صورة: الصورة واحدة، وتتبّعان لها يعنيان تحليلين لا يُعرف
+      -- أيّهما المعتمد. والتصحيح يُحدّث النقاط ويُسجَّل وقته ومن صحّحها.
+      CREATE TABLE IF NOT EXISTS ceph_tracings (
+        id          SERIAL PRIMARY KEY,
+        document_id INTEGER NOT NULL UNIQUE REFERENCES patient_documents(id) ON DELETE CASCADE,
+        patient_id  INTEGER NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        points      JSONB   NOT NULL DEFAULT '{}'::jsonb,
+        calibration JSONB,
+        note        TEXT,
+        traced_by   TEXT    NOT NULL,
+        traced_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by  TEXT,
+        updated_at  TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS ceph_tracings_patient_idx
+        ON ceph_tracings (patient_id, traced_at DESC);
+
       -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
       ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
       CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
@@ -5752,4 +5772,146 @@ export async function closeOrthoCase(input: {
   } finally {
     client.release();
   }
+}
+
+// ─── التتبّع السيفالومتري ────────────────────────────────────────────────────
+
+import {
+  analyse, isLandmarkCode,
+  type Analysis, type Calibration, type Tracing,
+} from "./ceph";
+
+export interface CephTracing {
+  id: number;
+  documentId: number;
+  patientId: number;
+  points: Tracing;
+  calibration: Calibration | null;
+  note: string | null;
+  tracedBy: string;
+  tracedAt: string;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  /** يُشتقّ عند كل قراءة — ولا يُخزَّن. */
+  analysis: Analysis;
+}
+
+/**
+ * يُطهّر النقاط الآتية من المتصفّح.
+ *
+ * الرمز يجب أن يكون من القائمة المغلقة، والإحداثي كسرًا بين صفر وواحد. ونقطةٌ
+ * خارج الصورة أو برمزٍ مخترَع تُهمَل بلا ضجيج — لأن نصف تتبّعٍ سليم خيرٌ من رفض
+ * التتبّع كلّه بسبب حقلٍ واحد أفسده خللٌ في الشاشة.
+ */
+function sanitizeTracing(raw: unknown): Tracing {
+  const points: Tracing = {};
+  if (!raw || typeof raw !== "object") return points;
+  for (const [code, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isLandmarkCode(code) || !value || typeof value !== "object") continue;
+    const x = Number((value as { x?: unknown }).x);
+    const y = Number((value as { y?: unknown }).y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < 0 || x > 1 || y < 0 || y > 1) continue;
+    points[code] = { x, y };
+  }
+  return points;
+}
+
+function sanitizeCalibration(raw: unknown): Calibration | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const from = sanitizeTracing({ S: source.from }).S;
+  const to = sanitizeTracing({ S: source.to }).S;
+  const millimetres = Number(source.millimetres);
+  if (!from || !to || !Number.isFinite(millimetres) || millimetres <= 0) return null;
+  // طرفان على نقطةٍ واحدة ليسا معايرة: التحليل يرفضها عند الحساب، لكن تخزينها
+  // يجعل الشاشة تقول «معايَرة» وهي ليست كذلك — فتُردّ عند الباب لا بعده.
+  if (from.x === to.x && from.y === to.y) return null;
+  return { from, to, millimetres };
+}
+
+const toTracing = (row: {
+  id: number; document_id: number; patient_id: number; points: unknown;
+  calibration: unknown; note: string | null; traced_by: string; traced_at: Date;
+  updated_by: string | null; updated_at: Date | null; aspect?: number;
+}): CephTracing => {
+  const points = sanitizeTracing(row.points);
+  const calibration = sanitizeCalibration(row.calibration);
+  return {
+    id: row.id,
+    documentId: row.document_id,
+    patientId: row.patient_id,
+    points,
+    calibration,
+    note: row.note,
+    tracedBy: row.traced_by,
+    tracedAt: row.traced_at.toISOString(),
+    updatedBy: row.updated_by,
+    updatedAt: row.updated_at ? row.updated_at.toISOString() : null,
+    analysis: analyse({ tracing: points, calibration, aspect: row.aspect }),
+  };
+};
+
+const TRACING_COLUMNS = `id, document_id, patient_id, points, calibration, note,
+       traced_by, traced_at, updated_by, updated_at`;
+
+export async function getCephTracing(documentId: number, aspect?: number): Promise<CephTracing | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE document_id = $1`, [documentId],
+  );
+  return rows[0] ? toTracing({ ...rows[0], aspect }) : null;
+}
+
+export async function listPatientTracings(patientId: number): Promise<CephTracing[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE patient_id = $1
+      ORDER BY traced_at DESC`,
+    [patientId],
+  );
+  return rows.map((row) => toTracing(row));
+}
+
+/**
+ * يحفظ التتبّع — إنشاءً أو تصحيحًا.
+ *
+ * والتصحيح يُسجَّل باسمه ووقته: موضعُ نقطةٍ يُغيّر التشخيص، ومن غيّرها بعد أن
+ * بُنيت عليها خطة يجب أن يكون معروفًا.
+ */
+export async function saveCephTracing(input: {
+  documentId: number;
+  points: unknown;
+  calibration: unknown;
+  note: string | null;
+  actor: string;
+}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  const { rows: documents } = await getPool().query<{ patient_id: number; mime_type: string }>(
+    `SELECT patient_id, mime_type FROM patient_documents
+      WHERE id = $1 AND removed_at IS NULL`,
+    [input.documentId],
+  );
+  if (!documents[0]) return { ok: false, message: "الصورة غير موجودة." };
+  if (!documents[0].mime_type.startsWith("image/")) {
+    return { ok: false, message: "التتبّع يكون على صورة أشعة لا على مستند." };
+  }
+
+  const points = sanitizeTracing(input.points);
+  const calibration = sanitizeCalibration(input.calibration);
+
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO ceph_tracings (document_id, patient_id, points, calibration, note, traced_by)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::text, $6)
+     ON CONFLICT (document_id) DO UPDATE
+       SET points = EXCLUDED.points, calibration = EXCLUDED.calibration,
+           note = EXCLUDED.note, updated_by = EXCLUDED.traced_by, updated_at = NOW()
+     RETURNING id`,
+    [
+      input.documentId, documents[0].patient_id, JSON.stringify(points),
+      calibration ? JSON.stringify(calibration) : null,
+      input.note?.trim() || null, input.actor,
+    ],
+  );
+  return { ok: true, id: rows[0].id };
 }

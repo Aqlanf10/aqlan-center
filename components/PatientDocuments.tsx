@@ -6,6 +6,7 @@ import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import { useSession } from "./SessionProvider";
 import { isAdmin } from "@/lib/roles";
+import { CephTracer } from "./CephTracer";
 
 /**
  * الأشعة والمستندات.
@@ -46,6 +47,8 @@ export function PatientDocuments({ patientId }: { patientId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [viewing, setViewing] = useState<PatientDocument | null>(null);
+  const [tracing, setTracing] = useState<PatientDocument | null>(null);
+  const canTrace = admin || session?.role === "doctor";
 
   const [kind, setKind] = useState<DocumentKind>("xray");
   const [title, setTitle] = useState("");
@@ -227,6 +230,13 @@ export function PatientDocuments({ patientId }: { patientId: number }) {
                   className="text-[11px] font-bold text-navy-800 underline decoration-slate-300 underline-offset-4">
                   نزّل
                 </a>
+                {/* التتبّع على الأشعة الجانبية — والزرّ على الصور وحدها لا على PDF. */}
+                {document.isImage && !document.removedAt && canTrace ? (
+                  <button type="button" onClick={() => setTracing(document)}
+                    className="text-[11px] font-bold text-navy-800 underline decoration-slate-300 underline-offset-4">
+                    تتبّع سيفالومتري
+                  </button>
+                ) : null}
                 {document.removedAt ? (
                   <span className="text-[11px] text-slate-500">
                     مخفيّ — {document.removedBy}
@@ -243,6 +253,11 @@ export function PatientDocuments({ patientId }: { patientId: number }) {
           ))}
         </ul>
       )}
+
+      {tracing ? (
+        <CephTracer documentId={tracing.id} title={tracing.title}
+          canWrite={Boolean(canTrace)} onClose={() => setTracing(null)} />
+      ) : null}
 
       {viewing ? (
         <div role="dialog" aria-label={viewing.title}

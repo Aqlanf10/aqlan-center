@@ -23,7 +23,9 @@
     "verify:documents": "tsx scripts/verify-documents.mjs",
     "journey:documents": "node scripts/journeys/documents.mjs",
     "verify:ortho": "tsx scripts/verify-ortho.mjs",
-    "journey:ortho": "node scripts/journeys/ortho.mjs"
+    "journey:ortho": "node scripts/journeys/ortho.mjs",
+    "verify:ceph": "tsx scripts/verify-ceph.mjs",
+    "journey:ceph": "node scripts/journeys/ceph.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
