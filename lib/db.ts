@@ -460,6 +460,39 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS document_prints_doc_idx ON document_prints (doc_type, doc_id);
 
+      -- الزيارة السريرية: **أعمدة على جدول الزيارات القائم لا جدول موازٍ**.
+      --
+      -- والدستور يمنع إنشاء وحدة جديدة قبل البحث في النواة: جدول الزيارات هو الزيارة
+      -- فعلًا — وصولٌ وانتظارٌ وكرسي — وما ينقصه توثيقُ الطبيب. وجدولٌ ثانٍ اسمه
+      -- clinical_visits كان سيعني مريضًا له زيارتان لحدثٍ واحد، وهو أول باب
+      -- للازدواجية التي جاء الدستور ليمنعها.
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS chief_complaint TEXT;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS examination     TEXT;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS diagnosis       TEXT;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS treatment_done  TEXT;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS next_plan       TEXT;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS addendum        TEXT;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS doctor_id       INTEGER REFERENCES parties(id);
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS signed_at       TIMESTAMPTZ;
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS signed_by       TEXT;
+      -- الفاتورة المولَّدة من الزيارة: الرابط الذي يجعل «عملٌ بلا فاتورة» مستحيلًا.
+      ALTER TABLE visits ADD COLUMN IF NOT EXISTS invoice_id      INTEGER REFERENCES invoices(id);
+
+      -- الإجراءات المنفَّذة في الزيارة — كلٌّ منها **خدمة من الدليل** لا نصّ حرّ.
+      CREATE TABLE IF NOT EXISTS visit_procedures (
+        id               BIGSERIAL PRIMARY KEY,
+        visit_id         INTEGER NOT NULL REFERENCES visits(id) ON DELETE CASCADE,
+        service_id       INTEGER NOT NULL REFERENCES services(id),
+        doctor_id        INTEGER REFERENCES parties(id),
+        tooth_code       SMALLINT,
+        surfaces         TEXT,
+        quantity         INTEGER NOT NULL DEFAULT 1,
+        unit_price_minor BIGINT  NOT NULL DEFAULT 0,
+        note             TEXT,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS visit_procedures_visit_idx ON visit_procedures (visit_id);
+
       -- حالات الأسنان — سجلٌّ زمني لا حالة واحدة لكل سن.
       --
       -- الجدول **يُضاف إليه ولا يُعدَّل**: حالةُ السن اليوم تُعرف من آخر سطر لا من
@@ -702,6 +735,58 @@ export async function finishVisit(id: number): Promise<Visit | null> {
  * البحث بالرقم لا بالاسم لأن «عبدالله محمد» و«عبد الله محمد» شخص واحد بسجلّين.
  * ويُثبَّت المريض في الزيارة بعدها، فلا تتكرر العملية إن حُجزت جلسة أخرى.
  */
+/**
+ * يحلّ ملف المريض من زيارة — ويُنشئه إن لم يوجد.
+ *
+ * **دالة واحدة يستعملها المساران**: حجزُ الجلسة القادمة، وتوقيعُ الزيارة الذي يُصدر
+ * الفاتورة. وكانت محبوسة داخل حجز الجلسة، فكان توقيع زيارةِ مريضٍ مشي يفشل لأنه بلا
+ * ملف — بينما نفس المريض يُنشأ له ملفٌ لو حُجزت له جلسة. سلوكان لحالة واحدة، وهو
+ * أوّل ما يُنتج «مريضًا في وحدة ومريضًا آخر في وحدة».
+ *
+ * والبحث بالرقم لا بالاسم: «عبدالله محمد» و«عبد الله محمد» شخص واحد بسجلّين.
+ * وتُستدعى **داخل معاملة الطرف المستدعي** فتسقط معه إن سقط.
+ */
+async function resolveVisitPatient(
+  client: { query: (text: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+  visit: { id: number; patient_name: string; patient_phone: string | null; patient_id: number | null },
+  overridePhone?: string | null,
+): Promise<number> {
+  const rawPhone = overridePhone ?? visit.patient_phone;
+  // الرقم يُوحَّد قبل أن يُكتب: المريض المشي يكتب رقمه محليًا، ولو حُفظ كما هو لصار
+  // له سجلّ ثانٍ حين يحجز يومًا من صفحة الحجز بنفس الرقم.
+  const phone = normalizePatientPhone(rawPhone);
+
+  let patientId = visit.patient_id;
+  if (!patientId && phone) {
+    const { rows } = await client.query(
+      `SELECT id FROM patients WHERE phone = ANY($1::text[]) ORDER BY id LIMIT 1`,
+      [phoneLookupForms(rawPhone)],
+    );
+    patientId = (rows[0]?.id as number) ?? null;
+  }
+  if (!patientId) {
+    const { rows } = await client.query(
+      `INSERT INTO patients (patient_number, full_name, phone)
+       VALUES ('P-' || LPAD(nextval('patient_number_seq')::text, 5, '0'), $1, $2)
+       RETURNING id`,
+      [visit.patient_name, phone],
+    );
+    patientId = rows[0].id as number;
+  } else if (phone) {
+    // رقم وصل ولم يكن في السجل: يُملأ ولا يُستبدل رقمٌ قائم.
+    await client.query(
+      `UPDATE patients SET phone = $2 WHERE id = $1 AND (phone IS NULL OR phone = '')`,
+      [patientId, phone],
+    );
+  }
+  // يُثبَّت في الزيارة فلا تتكرّر العملية، ويصير الرابط ظاهرًا في كل شاشة.
+  await client.query(
+    `UPDATE visits SET patient_id = $2 WHERE id = $1 AND patient_id IS NULL`,
+    [visit.id, patientId],
+  );
+  return patientId;
+}
+
 export async function createNextSession(input: {
   visitId: number;
   date: string;
@@ -722,35 +807,8 @@ export async function createNextSession(input: {
     );
     if (!visits[0]) { await client.query("ROLLBACK"); return null; }
     const visit = visits[0];
-    // الرقم يُوحَّد قبل أن يُكتب في سجل المريض: المريض المشي يكتب رقمه محليًا،
-    // ولو حُفظ كما هو لصار له سجلّ ثانٍ حين يحجز يومًا من صفحة الحجز بنفس الرقم.
     const phone = normalizePatientPhone(input.phone ?? visit.patient_phone);
-
-    let patientId = visit.patient_id;
-    if (!patientId && phone) {
-      const { rows } = await client.query<{ id: number }>(
-        `SELECT id FROM patients WHERE phone = ANY($1::text[]) ORDER BY id LIMIT 1`,
-        [phoneLookupForms(input.phone ?? visit.patient_phone)],
-      );
-      patientId = rows[0]?.id ?? null;
-    }
-    if (!patientId) {
-      const { rows } = await client.query<{ id: number }>(
-        `INSERT INTO patients (patient_number, full_name, phone)
-         VALUES (
-           'P-' || LPAD(nextval('patient_number_seq')::text, 5, '0'),
-           $1, $2)
-         RETURNING id`,
-        [visit.patient_name, phone],
-      );
-      patientId = rows[0].id;
-    } else if (phone) {
-      // رقم وصل مع الحجز ولم يكن في السجل: يُملأ ولا يُستبدل رقمٌ قائم.
-      await client.query(
-        `UPDATE patients SET phone = $2 WHERE id = $1 AND (phone IS NULL OR phone = '')`,
-        [patientId, phone],
-      );
-    }
+    const patientId = await resolveVisitPatient(client, visit, input.phone ?? visit.patient_phone);
 
     const { rows: created } = await client.query<{ id: number }>(
       `INSERT INTO appointments (patient_id, scheduled_date, scheduled_time, duration_minutes, note)
@@ -3703,6 +3761,292 @@ export async function auditActors(): Promise<string[]> {
     `SELECT DISTINCT actor FROM audit_log ORDER BY actor LIMIT 50`,
   );
   return rows.map((row) => row.actor);
+}
+
+// ─── الزيارة السريرية — الحلقة بين السريري والمالي ──────────────────────────
+
+import {
+  canSign, conditionForCategory, formatAddendum, visitTotal,
+  type ClinicalStatus, type ProcedureLine, type VisitProcedureInput,
+} from "./clinical";
+
+export interface ClinicalVisit {
+  id: number;
+  patientId: number | null;
+  patientName: string;
+  chiefComplaint: string | null;
+  examination: string | null;
+  diagnosis: string | null;
+  treatmentDone: string | null;
+  nextPlan: string | null;
+  addendum: string | null;
+  doctorId: number | null;
+  status: ClinicalStatus;
+  signedAt: string | null;
+  signedBy: string | null;
+  invoiceId: number | null;
+  arrivedAt: string;
+  procedures: ProcedureLine[];
+  totalMinor: number;
+}
+
+interface ClinicalRow {
+  id: number; patient_id: number | null; patient_name: string;
+  chief_complaint: string | null; examination: string | null; diagnosis: string | null;
+  treatment_done: string | null; next_plan: string | null; addendum: string | null;
+  doctor_id: number | null; signed_at: Date | null; signed_by: string | null;
+  invoice_id: number | null; arrived_at: Date;
+}
+
+interface ProcedureRow {
+  service_id: number; service_name: string; category: string | null;
+  doctor_id: number | null; tooth_code: number | null; surfaces: string | null;
+  quantity: number; unit_price_minor: string;
+}
+
+const toProcedureLine = (row: ProcedureRow): ProcedureLine => ({
+  serviceId: row.service_id,
+  serviceName: row.service_name,
+  category: row.category,
+  toothCode: row.tooth_code,
+  surfaces: row.surfaces,
+  quantity: row.quantity,
+  unitPriceMinor: toMinor(row.unit_price_minor),
+  totalMinor: row.quantity * toMinor(row.unit_price_minor),
+  doctorId: row.doctor_id,
+});
+
+export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit | null> {
+  await ensureSchema();
+  const pool = getPool();
+  const { rows } = await pool.query<ClinicalRow>(
+    `SELECT id, patient_id, patient_name, chief_complaint, examination, diagnosis,
+            treatment_done, next_plan, addendum, doctor_id, signed_at, signed_by,
+            invoice_id, arrived_at
+       FROM visits WHERE id = $1`,
+    [visitId],
+  );
+  if (!rows[0]) return null;
+
+  const { rows: procedureRows } = await pool.query<ProcedureRow>(
+    `SELECT p.service_id, s.name AS service_name, s.category, p.doctor_id,
+            p.tooth_code, p.surfaces, p.quantity, p.unit_price_minor
+       FROM visit_procedures p JOIN services s ON s.id = p.service_id
+      WHERE p.visit_id = $1 ORDER BY p.id`,
+    [visitId],
+  );
+  const procedures = procedureRows.map(toProcedureLine);
+  const row = rows[0];
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    patientName: row.patient_name,
+    chiefComplaint: row.chief_complaint,
+    examination: row.examination,
+    diagnosis: row.diagnosis,
+    treatmentDone: row.treatment_done,
+    nextPlan: row.next_plan,
+    addendum: row.addendum,
+    doctorId: row.doctor_id,
+    status: row.signed_at ? "signed" : "open",
+    signedAt: row.signed_at?.toISOString() ?? null,
+    signedBy: row.signed_by,
+    invoiceId: row.invoice_id,
+    arrivedAt: row.arrived_at.toISOString(),
+    procedures,
+    totalMinor: visitTotal(procedures),
+  };
+}
+
+/** حفظ التوثيق السريري قبل التوقيع — يُرفض بعده، والتصحيح بملحق. */
+export async function saveClinicalNotes(input: {
+  visitId: number;
+  chiefComplaint: string | null;
+  examination: string | null;
+  diagnosis: string | null;
+  treatmentDone: string | null;
+  nextPlan: string | null;
+  doctorId: number | null;
+}): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE visits SET chief_complaint = $2::text, examination = $3::text,
+            diagnosis = $4::text, treatment_done = $5::text, next_plan = $6::text,
+            doctor_id = COALESCE($7::int, doctor_id)
+      WHERE id = $1 AND signed_at IS NULL`,
+    [input.visitId, input.chiefComplaint, input.examination, input.diagnosis,
+     input.treatmentDone, input.nextPlan, input.doctorId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function setVisitProcedures(input: {
+  visitId: number;
+  procedures: VisitProcedureInput[];
+}): Promise<boolean> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    // الحارس داخل الجملة: زيارةٌ وُقّعت بين القراءة والكتابة لا تُغيَّر إجراءاتها.
+    const { rows } = await client.query<{ id: number }>(
+      `SELECT id FROM visits WHERE id = $1 AND signed_at IS NULL FOR UPDATE`,
+      [input.visitId],
+    );
+    if (!rows[0]) { await client.query("ROLLBACK"); return false; }
+
+    await client.query(`DELETE FROM visit_procedures WHERE visit_id = $1`, [input.visitId]);
+    for (const procedure of input.procedures) {
+      await client.query(
+        `INSERT INTO visit_procedures
+           (visit_id, service_id, doctor_id, tooth_code, surfaces, quantity, unit_price_minor, note)
+         VALUES ($1, $2, $3::int, $4::int, $5::text, $6, $7, $8::text)`,
+        [input.visitId, procedure.serviceId, procedure.doctorId, procedure.toothCode,
+         normalizeSurfaces(procedure.surfaces), Math.max(1, Math.round(procedure.quantity)),
+         Math.max(0, Math.round(procedure.unitPriceMinor)), procedure.note],
+      );
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * توقيع الزيارة — **الحلقة التي كانت مقطوعة**.
+ *
+ * عملٌ واحد يُنتج ثلاثة آثار في **معاملة واحدة**: توقيع الزيارة، وفاتورةٌ من دليل
+ * الخدمات، وتحديث المخطط السني بما أُنجز. إمّا كلها أو لا شيء — والدستور §٤٠.
+ *
+ * ولماذا معاملة واحدة لا ثلاث خطوات: لأن الفشل بين الخطوتين هو الكارثة نفسها التي
+ * جاء الترابط ليمنعها — زيارةٌ موقَّعة بلا فاتورة (عملٌ ضاع)، أو فاتورةٌ بلا زيارة
+ * (مطالبةٌ بلا سند)، أو مخططٌ يقول إن التاج رُكّب والفاتورة لا تعرف.
+ */
+export async function signClinicalVisit(input: {
+  visitId: number;
+  baseCurrency: Currency;
+  signedBy: string;
+}): Promise<{
+  visit: ClinicalVisit | null;
+  invoiceId: number | null;
+  chartUpdates: number;
+  reason: "not_found" | "already_signed" | "empty" | "no_patient" | null;
+}> {
+  const existing = await getClinicalVisit(input.visitId);
+  if (!existing) return { visit: null, invoiceId: null, chartUpdates: 0, reason: "not_found" };
+  if (existing.status === "signed") {
+    return { visit: existing, invoiceId: existing.invoiceId, chartUpdates: 0, reason: "already_signed" };
+  }
+  const check = canSign({
+    status: existing.status,
+    procedures: existing.procedures,
+    diagnosis: existing.diagnosis,
+    treatmentDone: existing.treatmentDone,
+  });
+  if (!check.ok) return { visit: existing, invoiceId: null, chartUpdates: 0, reason: "empty" };
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: locked } = await client.query<{
+      id: number; patient_name: string; patient_phone: string | null; patient_id: number | null;
+    }>(
+      `SELECT id, patient_name, patient_phone, patient_id FROM visits
+        WHERE id = $1 AND signed_at IS NULL FOR UPDATE`,
+      [input.visitId],
+    );
+    if (!locked[0]) {
+      await client.query("ROLLBACK");
+      return { visit: existing, invoiceId: null, chartUpdates: 0, reason: "already_signed" };
+    }
+
+    /*
+     * ملفُّ المريض يُحلّ هنا لا يُشترط قبلها.
+     *
+     * المريض المشي يصل باسمه فقط، والطبيب يعالجه ويوقّع — ورفضُ التوقيع لأنه بلا ملف
+     * يعني أن يتوقّف الطبيب ليملأ نموذجًا، أو أن يخرج المريض بلا فاتورة. وكلاهما ما
+     * جاء الترابط ليمنعه. فيُنشأ الملف هنا **داخل المعاملة نفسها**: إن سقط التوقيع
+     * سقط الملف معه، فلا يبقى مريضٌ بلا زيارة.
+     */
+    const patientId = await resolveVisitPatient(client, locked[0]);
+
+    let invoiceId: number | null = null;
+    if (existing.procedures.length > 0) {
+      const { rows: invoiceRows } = await client.query<{ id: number }>(
+        `INSERT INTO invoices (invoice_number, patient_id, base_currency, total_minor, discount_minor, note, created_by)
+         VALUES ('INV-' || LPAD(nextval('invoice_number_seq')::text, 5, '0'),
+                 $1, $2, $3, 0, $4::text, $5)
+         RETURNING id`,
+        [patientId, input.baseCurrency, existing.totalMinor,
+         `من الزيارة رقم ${existing.id}`, input.signedBy],
+      );
+      invoiceId = invoiceRows[0].id;
+
+      for (const line of existing.procedures) {
+        await client.query(
+          `INSERT INTO invoice_items
+             (invoice_id, service_id, doctor_id, description, quantity, unit_price_minor, total_minor)
+           VALUES ($1, $2, $3::int, $4, $5, $6, $7)`,
+          [invoiceId, line.serviceId, line.doctorId,
+           line.toothCode ? `${line.serviceName} — سن ${line.toothCode}` : line.serviceName,
+           line.quantity, line.unitPriceMinor, line.totalMinor],
+        );
+      }
+    }
+
+    // المخطط السني: ما أُنجز على سن يصير حالةً منجَزة عليه — بلا تسجيل ثانٍ.
+    let chartUpdates = 0;
+    {
+      for (const line of existing.procedures) {
+        const condition = conditionForCategory(line.category);
+        if (!condition || !line.toothCode) continue;
+        await client.query(
+          `INSERT INTO tooth_conditions
+             (patient_id, tooth_code, condition, stage, surfaces, note, visit_id, recorded_by)
+           VALUES ($1, $2, $3, 'completed', $4::text, $5::text, $6, $7)`,
+          [patientId, line.toothCode, condition, line.surfaces,
+           `من الزيارة رقم ${existing.id}`, existing.id, input.signedBy],
+        );
+        chartUpdates += 1;
+      }
+    }
+
+    await client.query(
+      `UPDATE visits SET signed_at = NOW(), signed_by = $2, invoice_id = $3::int,
+              status = 'done', finished_at = COALESCE(finished_at, NOW())
+        WHERE id = $1`,
+      [input.visitId, input.signedBy, invoiceId],
+    );
+
+    await client.query("COMMIT");
+    return { visit: await getClinicalVisit(input.visitId), invoiceId, chartUpdates, reason: null };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** ملحق على زيارة موقَّعة — يُضاف ولا يمحو ما قبله. */
+export async function addVisitAddendum(input: {
+  visitId: number; text: string; author: string;
+}): Promise<boolean> {
+  await ensureSchema();
+  const entry = formatAddendum({ text: input.text, author: input.author, at: new Date().toISOString() });
+  const { rowCount } = await getPool().query(
+    `UPDATE visits
+        SET addendum = CASE WHEN addendum IS NULL OR addendum = '' THEN $2::text
+                            ELSE addendum || E'\n' || $2::text END
+      WHERE id = $1 AND signed_at IS NOT NULL`,
+    [input.visitId, entry],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 // ─── مخطط الأسنان ────────────────────────────────────────────────────────────

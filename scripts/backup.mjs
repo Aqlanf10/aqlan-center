@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./load-env.mjs";
 import { spawn } from "node:child_process";
 import { mkdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";

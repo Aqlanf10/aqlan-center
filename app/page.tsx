@@ -415,13 +415,28 @@ export default function FlowBoard() {
                   ) : (
                     <p className="mt-1 truncate text-base font-extrabold">{chair.occupant.patientName}</p>
                   )}
-                  <button
-                    onClick={() => finish(chair.occupant!)}
-                    disabled={busy}
-                    className="mt-3 w-full rounded-xl border border-slate-200 py-2 text-sm font-bold disabled:opacity-50"
-                  >
-                    انتهى
-                  </button>
+                  {/*
+                    زرّان لا واحد: «انتهى» ينهي التشغيل، و«وثّق وأغلق» يفتح التوثيق
+                    السريري الذي يولّد الفاتورة. وفصلهما مقصود — الاستقبال تُنهي
+                    الجلوس على الكرسي، والطبيب يوثّق ويوقّع. ودمجهما في زرّ واحد
+                    يعني إمّا أن توقّع الاستقبال على تشخيص، أو أن يبقى الكرسي مشغولًا
+                    حتى يفرغ الطبيب للكتابة.
+                  */}
+                  <div className="mt-3 flex gap-1.5">
+                    <a
+                      href={`/visits/${chair.occupant.id}`}
+                      className="flex-1 rounded-xl bg-navy-900 py-2 text-center text-sm font-bold text-white"
+                    >
+                      وثّق وأغلق
+                    </a>
+                    <button
+                      onClick={() => finish(chair.occupant!)}
+                      disabled={busy}
+                      className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold disabled:opacity-50"
+                    >
+                      انتهى
+                    </button>
+                  </div>
                 </>
               ) : chair.calledFor ? (
                 <p className="mt-1 truncate text-sm font-bold text-brand-orange">

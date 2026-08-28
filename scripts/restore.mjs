@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./load-env.mjs";
 import { readFileSync } from "node:fs";
 import { Client } from "pg";
 

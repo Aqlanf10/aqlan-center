@@ -9,11 +9,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "backup": "node scripts/backup.mjs",
-    "verify:schema": "node --experimental-strip-types scripts/verify-schema.mjs",
+    "verify:schema": "tsx scripts/verify-schema.mjs",
     "verify:backup": "tsx scripts/verify-backup.mjs",
     "restore": "node scripts/restore.mjs",
     "verify:concurrency": "tsx scripts/verify-concurrency.mjs",
-    "verify:audit": "tsx scripts/verify-audit.mjs"
+    "verify:audit": "tsx scripts/verify-audit.mjs",
+    "verify:clinical": "tsx scripts/verify-clinical.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
@@ -29,6 +30,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
+    "tsx": "^4.23.12",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
   }
