@@ -26,7 +26,7 @@ const REQUIRED = [
   "settings", "users", "services", "cashier_shifts", "invoices", "invoice_items",
   "payments", "parties", "expenses", "payables", "journal_manual",
   "journal_manual_lines", "treatment_plans", "plan_installments",
-  "patient_opening_balances", "audit_log",
+  "patient_opening_balances", "audit_log", "document_prints",
 ];
 
 const temporary = `schema_check_${Date.now()}`;

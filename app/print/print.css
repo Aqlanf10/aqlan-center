@@ -77,3 +77,21 @@ table.items td.num, table.items th.num { text-align: left; white-space: nowrap; 
   margin: 0 auto 1.5mm;
   display: block;
 }
+
+/* علامة «نسخة معاد طباعتها» — مخفية حتى تُطلب. */
+.reprint-mark { display: none; }
+.reprint-mark-on,
+html[data-reprint="true"] .reprint-mark {
+  display: block;
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  height: fit-content;
+  text-align: center;
+  font-size: 26pt;
+  font-weight: 700;
+  color: rgba(185, 28, 28, 0.16);
+  transform: rotate(-24deg);
+  pointer-events: none;
+  z-index: 50;
+}

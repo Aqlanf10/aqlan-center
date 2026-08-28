@@ -26,7 +26,8 @@ export type AuditAction =
   | "journal.manual"
   | "settings.update"
   | "user.create" | "user.update" | "user.disable"
-  | "backup.download" | "export.download";
+  | "backup.download" | "export.download"
+  | "document.reprint";
 
 export const AUDIT_LABEL: Record<AuditAction, string> = {
   "invoice.create": "إنشاء فاتورة",
@@ -51,6 +52,7 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "user.disable": "تعطيل مستخدم",
   "backup.download": "تنزيل نسخة احتياطية",
   "export.download": "تصدير بيانات",
+  "document.reprint": "إعادة طباعة مستند",
 };
 
 /**
@@ -62,7 +64,7 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
 export const SENSITIVE_ACTIONS: AuditAction[] = [
   "invoice.cancel", "payment.refund", "opening_balance.set", "opening_balance.clear",
   "journal.manual", "fx.revalue", "settings.update", "user.create", "user.update",
-  "user.disable", "backup.download", "export.download",
+  "user.disable", "backup.download", "export.download", "document.reprint",
 ];
 
 export function isSensitive(action: AuditAction): boolean {

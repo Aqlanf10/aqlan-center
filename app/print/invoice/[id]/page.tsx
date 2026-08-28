@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
-import { getInvoice, getSettingsSafe } from "@/lib/db";
+import { getInvoice, getSettingsSafe, printCount } from "@/lib/db";
 import { formatMoney, isCurrency } from "@/lib/money";
 import { friendlyDateLong } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
-import { PrintButton } from "@/components/PrintButton";
+import { PrintButton, ReprintMark } from "@/components/PrintButton";
 import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -21,6 +21,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   if (!Number.isInteger(id) || id <= 0) notFound();
 
   const [invoice, settings] = await Promise.all([getInvoice(id), getSettingsSafe()]);
+  const printed = await printCount("invoice", id);
   if (!invoice) notFound();
 
   const base = isCurrency(invoice.baseCurrency) ? invoice.baseCurrency : "YER";
@@ -28,7 +29,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
 
   return (
     <>
-      <PrintButton />
+      <PrintButton docType="invoice" docId={id} />
+      <ReprintMark printed={printed > 0} />
       <div className="sheet sheet-a4">
         <PrintHeader settings={settings} title="فاتورة" />
 

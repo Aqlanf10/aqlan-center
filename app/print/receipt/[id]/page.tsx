@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
-import { getPayment, getSettingsSafe } from "@/lib/db";
+import { getPayment, getSettingsSafe, printCount } from "@/lib/db";
 import { CURRENCY_LABEL, formatMoney, isCurrency } from "@/lib/money";
 import { friendlyDateLong, friendlyTime } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
-import { PrintButton } from "@/components/PrintButton";
+import { PrintButton, ReprintMark } from "@/components/PrintButton";
 import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -30,6 +30,7 @@ export default async function ReceiptPage({ params }: { params: Promise<{ id: st
   if (!Number.isInteger(id) || id <= 0) notFound();
 
   const [payment, settings] = await Promise.all([getPayment(id), getSettingsSafe()]);
+  const printed = await printCount("receipt", id);
   if (!payment) notFound();
 
   const base = isCurrency(settings["finance.base_currency"])
@@ -40,7 +41,8 @@ export default async function ReceiptPage({ params }: { params: Promise<{ id: st
 
   return (
     <>
-      <PrintButton />
+      <PrintButton docType="receipt" docId={id} />
+      <ReprintMark printed={printed > 0} />
       <div className="sheet sheet-a6">
         <PrintHeader settings={settings} title={isRefund ? "سند صرف" : "سند قبض"} compact />
 

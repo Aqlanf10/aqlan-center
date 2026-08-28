@@ -446,6 +446,20 @@ export function ensureSchema(): Promise<void> {
         (SELECT COALESCE(MAX(NULLIF(regexp_replace(voucher_number, '\\D', '', 'g'), '')::bigint), 0) FROM expenses)
       ), true);
 
+      -- طبعات المستندات المالية.
+      --
+      -- سندٌ يُطبع مرتين ويُعطى مرتين يمكن أن يُقدَّم دليلًا على دفعتين. والعلامة على
+      -- النسخة الثانية تحمي الطرفين: المريض من اتهامٍ باطل، والمركز من مطالبةٍ
+      -- بمبلغ قُبض مرة واحدة.
+      CREATE TABLE IF NOT EXISTS document_prints (
+        id         BIGSERIAL   PRIMARY KEY,
+        doc_type   TEXT        NOT NULL,
+        doc_id     TEXT        NOT NULL,
+        printed_by TEXT        NOT NULL,
+        printed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS document_prints_doc_idx ON document_prints (doc_type, doc_id);
+
       -- سجل التدقيق — يُكتب ولا يُعدَّل ولا يُحذف.
       --
       -- لا عمود updated_at ولا حالة ولا حذف منطقي: كلها أبوابٌ للتعديل، وسجلٌّ
@@ -3668,6 +3682,36 @@ export async function auditActors(): Promise<string[]> {
     `SELECT DISTINCT actor FROM audit_log ORDER BY actor LIMIT 50`,
   );
   return rows.map((row) => row.actor);
+}
+
+// ─── طبعات المستندات ─────────────────────────────────────────────────────────
+
+/** كم مرة طُبع هذا المستند قبل الآن. */
+export async function printCount(docType: string, docId: string | number): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM document_prints WHERE doc_type = $1 AND doc_id = $2::text`,
+    [docType, String(docId)],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * يسجّل طبعة ويعيد **عدد الطبعات السابقة**.
+ *
+ * السابقة لا الحالية: الجواب المطلوب هو «هل هذه إعادة طباعة؟»، وهو ما يُعرف من
+ * وجود طبعةٍ قبلها لا من وجود هذه.
+ */
+export async function recordPrint(input: {
+  docType: string; docId: string | number; printedBy: string;
+}): Promise<number> {
+  await ensureSchema();
+  const previous = await printCount(input.docType, input.docId);
+  await getPool().query(
+    `INSERT INTO document_prints (doc_type, doc_id, printed_by) VALUES ($1, $2::text, $3)`,
+    [input.docType, String(input.docId), input.printedBy],
+  );
+  return previous;
 }
 
 // ─── الأرصدة الافتتاحية للمرضى ───────────────────────────────────────────────

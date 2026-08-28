@@ -1,10 +1,10 @@
 import { notFound } from "next/navigation";
-import { getExpense, getSettingsSafe } from "@/lib/db";
+import { getExpense, getSettingsSafe, printCount } from "@/lib/db";
 import { EXPENSE_CATEGORY_LABEL } from "@/lib/expenses";
 import { CURRENCY_LABEL, formatMoney, isCurrency } from "@/lib/money";
 import { friendlyDateLong, friendlyTime } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
-import { PrintButton } from "@/components/PrintButton";
+import { PrintButton, ReprintMark } from "@/components/PrintButton";
 import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -22,6 +22,7 @@ export default async function VoucherPage({ params }: { params: Promise<{ id: st
   if (!Number.isInteger(id) || id <= 0) notFound();
 
   const [expense, settings] = await Promise.all([getExpense(id), getSettingsSafe()]);
+  const printed = await printCount("voucher", id);
   if (!expense) notFound();
 
   const base = isCurrency(settings["finance.base_currency"])
@@ -31,7 +32,8 @@ export default async function VoucherPage({ params }: { params: Promise<{ id: st
 
   return (
     <>
-      <PrintButton />
+      <PrintButton docType="voucher" docId={id} />
+      <ReprintMark printed={printed > 0} />
       <div className="sheet sheet-a6">
         <PrintHeader settings={settings} title="سند صرف" compact />
 
