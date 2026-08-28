@@ -33,12 +33,32 @@ export default function ExportPage() {
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
       <header className="mb-4">
-        <h1 className="text-xl font-extrabold leading-tight">تصدير البيانات</h1>
-        <p className="text-xs text-slate-500">نسخة احتياطية بصيغة CSV تفتحها Excel</p>
+        <h1 className="text-xl font-extrabold leading-tight">النسخ والتصدير</h1>
+        <p className="text-xs text-slate-500">نسخة كاملة للاستعادة، وجداول CSV للمراجعة</p>
         <div className="mt-2">
           <a href="/settings" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">‹ الإعدادات</a>
         </div>
       </header>
+
+      {/* النسخة الكاملة فوق كل شيء: هي وحدها التي تُعيد العيادة إن ضاع كل شيء.
+          وملفات CSV تحتها للمراجعة — تُقرأ ولا تُستعاد. */}
+      <section className="mb-5 rounded-2xl border-2 border-navy-800 bg-white p-4" aria-label="نسخة كاملة">
+        <h2 className="text-sm font-extrabold">نسخة احتياطية كاملة</h2>
+        <p className="mt-1 mb-3 text-[11px] font-bold leading-5 text-slate-500">
+          كل شيء في ملف واحد: المرضى والمواعيد والفواتير والسندات والدفاتر. هذا هو
+          الملف الذي تُستعاد به العيادة كاملةً لو ضاع كل شيء —
+          <span className="text-navy-800"> وملفات CSV تحته للقراءة لا للاستعادة.</span>
+        </p>
+        <a href="/api/backup"
+          className="block rounded-xl bg-navy-800 py-2.5 text-center text-sm font-extrabold text-white">
+          نزّل النسخة الكاملة الآن
+        </a>
+        <p className="mt-2 text-[11px] font-bold leading-5 text-slate-400">
+          خذها في نهاية كل يوم عمل. والملف يحمل بيانات كل مرضاك — احفظه في مكان تثق به.
+        </p>
+      </section>
+
+      <h2 className="mb-2 text-sm font-extrabold">جداول CSV — للمراجعة في Excel</h2>
 
       <div className="mb-4 flex flex-wrap gap-2">
         <label className="min-w-[8rem] flex-1">

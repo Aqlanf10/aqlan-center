@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "backup": "node scripts/backup.mjs",
-    "verify:schema": "node --experimental-strip-types scripts/verify-schema.mjs"
+    "verify:schema": "node --experimental-strip-types scripts/verify-schema.mjs",
+    "verify:backup": "tsx scripts/verify-backup.mjs",
+    "restore": "node scripts/restore.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",

@@ -3242,6 +3242,88 @@ export async function isPeriodLocked(date: string): Promise<boolean> {
   return date < lockedBefore;
 }
 
+// ─── النسخة الاحتياطية الكاملة ───────────────────────────────────────────────
+
+import { insertStatement, insertionOrder, sequenceResets } from "./backup";
+
+/**
+ * يبني ملف النسخة الاحتياطية سطرًا سطرًا.
+ *
+ * بيانات فقط بلا مخطط: البرنامج ينشئ جداوله بنفسه عند أول تشغيل، فالاستعادة قاعدةٌ
+ * فارغة يفتحها البرنامج ثم يُشغَّل عليها هذا الملف.
+ *
+ * وليس فيه `TRUNCATE` ولا `DROP` عمدًا. ملفٌّ يمسح قبل أن يكتب يبدو أذكى، لكنه يعني
+ * أن نقرة خاطئة على قاعدة تعمل تمحو يوم عمل كامل. فالاستعادة فوق بيانات موجودة
+ * **تفشل** باصطدام المفاتيح — وهو الفشل الصحيح.
+ */
+export interface Queryable {
+  query: (text: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+}
+
+export async function* backupSqlLines(source?: Queryable): AsyncGenerator<string> {
+  // مصدرٌ مُمرَّر يعني قاعدةً غير قاعدة التطبيق — وهو ما يجعل فحص «هل تُستعاد النسخة؟»
+  // ممكنًا أصلًا: قراءةٌ من قاعدة وكتابةٌ في أخرى داخل عملية واحدة.
+  let pool: Queryable;
+  if (source) {
+    pool = source;
+  } else {
+    await ensureSchema();
+    pool = getPool();
+  }
+
+  const { rows: tableRows } = (await pool.query(
+    `SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      ORDER BY table_name`,
+  )) as { rows: { table_name: string }[] };
+  const tables = tableRows.map((row) => row.table_name);
+
+  // الترتيب من مفاتيح القاعدة نفسها لا من قائمة مكتوبة بيد: قائمةٌ يدوية تنسى جدولًا
+  // يُضاف غدًا، فتفشل الاستعادة بخطأ مفتاح أجنبي في أسوأ لحظة.
+  const { rows: fkRows } = (await pool.query(
+    `SELECT tc.table_name AS child, ccu.table_name AS parent
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.constraint_column_usage ccu
+         ON ccu.constraint_name = tc.constraint_name
+      WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'`,
+  )) as { rows: { child: string; parent: string }[] };
+  const dependsOn = new Map(tables.map((table) => [table, new Set<string>()]));
+  for (const row of fkRows) dependsOn.get(row.child)?.add(row.parent);
+  const ordered = insertionOrder(
+    tables.map((table) => ({ table, dependsOn: [...(dependsOn.get(table) ?? [])] })),
+  );
+
+  yield `-- نسخة احتياطية — انسياب العيادة\n`;
+  yield `-- أُخذت: ${new Date().toISOString()}\n`;
+  yield `-- الاستعادة: على قاعدة فارغة فتحها البرنامج مرة واحدة فأنشأ جداولها.\n`;
+  yield `BEGIN;\n`;
+
+  // العدّادات تُعاد فقط لجداول لها عمود `id`. الجداول ذات المفتاح الطبيعي —
+  // الإعدادات بمفتاحها النصّي، والأرصدة الافتتاحية برقم المريض — لا عدّاد لها،
+  // وتوليد جملة تشير إلى `id` فيها يُفشل ملف النسخة كله عند أول سطر استعادة.
+  const withSerialId: string[] = [];
+
+  for (const table of ordered) {
+    const { rows: columnRows } = (await pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1
+        ORDER BY ordinal_position`,
+      [table],
+    )) as { rows: { column_name: string }[] };
+    const columns = columnRows.map((row) => row.column_name);
+    if (columns.length === 0) continue;
+    if (columns.includes("id")) withSerialId.push(table);
+
+    const { rows } = await pool.query(`SELECT * FROM "${table}"`);
+    yield `\n-- ${table} (${rows.length})\n`;
+    for (const row of rows) yield `${insertStatement(table, columns, row)}\n`;
+  }
+
+  yield `\n`;
+  for (const reset of sequenceResets(withSerialId)) yield `${reset}\n`;
+  yield `COMMIT;\n`;
+}
+
 // ─── إعادة تقييم العملات الأجنبية ────────────────────────────────────────────
 
 export interface FxReport {
