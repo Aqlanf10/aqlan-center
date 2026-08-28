@@ -402,6 +402,39 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS opening_balances_date_idx ON patient_opening_balances (as_of_date);
 
+      -- عدّادات أرقام المستندات.
+      --
+      -- كانت الأرقام تُولَّد بأكبر رقم زائد واحد داخل جملة الإدراج. والقيد الفريد يمنع
+      -- التكرار، لكنه يمنعه **بإفشال الطلب الثاني**: موظفتان تقبضان في الثانية نفسها
+      -- فترى إحداهما خطأً عامًّا وهي تمسك نقود مريض. والأسوأ في تسجيل قسط: الفاتورة
+      -- والدفعة في معاملة واحدة، فيسقط القسط كله.
+      --
+      -- والعدّاد يحلّها من أصلها: nextval لا يتصادم ولا ينتظر قفلًا.
+      CREATE SEQUENCE IF NOT EXISTS patient_number_seq;
+      CREATE SEQUENCE IF NOT EXISTS invoice_number_seq;
+      CREATE SEQUENCE IF NOT EXISTS receipt_number_seq;
+      CREATE SEQUENCE IF NOT EXISTS voucher_number_seq;
+
+      -- المواءمة مع ما هو موجود، **إلى الأمام فقط**: GREATEST مع قيمة العدّاد
+      -- الحالية تمنع إرجاعه إلى الخلف عند إقلاع لاحق — وإرجاعه يعني إصدار رقم
+      -- مستعمل، وهو ما يُفشل الإدراج بدل أن يُصلحه.
+      SELECT setval('patient_number_seq', GREATEST(
+        (SELECT last_value FROM patient_number_seq),
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(patient_number, '\D', '', 'g'), '')::bigint), 0) FROM patients)
+      ), true);
+      SELECT setval('invoice_number_seq', GREATEST(
+        (SELECT last_value FROM invoice_number_seq),
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(invoice_number, '\D', '', 'g'), '')::bigint), 0) FROM invoices)
+      ), true);
+      SELECT setval('receipt_number_seq', GREATEST(
+        (SELECT last_value FROM receipt_number_seq),
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_number, '\D', '', 'g'), '')::bigint), 0) FROM payments)
+      ), true);
+      SELECT setval('voucher_number_seq', GREATEST(
+        (SELECT last_value FROM voucher_number_seq),
+        (SELECT COALESCE(MAX(NULLIF(regexp_replace(voucher_number, '\D', '', 'g'), '')::bigint), 0) FROM expenses)
+      ), true);
+
       CREATE TABLE IF NOT EXISTS settings (
         key        TEXT PRIMARY KEY,
         value      TEXT        NOT NULL,
@@ -622,7 +655,7 @@ export async function createNextSession(input: {
       const { rows } = await client.query<{ id: number }>(
         `INSERT INTO patients (patient_number, full_name, phone)
          VALUES (
-           'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
+           'P-' || LPAD(nextval('patient_number_seq')::text, 5, '0'),
            $1, $2)
          RETURNING id`,
         [visit.patient_name, phone],
@@ -892,7 +925,7 @@ export async function createPatient(input: PatientInput): Promise<Patient> {
   const { rows } = await getPool().query<PatientRow>(
     `INSERT INTO patients (patient_number, full_name, phone, alt_phone, gender, birth_year, address, medical_alert, note)
      VALUES (
-       'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
+       'P-' || LPAD(nextval('patient_number_seq')::text, 5, '0'),
        $1, $2::text, $3::text, $4, $5::int, $6::text, $7::text, $8::text)
      RETURNING ${PATIENT_COLUMNS}`,
     [
@@ -1210,7 +1243,7 @@ export async function confirmBookingRequest(input: {
       const { rows: created } = await client.query<{ id: number }>(
         `INSERT INTO patients (patient_number, full_name, phone)
          VALUES (
-           'P-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(patient_number, '\\D', '', 'g'), '')::int) FROM patients), 0) + 1)::text, 5, '0'),
+           'P-' || LPAD(nextval('patient_number_seq')::text, 5, '0'),
            $1, $2)
          RETURNING id`,
         [request.full_name, request.phone],
@@ -2065,7 +2098,7 @@ export async function createInvoice(input: {
     const { rows } = await client.query<{ id: number }>(
       `INSERT INTO invoices (invoice_number, patient_id, total_minor, discount_minor, base_currency, note, created_by)
        VALUES (
-         'INV-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(invoice_number, '\\D', '', 'g'), '')::bigint) FROM invoices), 0) + 1)::text, 5, '0'),
+         'INV-' || LPAD(nextval('invoice_number_seq')::text, 5, '0'),
          $1, $2, $3, $4, $5::text, $6)
        RETURNING id`,
       [input.patientId, total, discount, input.baseCurrency, input.note, input.createdBy],
@@ -2190,7 +2223,7 @@ export async function recordPayment(input: {
        receipt_number, patient_id, invoice_id, shift_id, kind, amount_minor, currency,
        exchange_rate, base_amount_minor, base_currency, method, note, created_by)
      SELECT
-       'R-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(receipt_number, '\\D', '', 'g'), '')::bigint) FROM payments), 0) + 1)::text, 5, '0'),
+       'R-' || LPAD(nextval('receipt_number_seq')::text, 5, '0'),
        $1, $2::int, s.id, $3, $4, $5, $6, $7, $8, $9, $10::text, $11
        FROM cashier_shifts s
       WHERE s.status = 'open'
@@ -2425,7 +2458,7 @@ export async function recordExpense(input: {
        voucher_number, category, party_id, payee_text, shift_id, amount_minor, currency,
        exchange_rate, base_amount_minor, base_currency, payable_id, note, created_by)
      SELECT
-       'V-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(voucher_number, '\\D', '', 'g'), '')::bigint) FROM expenses), 0) + 1)::text, 5, '0'),
+       'V-' || LPAD(nextval('voucher_number_seq')::text, 5, '0'),
        $1, $2::int, $3::text, s.id, $4, $5, $6, $7, $8, $9::int, $10::text, $11
        FROM cashier_shifts s
       WHERE s.status = 'open'
@@ -3742,7 +3775,7 @@ export async function recordPlanInstallment(input: {
     const { rows: invoices } = await client.query<{ id: number }>(
       `INSERT INTO invoices (invoice_number, patient_id, total_minor, discount_minor, base_currency, note, created_by, plan_id)
        VALUES (
-         'INV-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(invoice_number, '\\D', '', 'g'), '')::bigint) FROM invoices), 0) + 1)::text, 5, '0'),
+         'INV-' || LPAD(nextval('invoice_number_seq')::text, 5, '0'),
          $1, $2, 0, $3, $4::text, $5, $6)
        RETURNING id`,
       [input.patientId, baseAmount, input.baseCurrency, input.note, input.createdBy, input.planId],
@@ -3760,7 +3793,7 @@ export async function recordPlanInstallment(input: {
          receipt_number, patient_id, invoice_id, shift_id, kind, amount_minor, currency,
          exchange_rate, base_amount_minor, base_currency, method, note, created_by, plan_id)
        VALUES (
-         'R-' || LPAD((COALESCE((SELECT MAX(NULLIF(regexp_replace(receipt_number, '\\D', '', 'g'), '')::bigint) FROM payments), 0) + 1)::text, 5, '0'),
+         'R-' || LPAD(nextval('receipt_number_seq')::text, 5, '0'),
          $1, $2, $3, 'payment', $4, $5, $6, $7, $8, $9, $10::text, $11, $12)
        RETURNING id`,
       [

@@ -11,7 +11,8 @@
     "backup": "node scripts/backup.mjs",
     "verify:schema": "node --experimental-strip-types scripts/verify-schema.mjs",
     "verify:backup": "tsx scripts/verify-backup.mjs",
-    "restore": "node scripts/restore.mjs"
+    "restore": "node scripts/restore.mjs",
+    "verify:concurrency": "tsx scripts/verify-concurrency.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
