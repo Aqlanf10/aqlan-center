@@ -12,6 +12,10 @@ export const dynamic = "force-dynamic";
  *
  * مفتوح بلا جلسة عمدًا: من يحتاجه هو من لا يستطيع الدخول بعد. وما يكشفه — أن إعدادًا
  * ناقص — لا يمنح مهاجمًا شيئًا لا يعرفه من محاولة الدخول نفسها.
+ *
+ * ويقول أيضًا أيّ نسخةٍ تعمل الآن. سؤال «هل وصل تعديلي إلى الموقع؟» كان يحتاج لوحة
+ * النشر، فيُخمَّن الجواب أو يُنتظر بلا داعٍ. سبعة أحرفٍ من بصمة الإصدار تكفي للجواب
+ * ولا تكشف شيئًا عن محتوى المستودع.
  */
 export async function GET() {
   const hasDatabase = Boolean(connectionStringFromEnv());
@@ -36,8 +40,11 @@ export async function GET() {
     !hasSessionSecret ? "SESSION_SECRET (32 حرفًا فأكثر)" : null,
   ].filter(Boolean);
 
+  const revision = (process.env.RAILWAY_GIT_COMMIT_SHA ?? "").slice(0, 7);
+
   return NextResponse.json({
     ready,
+    الإصدار: revision || "غير معروف",
     الناقص: missing,
     قاعدة_البيانات: hasDatabase ? (databaseReachable ? "متصلة" : "مضبوطة لكن لا تستجيب") : "غير مضبوطة",
     سر_الجلسات: hasSessionSecret ? "مضبوط" : "ناقص أو قصير",
