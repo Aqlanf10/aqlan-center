@@ -162,30 +162,63 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                 </span>
               </div>
 
+              {/*
+                * أرقامٌ مختلفة لخطتين مختلفتين — لأن السؤال نفسه مختلف.
+                *
+                * خطةُ الأقساط تُفوتَر بأقساطها، فسؤالها **مالي**: كم دفع وكم بقي.
+                * والخطة السريرية تُفوتَر بزياراتها، فمالُها في كشف الحساب لا فيها،
+                * وسؤالها **علاجي**: كم أُنجز وكم بقي من العمل. وعرضُ «المدفوع ٠
+                * والباقي ٢٨٬٠٠٠» على خطةٍ سُدّد جزءٌ منها بفاتورة زيارة يقول للمريض
+                * رقمًا يخالف كشف حسابه — وهو الرقم الذي يُجادَل عليه.
+                */}
               <div className="mb-2 grid grid-cols-3 gap-2 text-center">
                 <div className="rounded-xl bg-slate-50 p-2">
                   <p className="text-sm font-bold">{formatMoney(plan.totalMinor, base)}</p>
-                  <p className="text-[11px] text-slate-500">الإجمالي</p>
+                  <p className="text-[11px] text-slate-500">
+                    {plan.installments.length > 0 ? "الإجمالي" : "المتفق عليه"}
+                  </p>
                 </div>
-                <div className="rounded-xl bg-emerald-50 p-2">
-                  <p className="text-sm font-extrabold text-emerald-800">{formatMoney(plan.progress.paidMinor, base)}</p>
-                  <p className="text-[11px] text-emerald-700">المدفوع</p>
-                </div>
-                <div className="rounded-xl bg-slate-50 p-2">
-                  <p className="text-sm font-bold">{formatMoney(plan.progress.remainingMinor, base)}</p>
-                  <p className="text-[11px] text-slate-500">الباقي</p>
-                </div>
+                {plan.installments.length > 0 ? (
+                  <>
+                    <div className="rounded-xl bg-emerald-50 p-2">
+                      <p className="text-sm font-extrabold text-emerald-800">{formatMoney(plan.progress.paidMinor, base)}</p>
+                      <p className="text-[11px] text-emerald-700">المدفوع</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-2">
+                      <p className="text-sm font-bold">{formatMoney(plan.progress.remainingMinor, base)}</p>
+                      <p className="text-[11px] text-slate-500">الباقي</p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="rounded-xl bg-emerald-50 p-2">
+                      <p className="text-sm font-extrabold text-emerald-800">{formatMoney(plan.itemsProgress.doneMinor, base)}</p>
+                      <p className="text-[11px] text-emerald-700">أُنجز</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-2">
+                      <p className="text-sm font-bold">{formatMoney(plan.itemsProgress.remainingMinor, base)}</p>
+                      <p className="text-[11px] text-slate-500">باقي العلاج</p>
+                    </div>
+                  </>
+                )}
               </div>
 
-              {/* شريط التقدّم: مريض التقويم يسأل «كم بقي» أكثر مما يسأل عن رقم. */}
-              <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full bg-emerald-500"
-                  style={{ width: `${Math.min(100, Math.round((plan.progress.paidMinor / Math.max(1, plan.totalMinor)) * 100))}%` }} />
-              </div>
-              <p className="mb-2 text-[11px] text-slate-500">
-                {plan.progress.paidCount} من {plan.progress.count} أقساط
-                {plan.progress.nextDueDate ? ` · القادم ${friendlyDateLong(plan.progress.nextDueDate)}` : ""}
-              </p>
+              {/*
+                * شريط التقدّم: مريض التقويم يسأل «كم بقي» أكثر مما يسأل عن رقم.
+                * ولا يظهر لخطةٍ بلا أقساط: «٠ من ٠ أقساط» تحت شريطٍ فارغ ليس معلومة.
+                */}
+              {plan.installments.length > 0 ? (
+                <>
+                  <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                    <div className="h-full bg-emerald-500"
+                      style={{ width: `${Math.min(100, Math.round((plan.progress.paidMinor / Math.max(1, plan.totalMinor)) * 100))}%` }} />
+                  </div>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    {plan.progress.paidCount} من {plan.progress.count} أقساط
+                    {plan.progress.nextDueDate ? ` · القادم ${friendlyDateLong(plan.progress.nextDueDate)}` : ""}
+                  </p>
+                </>
+              ) : null}
 
               {plan.progress.overdueMinor > 0 ? (
                 <p className="mb-2 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">
@@ -193,7 +226,16 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                 </p>
               ) : null}
 
-              {plan.status === "active" ? (
+              {/*
+                * «تحصيل قسط» لخطة الأقساط وحدها — لا لكل خطة.
+                *
+                * لأنه يُصدر فاتورةً بقيمة القسط. وخطةٌ سريرية بلا أقساط تُفوتَر
+                * بزياراتها أصلًا، فتحصيلُ «قسط» عليها يُصدر فاتورةً ثانيةً للعمل
+                * نفسه — وهي الفوترة المزدوجة التي نحذّر منها عند التوقيع، فلا يصحّ
+                * أن يفتح لها البرنامج بابًا من هنا. والمسوّدة أولى بالمنع: ما لم
+                * يوافق المريض بعد ليس اتفاقًا يُقبض عليه.
+                */}
+              {plan.status === "active" && plan.installments.length > 0 ? (
                 payFor === plan.id ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                     <div className="mb-2 flex flex-wrap gap-2">
@@ -262,6 +304,25 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                     سجّل موافقة المريض — ويُقفل الاتفاق
                   </button>
                 )
+              ) : null}
+
+              {plan.status === "active" && plan.installments.length === 0 && plan.consentAt ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <p className="flex-1 text-[11px] text-slate-500">
+                    تُفوتَر هذه الخطة بزياراتها — والمال في تبويب «الحساب».
+                  </p>
+                  <button
+                    onClick={async () => {
+                      await fetch(`/api/plans/${plan.id}`, {
+                        method: "PATCH", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: "completed" }),
+                      });
+                      void load();
+                    }}
+                    className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-600">
+                    إنهاء الخطة
+                  </button>
+                </div>
               ) : null}
 
               {plan.consentAt ? (

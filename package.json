@@ -15,7 +15,9 @@
     "verify:concurrency": "tsx scripts/verify-concurrency.mjs",
     "verify:audit": "tsx scripts/verify-audit.mjs",
     "verify:clinical": "tsx scripts/verify-clinical.mjs",
-    "verify:plans": "tsx scripts/verify-plans.mjs"
+    "verify:plans": "tsx scripts/verify-plans.mjs",
+    "journey:visit": "node scripts/journeys/visit.mjs",
+    "journey:plan": "node scripts/journeys/plan.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
