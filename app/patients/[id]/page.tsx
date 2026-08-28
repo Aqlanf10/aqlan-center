@@ -8,6 +8,7 @@ import { friendlyDate, friendlyDateLong, friendlyTime, toWhatsAppNumber } from "
 import { clinicDateString } from "@/lib/schedule";
 import { PatientLedger } from "@/components/PatientLedger";
 import { PatientPlans } from "@/components/PatientPlans";
+import { shortMinutes } from "@/lib/report";
 
 /**
  * ملف المريض.
@@ -176,7 +177,7 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
                   {friendlyDateLong(appointment.scheduledDate)} · {friendlyTime(appointment.scheduledTime)}
                 </span>
                 <span className="text-xs text-slate-500">
-                  {appointment.durationMinutes} د · {STATUS_LABEL[appointment.status] ?? appointment.status}
+                  {shortMinutes(appointment.durationMinutes)} · {STATUS_LABEL[appointment.status] ?? appointment.status}
                 </span>
               </li>
             ))}

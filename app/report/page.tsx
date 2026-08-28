@@ -4,9 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useClinicName } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString, type DayLoad } from "@/lib/schedule";
-import { appointmentsCountText, reportText, type DayReport } from "@/lib/report";
+import { appointmentsCountText, minutesText, reportText, shortMinutes, type DayReport } from "@/lib/report";
 import type { LabSummary } from "@/lib/lab";
 import { PageHeader } from "@/components/PageHeader";
+import { StatCard as Stat } from "@/components/PageHeader";
 
 /**
  * تقرير اليوم.
@@ -103,11 +104,11 @@ export default function ReportPage() {
           </section>
 
           <section className="mb-4 grid grid-cols-3 gap-2" aria-label="الانتظار">
-            <Stat label="متوسط الانتظار" value={`${feed.report.averageWaitMinutes} د`}
+            <Stat label="متوسط الانتظار" value={shortMinutes(feed.report.averageWaitMinutes)}
               tone={feed.report.averageWaitMinutes >= 30 ? "bad" : feed.report.averageWaitMinutes >= 15 ? "warn" : "calm"} />
-            <Stat label="أطول انتظار" value={`${feed.report.longestWaitMinutes} د`}
+            <Stat label="أطول انتظار" value={shortMinutes(feed.report.longestWaitMinutes)}
               tone={feed.report.longestWaitMinutes >= 45 ? "bad" : feed.report.longestWaitMinutes >= 20 ? "warn" : "calm"} />
-            <Stat label="متوسط وقت الكرسي" value={`${feed.report.averageChairMinutes} د`} />
+            <Stat label="متوسط وقت الكرسي" value={shortMinutes(feed.report.averageChairMinutes)} />
           </section>
 
           <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4" aria-label="الغد والمختبر">
@@ -165,18 +166,3 @@ export default function ReportPage() {
   );
 }
 
-function Stat({ label, value, tone = "calm" }: {
-  label: string; value: number | string; tone?: "calm" | "warn" | "bad";
-}) {
-  const tones = {
-    calm: "border-slate-200 bg-white text-navy-900",
-    warn: "border-amber-300 bg-amber-50 text-amber-900",
-    bad: "border-red-300 bg-red-50 text-red-700",
-  } as const;
-  return (
-    <div className={`rounded-2xl border p-3 text-center ${tones[tone]}`}>
-      <p className="text-2xl font-extrabold">{value}</p>
-      <p className="text-[11px] font-bold opacity-70">{label}</p>
-    </div>
-  );
-}

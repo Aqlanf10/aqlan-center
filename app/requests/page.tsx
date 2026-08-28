@@ -6,6 +6,7 @@ import { PERIOD_LABELS, confirmationText, type BookingRequest } from "@/lib/book
 import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { minutesSince } from "@/lib/flow";
 import { PageHeader } from "@/components/PageHeader";
+import { minutesText } from "@/lib/report";
 
 /**
  * صندوق طلبات المرضى.
@@ -22,7 +23,7 @@ const REFRESH_MS = 60_000;
 
 function hoursWaiting(createdAt: string, now: Date): string {
   const minutes = minutesSince(createdAt, now);
-  if (minutes < 60) return `منذ ${minutes} د`;
+  if (minutes < 60) return `منذ ${minutesText(minutes)}`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `منذ ${hours} ساعة`;
   return `منذ ${Math.floor(hours / 24)} يوم`;

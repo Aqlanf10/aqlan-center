@@ -15,6 +15,8 @@ import { useChairCount, useClinicName, useSetting } from "@/components/SettingsP
 import { sessionAfterWeeks } from "@/lib/schedule";
 import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { confirmationText } from "@/lib/booking";
+import { minutesText, shortMinutes } from "@/lib/report";
+import { StatCard as Stat } from "@/components/PageHeader";
 
 /**
  * شاشة واحدة، عمدًا.
@@ -233,7 +235,7 @@ export default function FlowBoard() {
         <Stat label="ينتظرون الآن" value={summary.waiting} tone={summary.waiting > 0 ? "warn" : "calm"} />
         <Stat
           label="أطول انتظار"
-          value={`${summary.longestWaitMinutes} د`}
+          value={shortMinutes(summary.longestWaitMinutes)}
           tone={summary.longestWaitMinutes >= 30 ? "bad" : summary.longestWaitMinutes >= 15 ? "warn" : "calm"}
         />
         <Stat label="كراسٍ فارغة" value={summary.freeChairs} tone={summary.freeChairs > 0 && summary.waiting > 0 ? "bad" : "calm"} />
@@ -397,7 +399,7 @@ export default function FlowBoard() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500">كرسي {chair.chair}</span>
                 {chair.occupant ? (
-                  <span className="rounded-full bg-brand-blue px-2 py-0.5 text-[11px] font-bold text-white">{chair.busyMinutes} د</span>
+                  <span className="rounded-full bg-brand-blue px-2 py-0.5 text-[11px] font-bold text-white">{shortMinutes(chair.busyMinutes)}</span>
                 ) : chair.calledFor ? (
                   <span className="text-[11px] font-bold text-brand-orange">محجوز بالنداء</span>
                 ) : (
@@ -453,7 +455,7 @@ export default function FlowBoard() {
                     <div className="min-w-[9rem] flex-1">
                       <p className="truncate text-base font-extrabold">{visit.patientName}</p>
                       <p className="text-xs text-slate-500">
-                        {sinceCall === 0 ? "نُودي الآن" : `مضى على النداء ${sinceCall} د`}
+                        {sinceCall === 0 ? "نُودي الآن" : `مضى على النداء ${minutesText(sinceCall)}`}
                       </p>
                     </div>
                     <div className="flex shrink-0 gap-1.5">
@@ -496,7 +498,7 @@ export default function FlowBoard() {
                     إلى «محمد أح…»، والاستقبال تنادي على اسم لا تراه كاملًا. */}
                 <div className="flex flex-wrap items-center gap-3">
                   <span className={`rounded-full px-2.5 py-1 text-xs font-extrabold ${LEVEL_BADGE[row.level]}`}>
-                    {row.waitedMinutes} د
+                    {shortMinutes(row.waitedMinutes)}
                   </span>
                   <div className="min-w-[9rem] flex-1">
                     {/* الاسم رابط إلى الملف حين يكون للمريض سجل: الاستقبال تحتاج
@@ -538,16 +540,3 @@ export default function FlowBoard() {
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number | string; tone: "calm" | "warn" | "bad" }) {
-  const tones = {
-    calm: "border-slate-200 bg-white text-navy-900",
-    warn: "border-amber-300 bg-amber-50 text-amber-900",
-    bad: "border-red-300 bg-red-50 text-red-700",
-  } as const;
-  return (
-    <div className={`rounded-2xl border p-3 text-center ${tones[tone]}`}>
-      <p className="text-2xl font-extrabold">{value}</p>
-      <p className="text-[11px] font-bold opacity-70">{label}</p>
-    </div>
-  );
-}

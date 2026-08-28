@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appointmentsCountText, dayReport, reportText, tomorrowLoad } from "../lib/report";
+import { appointmentsCountText, dayReport, minutesText, reportText, shortMinutes, tomorrowLoad } from "../lib/report";
 import type { Visit } from "../lib/flow";
 import type { Appointment } from "../lib/schedule";
 
@@ -126,5 +126,26 @@ describe("عدّ المواعيد بالعربية", () => {
     expect(appointmentsCountText(3)).toBe("3 مواعيد");
     expect(appointmentsCountText(10)).toBe("10 مواعيد");
     expect(appointmentsCountText(11)).toBe("11 موعدًا");
+  });
+});
+
+describe("صياغة الدقائق بالعربية", () => {
+  it("يعدّ كما تعدّ العربية لا كما تعدّ الإنجليزية", () => {
+    expect(minutesText(0)).toBe("لا انتظار");
+    expect(minutesText(1)).toBe("دقيقة");
+    expect(minutesText(2)).toBe("دقيقتان");
+    expect(minutesText(5)).toBe("5 دقائق");
+    expect(minutesText(25)).toBe("25 دقيقة");
+  });
+
+  it("يتحوّل إلى ساعات حين تطول المدة", () => {
+    expect(minutesText(60)).toBe("ساعة");
+    expect(minutesText(120)).toBe("ساعتان");
+    expect(minutesText(95)).toBe("ساعة و35 د");
+  });
+
+  it("المختصر يبقى رقمًا يصلح لبطاقة ضيّقة", () => {
+    expect(shortMinutes(0)).toBe("0 دقيقة");
+    expect(shortMinutes(95)).toBe("1:35 ساعة");
   });
 });

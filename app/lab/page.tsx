@@ -19,6 +19,7 @@ import {
   type LabOrder,
 } from "@/lib/lab";
 import { PageHeader } from "@/components/PageHeader";
+import { StatCard as Stat } from "@/components/PageHeader";
 
 /**
  * أعمال المختبر — «تراكم التراكيب» بنصّ كلام المالك.
@@ -460,16 +461,3 @@ function OrderCard({ order, today, busy, act, clinicName, clinicPhone }: {
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone: "calm" | "warn" | "bad" }) {
-  const tones = {
-    calm: "border-slate-200 bg-white text-navy-900",
-    warn: "border-amber-300 bg-amber-50 text-amber-900",
-    bad: "border-red-300 bg-red-50 text-red-700",
-  } as const;
-  return (
-    <div className={`rounded-2xl border p-3 text-center ${tones[tone]}`}>
-      <p className="text-2xl font-extrabold">{value}</p>
-      <p className="text-[11px] font-bold opacity-70">{label}</p>
-    </div>
-  );
-}

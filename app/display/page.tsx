@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useClinicName } from "@/components/SettingsProvider";
+import { Logo } from "@/components/Icon";
 
 /**
  * شاشة الصالة.
@@ -121,8 +122,13 @@ export default function DisplayScreen() {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-navy-900 text-white">
+      {/* هذه الشاشة يراها كل مريض ينتظر — وهي أطول ما يُنظر إليه في المركز. فالشعار
+          واسم المركز عليها ليسا زينة: هما ما يجعل الصالة تبدو مركزًا منظّمًا. */}
       <header className="flex items-center justify-between gap-4 border-b border-white/10 px-8 py-4">
-        <h1 className="truncate text-2xl font-extrabold text-white/90 lg:text-3xl">{clinicName}</h1>
+        <div className="flex min-w-0 items-center gap-4">
+          <Logo className="h-11 w-11 shrink-0 text-white lg:h-14 lg:w-14" />
+          <h1 className="truncate text-2xl font-bold text-white/90 lg:text-3xl">{clinicName}</h1>
+        </div>
         <div className="flex shrink-0 items-center gap-4">
           {stale ? (
             <span className="rounded-full bg-amber-400/20 px-3 py-1 text-sm font-bold text-amber-300">

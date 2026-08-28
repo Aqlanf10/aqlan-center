@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useClinicName } from "@/components/SettingsProvider";
+import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { Logo } from "@/components/Icon";
 import { PERIOD_LABELS, type PreferredPeriod } from "@/lib/booking";
 import { addDays } from "@/lib/schedule";
 
@@ -27,6 +28,10 @@ function labelFor(date: string): string {
 
 export default function BookPage() {
   const clinicName = useClinicName();
+  const doctor = useSetting("clinic.lead_doctor");
+  const doctorTitle = useSetting("clinic.lead_doctor_title");
+  const clinicPhone = useSetting("clinic.phone");
+  const clinicAddress = useSetting("clinic.address");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [reason, setReason] = useState("");
@@ -72,12 +77,20 @@ export default function BookPage() {
   if (sent) {
     return (
       <main className="mx-auto max-w-lg p-6">
-        <div className="rounded-3xl border border-emerald-200 bg-white p-8 text-center">
-          <p className="text-2xl font-extrabold text-emerald-700">وصلنا طلبكم</p>
-          <p className="mt-4 text-base leading-relaxed text-slate-600">
+        <div className="rounded-3xl border border-success-300 bg-white p-8 text-center shadow-card">
+          <Logo className="mx-auto h-14 w-14 text-navy-900" />
+          <p className="mt-4 text-2xl font-bold text-success-700">وصلنا طلبكم</p>
+          <p className="mt-3 text-base leading-relaxed text-slate-600">
             سنتصل بكم لتأكيد الوقت المناسب. الموعد لا يُعتبر مؤكدًا حتى نتواصل معكم.
           </p>
-          <p className="mt-6 text-sm text-slate-400">{clinicName}</p>
+          <div className="mt-6 border-t border-slate-100 pt-4">
+            <p className="text-sm font-bold text-navy-900">{clinicName}</p>
+            {clinicPhone ? (
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                للتواصل: <span className="ltr-nums">{clinicPhone}</span>
+              </p>
+            ) : null}
+          </div>
         </div>
       </main>
     );
@@ -85,9 +98,18 @@ export default function BookPage() {
 
   return (
     <main className="mx-auto max-w-lg p-4 pb-16">
-      <header className="mb-5 mt-2 text-center">
-        <h1 className="text-xl font-extrabold text-navy-900">طلب موعد</h1>
-        <p className="mt-1 text-xs leading-relaxed text-slate-500">{clinicName}</p>
+      {/*
+        هذه ليست شاشة داخلية — هي **وجه المركز أمام المرضى**، والرابط الذي يُرسل
+        بالواتساب ويُحفظ في هواتفهم. كانت عنوانًا وسطرًا رماديًا بلا شعار ولا اسم
+        طبيب ولا رقم هاتف: صفحةٌ لا تقول لمن فتحها إلى أين يرسل بياناته.
+      */}
+      <header className="mb-5 mt-4 text-center">
+        <Logo className="mx-auto h-14 w-14 text-navy-900" />
+        <h1 className="mt-3 text-base font-bold leading-snug text-navy-900">{clinicName}</h1>
+        <p className="mt-1 text-xs font-semibold text-slate-500">
+          {doctor}{doctorTitle ? ` — ${doctorTitle}` : ""}
+        </p>
+        <p className="mt-4 text-lg font-bold text-navy-900">طلب موعد</p>
       </header>
 
       <form onSubmit={submit} className="rounded-3xl border border-slate-200 bg-white p-5">
@@ -175,7 +197,7 @@ export default function BookPage() {
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded-xl bg-brand-orange py-3 text-base font-extrabold text-white disabled:opacity-50"
+          className="w-full rounded-xl bg-accent-500 py-3 text-base font-extrabold text-white transition-colors hover:bg-accent-600 disabled:opacity-40"
         >
           {busy ? "جارٍ الإرسال…" : "أرسل طلب الموعد"}
         </button>
@@ -183,6 +205,17 @@ export default function BookPage() {
           هذا طلب موعد. سنتصل بكم لتأكيد الوقت — الموعد غير مؤكد قبل تواصلنا معكم.
         </p>
       </form>
+
+      {/* بيانات التواصل: من يفتح الصفحة وهو مستعجل يتصل بدل أن ينتظر ردًّا. */}
+      <footer className="mt-5 text-center text-[11px] font-semibold leading-relaxed text-slate-400">
+        {clinicAddress ? <p>{clinicAddress}</p> : null}
+        {clinicPhone ? (
+          <p className="mt-0.5">
+            للتواصل المباشر:{" "}
+            <a href={`tel:${clinicPhone}`} className="font-bold text-navy-800 ltr-nums">{clinicPhone}</a>
+          </p>
+        ) : null}
+      </footer>
     </main>
   );
 }

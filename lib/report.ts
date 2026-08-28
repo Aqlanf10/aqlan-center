@@ -88,6 +88,33 @@ export function tomorrowLoad(appointments: Appointment[], date: string, chairs: 
  * مساء تُقرأ كإهمال. القاعدة: الواحد والاثنان بلا رقم، والثلاثة إلى العشرة جمعًا،
  * وما فوقها مفردًا منصوبًا.
  */
+/**
+ * الدقائق بالعربية الصحيحة.
+ *
+ * كانت تُكتب «0 د» و«12 د» — اختصارٌ لا يقرؤه أحد بلا تخمين، ويبدو على شاشة يراها
+ * الطاقم مئة مرة يوميًا كأنه رمزٌ برمجي تسرّب إلى الواجهة. والعربية لا تعدّ كما
+ * تعدّ الإنجليزية: «١ دقيقة» و«٢ دقيقتان» و«٣ دقائق» و«١١ دقيقة».
+ */
+export function minutesText(minutes: number): string {
+  const value = Math.max(0, Math.round(minutes));
+  if (value === 0) return "لا انتظار";
+  if (value === 1) return "دقيقة";
+  if (value === 2) return "دقيقتان";
+  if (value <= 10) return `${value} دقائق`;
+  if (value < 60) return `${value} دقيقة`;
+  const hours = Math.floor(value / 60);
+  const rest = value % 60;
+  const hoursText = hours === 1 ? "ساعة" : hours === 2 ? "ساعتان" : hours <= 10 ? `${hours} ساعات` : `${hours} ساعة`;
+  return rest === 0 ? hoursText : `${hoursText} و${rest} د`;
+}
+
+/** المدة كرقمٍ مختصر داخل بطاقة ضيّقة — لا يصلح للجُمل. */
+export function shortMinutes(minutes: number): string {
+  const value = Math.max(0, Math.round(minutes));
+  if (value < 60) return `${value} دقيقة`;
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")} ساعة`;
+}
+
 export function appointmentsCountText(count: number): string {
   if (count === 0) return "لا مواعيد";
   if (count === 1) return "موعد واحد";

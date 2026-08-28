@@ -68,3 +68,12 @@ table.items td.num, table.items th.num { text-align: left; white-space: nowrap; 
      أعلى الورقة افتراضيًا، وهو ما يُفسد سندًا يُعطى لمريض. */
   @page { margin: 8mm; }
 }
+
+/* شعار الترويسة: صغيرٌ عمدًا — السند ربع ورقة، والشعار الكبير يأكل مساحة البيانات. */
+.print-logo {
+  width: 11mm;
+  height: 11mm;
+  color: #0d2137;
+  margin: 0 auto 1.5mm;
+  display: block;
+}
