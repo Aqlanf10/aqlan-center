@@ -28,7 +28,8 @@ export type AuditAction =
   | "user.create" | "user.update" | "user.disable"
   | "backup.download" | "export.download"
   | "document.reprint"
-  | "chart.record" | "visit.sign" | "visit.addendum";
+  | "chart.record" | "visit.sign" | "visit.addendum"
+  | "document.upload" | "document.remove";
 
 export const AUDIT_LABEL: Record<AuditAction, string> = {
   "invoice.create": "إنشاء فاتورة",
@@ -58,6 +59,8 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "chart.record": "تثبيت حالة سن",
   "visit.sign": "توقيع زيارة",
   "visit.addendum": "ملحق على زيارة",
+  "document.upload": "رفع مستند",
+  "document.remove": "إخفاء مستند",
 };
 
 /**

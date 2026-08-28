@@ -426,6 +426,34 @@ export function ensureSchema(): Promise<void> {
       -- تُخفض: خفضها يعيد الإجمالي إلى رقمٍ يدويٍّ لا سند له.
       ALTER TABLE treatment_plans ADD COLUMN IF NOT EXISTS total_from_items BOOLEAN NOT NULL DEFAULT FALSE;
 
+      -- الأشعة والمستندات: **الوصف هنا والملفّ على القرص** — الدستور، المحظور ٨.
+      -- صورةٌ بانورامية تُقاس بالميغابايتات، ومئةُ مريضٍ شهريًّا تعني قاعدةً تنتفخ
+      -- حتى تصير كل نسخةٍ احتياطية عمليةً تستغرق ساعة — فلا تُؤخذ.
+      -- وبصمة المحتوى هي اسم الملف على القرص: لا تصادم، ولا تكرار، ولا مسارٌ يُخمَّن.
+      CREATE TABLE IF NOT EXISTS patient_documents (
+        id           SERIAL PRIMARY KEY,
+        patient_id   INTEGER NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        visit_id     INTEGER REFERENCES visits(id),
+        kind         TEXT    NOT NULL DEFAULT 'other',
+        title        TEXT    NOT NULL,
+        mime_type    TEXT    NOT NULL,
+        size_bytes   BIGINT  NOT NULL,
+        sha256       TEXT    NOT NULL,
+        storage_key  TEXT    NOT NULL,
+        note         TEXT,
+        taken_on     DATE,
+        uploaded_by  TEXT    NOT NULL,
+        uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        -- الحذف **إخفاءٌ موثَّق** لا محو: السجل الطبي شهادة، ومن يمحو بصمت يمكن
+        -- أن يمحو بعد شكوى. والملفّ نفسه يبقى على القرص لأن صفًّا آخر قد يشير إليه.
+        removed_at   TIMESTAMPTZ,
+        removed_by   TEXT,
+        removed_note TEXT
+      );
+      CREATE INDEX IF NOT EXISTS patient_documents_patient_idx
+        ON patient_documents (patient_id, uploaded_at DESC);
+      CREATE INDEX IF NOT EXISTS patient_documents_visit_idx ON patient_documents (visit_id);
+
       -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
       ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
       CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
@@ -5101,4 +5129,169 @@ export async function recordPlanInstallment(input: {
   } finally {
     client.release();
   }
+}
+
+// ─── الأشعة والمستندات ───────────────────────────────────────────────────────
+
+import { type DocumentKind } from "./storage";
+
+/**
+ * وصفُ ملفٍّ في سجل المريض — والملفّ نفسه على القرص لا هنا.
+ */
+export interface PatientDocument {
+  id: number;
+  patientId: number;
+  visitId: number | null;
+  kind: DocumentKind;
+  title: string;
+  mimeType: string;
+  sizeBytes: number;
+  isImage: boolean;
+  note: string | null;
+  takenOn: string | null;
+  uploadedBy: string;
+  uploadedAt: string;
+  removedAt: string | null;
+  removedBy: string | null;
+  removedNote: string | null;
+}
+
+interface DocumentRow {
+  id: number; patient_id: number; visit_id: number | null; kind: string; title: string;
+  mime_type: string; size_bytes: string; note: string | null; taken_on: Date | null;
+  uploaded_by: string; uploaded_at: Date; removed_at: Date | null;
+  removed_by: string | null; removed_note: string | null;
+}
+
+const toDocument = (row: DocumentRow): PatientDocument => ({
+  id: row.id,
+  patientId: row.patient_id,
+  visitId: row.visit_id,
+  kind: row.kind as DocumentKind,
+  title: row.title,
+  mimeType: row.mime_type,
+  sizeBytes: toMinor(row.size_bytes),
+  isImage: row.mime_type.startsWith("image/"),
+  note: row.note,
+  takenOn: row.taken_on ? dateText(row.taken_on) : null,
+  uploadedBy: row.uploaded_by,
+  uploadedAt: row.uploaded_at.toISOString(),
+  removedAt: row.removed_at ? row.removed_at.toISOString() : null,
+  removedBy: row.removed_by,
+  removedNote: row.removed_note,
+});
+
+const DOCUMENT_COLUMNS = `id, patient_id, visit_id, kind, title, mime_type, size_bytes,
+       note, taken_on, uploaded_by, uploaded_at, removed_at, removed_by, removed_note`;
+
+/**
+ * ملفّات المريض.
+ *
+ * المخفيّة تُعرض للمدير وحده ومعلَّمةً بذلك: إخفاءُ صورةٍ قرارٌ يُراجَع، وإخفاؤها
+ * عن المراجِع نفسه يجعل الإخفاء محوًا.
+ */
+export async function listPatientDocuments(
+  patientId: number,
+  includeRemoved = false,
+): Promise<PatientDocument[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<DocumentRow>(
+    `SELECT ${DOCUMENT_COLUMNS} FROM patient_documents
+      WHERE patient_id = $1 ${includeRemoved ? "" : "AND removed_at IS NULL"}
+      ORDER BY COALESCE(taken_on, uploaded_at::date) DESC, id DESC`,
+    [patientId],
+  );
+  return rows.map(toDocument);
+}
+
+/** الوصف مع مفتاح التخزين — للتنزيل وحده، ولا يخرج المفتاح إلى المتصفّح أبدًا. */
+export async function getDocumentForDownload(id: number): Promise<
+  { document: PatientDocument; storageKey: string } | null
+> {
+  await ensureSchema();
+  const { rows } = await getPool().query<DocumentRow & { storage_key: string }>(
+    `SELECT ${DOCUMENT_COLUMNS}, storage_key FROM patient_documents WHERE id = $1`,
+    [id],
+  );
+  if (!rows[0]) return null;
+  return { document: toDocument(rows[0]), storageKey: rows[0].storage_key };
+}
+
+export async function recordDocument(input: {
+  patientId: number;
+  visitId: number | null;
+  kind: DocumentKind;
+  title: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  storageKey: string;
+  note: string | null;
+  takenOn: string | null;
+  uploadedBy: string;
+}): Promise<PatientDocument> {
+  await ensureSchema();
+  const { rows } = await getPool().query<DocumentRow>(
+    `INSERT INTO patient_documents
+       (patient_id, visit_id, kind, title, mime_type, size_bytes, sha256, storage_key,
+        note, taken_on, uploaded_by)
+     VALUES ($1, $2::int, $3, $4, $5, $6, $7, $8, $9::text, $10::date, $11)
+     RETURNING ${DOCUMENT_COLUMNS}`,
+    [
+      input.patientId, input.visitId, input.kind, input.title.trim(), input.mimeType,
+      input.sizeBytes, input.sha256, input.storageKey,
+      input.note?.trim() || null, input.takenOn, input.uploadedBy,
+    ],
+  );
+  return toDocument(rows[0]);
+}
+
+/**
+ * إخفاء مستند — لا محوه.
+ *
+ * السجل الطبي شهادة، ومن يمحو بصمت يمكن أن يمحو بعد شكوى. فيبقى الصف ويبقى
+ * الملف، ويُسجَّل من أخفاه ومتى **ولماذا** — والسبب إلزامي: «أُخفي بلا سبب» ليس
+ * تفسيرًا يُقرأ بعد سنة.
+ */
+export async function removeDocument(input: {
+  id: number; actor: string; note: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  const reason = input.note.trim();
+  if (reason.length < 3) return { ok: false, message: "اكتب سبب الإخفاء." };
+  const { rowCount } = await getPool().query(
+    `UPDATE patient_documents SET removed_at = NOW(), removed_by = $2, removed_note = $3
+      WHERE id = $1 AND removed_at IS NULL`,
+    [input.id, input.actor, reason],
+  );
+  if ((rowCount ?? 0) === 0) return { ok: false, message: "المستند غير موجود أو مخفيٌّ سلفًا." };
+  return { ok: true };
+}
+
+/** كل المستندات القائمة مع ما يكفي لتسميتها في الأرشيف بلا البرنامج. */
+export async function documentsForArchive(): Promise<{
+  id: number; patientNumber: string; patientName: string; kind: string;
+  title: string; takenOn: string | null; uploadedAt: Date; storageKey: string;
+}[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    id: number; patient_number: string; full_name: string; kind: string;
+    title: string; taken_on: Date | null; uploaded_at: Date; storage_key: string;
+  }>(
+    `SELECT d.id, p.patient_number, p.full_name, d.kind, d.title, d.taken_on,
+            d.uploaded_at, d.storage_key
+       FROM patient_documents d JOIN patients p ON p.id = d.patient_id
+      WHERE d.removed_at IS NULL
+      ORDER BY p.patient_number, d.id`,
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    patientNumber: row.patient_number,
+    patientName: row.full_name,
+    kind: row.kind,
+    title: row.title,
+    takenOn: row.taken_on ? dateText(row.taken_on) : null,
+    uploadedAt: row.uploaded_at,
+    storageKey: row.storage_key,
+  }));
 }

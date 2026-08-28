@@ -19,7 +19,9 @@
     "journey:visit": "node scripts/journeys/visit.mjs",
     "journey:plan": "node scripts/journeys/plan.mjs",
     "verify:identity": "tsx scripts/verify-identity.mjs",
-    "journey:identity": "node scripts/journeys/identity.mjs"
+    "journey:identity": "node scripts/journeys/identity.mjs",
+    "verify:documents": "tsx scripts/verify-documents.mjs",
+    "journey:documents": "node scripts/journeys/documents.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
