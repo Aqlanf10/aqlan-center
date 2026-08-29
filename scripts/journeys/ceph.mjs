@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { loadChromium, executablePath } from "./playwright.mjs";
+import { login } from "./login.mjs";
+import { createPatient } from "./patient.mjs";
 import { makePng } from "./png.mjs";
 
 /**
@@ -16,6 +18,7 @@ const OUT = process.argv[2] ?? ".";
 const BASE = process.env.JOURNEY_BASE ?? "http://127.0.0.1:3000";
 const USER = process.env.JOURNEY_USER ?? "shots";
 const PASS = process.env.JOURNEY_PASS ?? "shots-only-local-1234";
+const DOC_LABEL = "سيفالومتري جانبي";
 const chromium = await loadChromium();
 
 // صورة **مربّعة**: النسبة ١، فتوافق الإحداثيات التي حُسبت عليها القيم المعيارية.
@@ -35,33 +38,16 @@ const page = await (await b.newContext({ viewport: { width: 1400, height: 1000 }
 page.on("pageerror", (e) => console.log("[خطأ صفحة]", String(e).slice(0, 160)));
 const type = async (l, t) => { await l.click(); await l.pressSequentially(t, { delay: 16 }); };
 
-await page.goto(BASE + "/login", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await type(page.locator("#username"), USER);
-await type(page.locator("#password"), PASS);
-await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
-await page.click('button[type="submit"]');
-await page.waitForURL((u) => !u.pathname.includes("login"), { timeout: 15000 });
+await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4000);
 
 const name = "مريض السيفالو " + Date.now().toString().slice(-5);
-await page.goto(BASE + "/patients", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await page.getByRole("button", { name: "+ مريض جديد" }).click();
-await page.waitForTimeout(1200);
-await type(page.getByLabel("الاسم الكامل"), name);
-await page.waitForFunction(() => {
-  const x = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("احفظ وافتح الملف"));
-  return x && !x.disabled;
-});
-await page.getByRole("button", { name: /احفظ وافتح الملف/ }).click();
-await page.waitForURL(/\/patients\/\d+/, { timeout: 20000 });
-await page.waitForTimeout(3000);
+await createPatient(page, { name, phone: null, base: BASE });
 console.log("1) أُنشئ ملف المريض");
 
 await page.getByRole("button", { name: "الأشعة" }).click();
 await page.waitForTimeout(2000);
-await type(page.getByLabel("وصف المستند"), "سيفالومتري جانبي");
+await type(page.getByLabel("وصف المستند"), DOC_LABEL);
 await page.getByLabel("ملف الأشعة").setInputFiles({
   name: "ceph.png", mimeType: "image/png", buffer: makePng(320, 320),
 });
@@ -74,7 +60,7 @@ await page.waitForTimeout(2500);
 const opened = await page.locator("body").innerText();
 console.log("3) فُتح التتبّع:", /النقطة التالية/.test(opened) ? "✓" : "لم يُفتح");
 console.log("   ويقول ما ينقص:", /ينقص/.test(opened) ? "✓" : "صامت");
-console.log("   ويقول حدوده:", /لم تُضف بعد/.test(opened) ? "✓" : "لا يذكرها");
+console.log("   ويذكر الدليل المعتمد:", /ADP-LM-LAT/.test(opened) ? "✓" : "لا يذكره");
 
 // ٤) تُنقر النقاط الأربع بنِسبها على الصورة نفسها
 // داخل نافذة التتبّع لا في شبكة المصغّرات خلفها: الاسم نفسه يطابق الصورتين،
@@ -114,6 +100,29 @@ await page.getByRole("button", { name: "تتبّع سيفالومتري" }).clic
 await page.waitForTimeout(3000);
 const reopened = await page.locator("body").innerText();
 console.log("8) وعاد بعد الفتح من جديد:",
-  /4 من 18 نقطة/.test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+  /4 من 24 نقطة/.test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+
+// ٩) اللغة تُبدَّل بزرّ واحد — والرموز لا تُترجم
+await tracer.getByRole("button", { name: "EN" }).click();
+await page.waitForTimeout(1200);
+const english = await tracer.innerText();
+console.log("9) بالإنجليزية:", /Cephalometric tracing/.test(english) ? "✓" : "لم تُبدَّل");
+console.log("   والتصنيف:", /Class I/.test(english) ? "Class I ✓" : "لم يُترجم");
+console.log("   والرموز كما هي:", /SNA/.test(english) && /\bS\b/.test(english) ? "✓" : "تُرجمت");
+console.log("   والاتجاه LTR:", (await tracer.getAttribute("dir")) === "ltr" ? "✓" : "بقي RTL");
+// يُستثنى اثنان لا ثالث لهما: وصفُ المستند نصٌّ كتبه المستخدم لا ترجمةً
+// للواجهة، وزرّ اللغة نفسه يجب أن يبقى «ع» — فهو العرضُ بالعودة، ولو تُرجم
+// لما عرف من لا يقرأ الإنجليزية كيف يرجع.
+const toggle = (await tracer.getByRole("button", { name: "العربية" }).innerText()).trim();
+const leftover = english.split("\n")
+  .map((line) => line.replace(DOC_LABEL, "").trim())
+  .filter((line) => line !== toggle && /[\u0600-\u06FF]/.test(line));
+console.log("   وزرّ العودة بالعربية:", toggle === "ع" ? "✓" : "صار «" + toggle + "» ✗");
+console.log("   ولا نصّ عربي متبقٍّ:", leftover.length === 0 ? "✓" : "بقي: " + leftover.join(" | ") + " ✗");
+await page.screenshot({ path: OUT + "/ceph-3-english.png", fullPage: false });
+
+await tracer.getByRole("button", { name: "ع" }).click();
+await page.waitForTimeout(1000);
+console.log("   وتعود للعربية:", (await tracer.getAttribute("dir")) === "rtl" ? "✓" : "بقيت LTR");
 await page.screenshot({ path: OUT + "/ceph-2-reopened.png", fullPage: false });
 await b.close();

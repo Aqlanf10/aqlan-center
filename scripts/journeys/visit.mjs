@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { loadChromium, executablePath } from "./playwright.mjs";
+import { login } from "./login.mjs";
+import { callAndSeat, openChart } from "./chair.mjs";
 
 /**
  * رحلة الزيارة — من باب العيادة إلى كشف الحساب.
@@ -23,13 +25,7 @@ const page = await ctx.newPage();
 page.on("pageerror", (e) => console.log("[خطأ صفحة]", String(e).slice(0, 140)));
 const type = async (locator, text) => { await locator.click(); await locator.pressSequentially(text, { delay: 18 }); };
 
-await page.goto(BASE + "/login", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await type(page.locator("#username"), USER);
-await type(page.locator("#password"), PASS);
-await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
-await page.click('button[type="submit"]');
-await page.waitForURL((u) => !u.pathname.includes("login"), { timeout: 15000 });
+await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4500);
 
 const name = "مريض الرحلة " + Date.now().toString().slice(-5);
@@ -38,15 +34,10 @@ await page.getByRole("button", { name: "وصل", exact: true }).click();
 await page.waitForTimeout(1800);
 console.log("1) وصل المريض");
 
-await page.getByRole("button", { name: /نادِ · كرسي 1/ }).first().click();
-await page.waitForTimeout(1800);
-await page.getByRole("button", { name: "دخل الكرسي" }).first().click();
-await page.waitForTimeout(2000);
+await callAndSeat(page, name);
 console.log("2) نُودي ودخل الكرسي");
 
-await page.getByRole("link", { name: "وثّق وأغلق" }).first().click();
-await page.waitForURL(/\/visits\/\d+/, { timeout: 15000 });
-await page.waitForTimeout(2500);
+await openChart(page, name);
 await page.screenshot({ path: OUT + "/visit-1-open.png", fullPage: true });
 console.log("3) فُتحت شاشة الزيارة");
 

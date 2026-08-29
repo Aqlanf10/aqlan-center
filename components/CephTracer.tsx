@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  LANDMARKS, SKELETAL_LABEL, analyse, formatMeasurement,
-  type Calibration, type LandmarkCode, type Tracing,
+  GROUP_LABEL, LANDMARKS, LANDMARK_BY_CODE, LANDMARK_MANUAL, SKELETAL_LABEL, analyse, formatMeasurement, say,
+  type Calibration, type Lang, type LandmarkCode, type Tracing,
 } from "@/lib/ceph";
 
 /**
@@ -30,11 +30,44 @@ const VERDICT_STYLE: Record<string, string> = {
   high: "text-amber-700",
 };
 
-const VERDICT_LABEL: Record<string, string> = {
-  normal: "ضمن المعيار",
-  low: "أقل من المعيار",
-  high: "أعلى من المعيار",
-};
+/**
+ * الشاشة بلغتين، وتُبدَّل بزرّ واحد.
+ *
+ * التقويم علمٌ مصطلحاته إنجليزية: SNA وIMPA تُكتبان كما هما في كل مرجع وكل مؤتمر.
+ * والعمل اليومي في المركز عربي. فمن يقرأ التحليل قد يكون الطبيب نفسه، أو زميلًا
+ * يُحال إليه المريض، أو مراجعًا لا يقرأ العربية — والاختيار له لا للبرنامج.
+ *
+ * ورموز النقاط (S وN وGo) لا تُترجم في الحالين: هي مصطلحٌ عالمي، وترجمتُها تقطع
+ * صلة الطبيب بكل مرجعٍ قرأه.
+ */
+const T = {
+  title: { ar: "تتبّع سيفالومتري", en: "Cephalometric tracing" },
+  points: { ar: "نقطة", en: "points" },
+  of: { ar: "من", en: "of" },
+  saved: { ar: "محفوظ", en: "saved" },
+  unsaved: { ar: "غير محفوظ", en: "unsaved" },
+  save: { ar: "احفظ التتبّع", en: "Save tracing" },
+  saving: { ar: "جارٍ الحفظ…", en: "Saving…" },
+  close: { ar: "إغلاق", en: "Close" },
+  next: { ar: "النقطة التالية — انقر موضعها", en: "Next landmark — click its position" },
+  analysis: { ar: "التحليل — يُحسب من النقاط لحظةً بلحظة", en: "Analysis — computed live from the landmarks" },
+  missing: { ar: "ينقص", en: "Missing" },
+  markToStart: { ar: "علّم النقاط المطلوبة ليظهر التحليل.", en: "Mark the required landmarks to see the analysis." },
+  norm: { ar: "المعيار", en: "norm" },
+  manual: { ar: "الدليل المعتمد", en: "Approved manual" },
+  verdict: {
+    normal: { ar: "ضمن المعيار", en: "within norm" },
+    low: { ar: "أقل من المعيار", en: "below norm" },
+    high: { ar: "أعلى من المعيار", en: "above norm" },
+  },
+  note: {
+    ar: "تعريفات النقاط منقولة من الدليل السريري المعتمد والموقَّع. وأيّ تعديل عليها يستلزم إصدارًا جديدًا منه لا تغييرًا في البرنامج.",
+    en: "Landmark definitions are taken from the approved and signed clinical manual. Any change requires a new manual version, not a code change.",
+  },
+  // ورسائل العطل بلغتين كذلك: من يقرأ الشاشة بالإنجليزية يقرأ عطلها بها.
+  saveFailed: { ar: "تعذّر الحفظ.", en: "Could not save." },
+  offline: { ar: "تعذّر الاتصال بالخادم.", en: "Could not reach the server." },
+} as const;
 
 export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
   const [points, setPoints] = useState<Tracing>({});
@@ -45,7 +78,9 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [lang, setLang] = useState<Lang>("ar");
   const imageRef = useRef<HTMLImageElement>(null);
+  const rtl = lang === "ar";
 
   useEffect(() => {
     void (async () => {
@@ -93,41 +128,49 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
         body: JSON.stringify({ points, calibration }),
       });
       const payload = await response.json().catch(() => null);
-      if (!response.ok) { setError(payload?.message ?? "تعذّر الحفظ."); return; }
+      if (!response.ok) { setError(payload?.message ?? say(T.saveFailed, lang)); return; }
       setSavedAt(new Date().toISOString());
       setDirty(false);
     } catch {
-      setError("تعذّر الاتصال بالخادم.");
+      setError(say(T.offline, lang));
     } finally {
       setSaving(false);
     }
   };
 
   const placed = LANDMARKS.filter((item) => points[item.code]).length;
+  const current = LANDMARK_BY_CODE.get(active)!;
 
   // الخلفية معتمةٌ تمامًا لا شبه شفافة: ما خلفها يظهر من تحتها فيبدو كأنه خللٌ في
   // الرسم، والتتبّع عملُ دقّةٍ لا يحتمل تشويشًا بصريًّا خلف الصورة.
   return (
     <div role="dialog" aria-label={`تتبّع سيفالومتري — ${title}`}
+      dir={rtl ? "rtl" : "ltr"}
       className="fixed inset-0 z-50 flex flex-col bg-slate-900 p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-extrabold text-white">تتبّع سيفالومتري — {title}</p>
+          <p className="truncate text-sm font-extrabold text-white">{say(T.title, lang)} — {title}</p>
           <p className="text-[11px] text-slate-300">
-            {placed} من {LANDMARKS.length} نقطة
-            {savedAt ? ` · محفوظ` : dirty ? " · غير محفوظ" : ""}
+            {placed} {say(T.of, lang)} {LANDMARKS.length} {say(T.points, lang)}
+            {savedAt ? ` · ${say(T.saved, lang)}` : dirty ? ` · ${say(T.unsaved, lang)}` : ""}
           </p>
         </div>
         <div className="flex gap-2">
+          {/* زرّ اللغة: حرفان لا قائمة — التبديل يتكرّر، والقائمة تكلّف نقرتين. */}
+          <button onClick={() => setLang((current) => (current === "ar" ? "en" : "ar"))}
+            aria-label={lang === "ar" ? "English" : "العربية"}
+            className="rounded-lg border border-slate-500 px-3 py-1.5 text-xs font-bold text-slate-200">
+            {lang === "ar" ? "EN" : "ع"}
+          </button>
           {canWrite ? (
             <button onClick={() => void save()} disabled={saving || !dirty}
               className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-extrabold text-white disabled:opacity-40">
-              {saving ? "جارٍ الحفظ…" : "احفظ التتبّع"}
+              {saving ? say(T.saving, lang) : say(T.save, lang)}
             </button>
           ) : null}
           <button onClick={onClose}
             className="rounded-lg border border-slate-500 px-4 py-1.5 text-xs font-bold text-slate-200">
-            إغلاق
+            {say(T.close, lang)}
           </button>
         </div>
       </div>
@@ -180,17 +223,19 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
 
         <div className="flex w-full shrink-0 flex-col gap-2 overflow-auto lg:w-80">
           <div className="rounded-xl bg-white p-3">
-            <p className="mb-1.5 text-[11px] font-bold text-slate-500">النقطة التالية — انقر موضعها</p>
+            <p className="mb-1.5 text-[11px] font-bold text-slate-500">{say(T.next, lang)}</p>
             <p className="mb-2 text-sm font-extrabold text-navy-900">
-              {active} · {LANDMARKS.find((i) => i.code === active)?.name}
+              {/* الرمز لا يُترجم: مصطلحٌ عالمي، وترجمتُه تقطع صلة الطبيب بمراجعه. */}
+              <span dir="ltr">{active}</span> · {say(current.name, lang)}
             </p>
-            <p className="mb-2 text-[11px] leading-5 text-slate-500">
-              {LANDMARKS.find((i) => i.code === active)?.hint}
+            <p className="mb-2 text-[11px] leading-5 text-slate-500">{say(current.hint, lang)}</p>
+            <p className="mb-2 text-[10px] font-bold text-slate-400">
+              {say(GROUP_LABEL[current.group], lang)}
             </p>
             <div className="flex flex-wrap gap-1">
               {LANDMARKS.map((item) => (
                 <button key={item.code} onClick={() => setActive(item.code)}
-                  title={item.name}
+                  title={say(item.name, lang)}
                   className={`rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${
                     item.code === active ? "border-navy-800 bg-navy-800 text-white"
                       : points[item.code] ? "border-emerald-300 bg-emerald-50 text-emerald-800"
@@ -204,15 +249,15 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
           </div>
 
           <div className="rounded-xl bg-white p-3">
-            <p className="mb-2 text-[11px] font-bold text-slate-500">التحليل — يُحسب من النقاط لحظةً بلحظة</p>
+            <p className="mb-2 text-[11px] font-bold text-slate-500">{say(T.analysis, lang)}</p>
             {analysis.missing.length > 0 ? (
               <p className="mb-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-900">
-                ينقص: {analysis.missing.join("، ")}
+                {say(T.missing, lang)}: <span dir="ltr">{analysis.missing.join(" · ")}</span>
               </p>
             ) : null}
 
             {analysis.measurements.length === 0 ? (
-              <p className="text-xs text-slate-400">علّم النقاط المطلوبة ليظهر التحليل.</p>
+              <p className="text-xs text-slate-400">{say(T.markToStart, lang)}</p>
             ) : (
               <ul className="space-y-1.5">
                 {analysis.measurements.map((item) => (
@@ -224,8 +269,11 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-500">
-                      {item.meaning} · المعيار {item.norm.mean}±{item.norm.tolerance} ·{" "}
-                      <span className={VERDICT_STYLE[item.verdict]}>{VERDICT_LABEL[item.verdict]}</span>
+                      {say(item.meaning, lang)} · {say(T.norm, lang)} {item.norm.mean}±{item.norm.tolerance}{" "}
+                      ({item.norm.source}) ·{" "}
+                      <span className={VERDICT_STYLE[item.verdict]}>
+                        {say(T.verdict[item.verdict], lang)}
+                      </span>
                     </p>
                   </li>
                 ))}
@@ -234,7 +282,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
 
             {analysis.skeletal ? (
               <p className="mt-2 rounded-lg bg-navy-50 px-2.5 py-2 text-xs font-extrabold text-navy-900">
-                {SKELETAL_LABEL[analysis.skeletal.klass]}
+                {say(SKELETAL_LABEL[analysis.skeletal.klass], lang)}
               </p>
             ) : null}
           </div>
@@ -248,10 +296,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
             * حقيقية. وبرنامجٌ يصمت عن حدوده أخطر من برنامجٍ ناقص.
             */}
           <p className="rounded-xl bg-slate-800 px-3 py-2 text-[10px] leading-5 text-slate-300">
-            هذه المرحلة الأولى: زوايا النقاط الثلاث التي لا التباس في تعريفها. وزوايا
-            المستويات (SN-MP، FMA، IMPA، الزاوية بين القاطعين) لم تُضف بعد — اصطلاح
-            قياسها يختلف بين المدارس، وسيُثبَّت بعد مقابلته بمخرجات WebCeph على حالة
-            حقيقية. علّم بقية النقاط الآن فهي تُحفظ وتُستعمل حين تُضاف.
+            {say(T.note, lang)} <span dir="ltr">{LANDMARK_MANUAL}</span>
           </p>
         </div>
       </div>

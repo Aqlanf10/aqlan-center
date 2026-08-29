@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { loadChromium, executablePath } from "./playwright.mjs";
+import { login } from "./login.mjs";
+import { callAndSeat, openChart } from "./chair.mjs";
+import { createPatient } from "./patient.mjs";
 
 /**
  * رحلة خطة العلاج — من الاتفاق إلى تنفيذه.
@@ -24,32 +27,14 @@ const page = await ctx.newPage();
 page.on("pageerror", (e) => console.log("[خطأ صفحة]", String(e).slice(0, 160)));
 const type = async (locator, text) => { await locator.click(); await locator.pressSequentially(text, { delay: 16 }); };
 
-await page.goto(BASE + "/login", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await type(page.locator("#username"), USER);
-await type(page.locator("#password"), PASS);
-await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
-await page.click('button[type="submit"]');
-await page.waitForURL((u) => !u.pathname.includes("login"), { timeout: 15000 });
+await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4000);
 
 // ١) مريضٌ مسجَّل — الخطة اتفاقٌ على ملف، لا على اسمٍ عابر
 const stamp = Date.now().toString().slice(-6);
 const name = "مريض الخطة " + stamp.slice(-5);
 const phone = "77" + stamp.padStart(7, "0");
-await page.goto(BASE + "/patients", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await page.getByRole("button", { name: "+ مريض جديد" }).click();
-await page.waitForTimeout(1200);
-await type(page.getByLabel("الاسم الكامل"), name);
-await type(page.getByLabel("رقم الجوال"), phone);
-await page.waitForFunction(() => {
-  const button = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("احفظ وافتح الملف"));
-  return button && !button.disabled;
-});
-await page.getByRole("button", { name: /احفظ وافتح الملف/ }).click();
-await page.waitForURL(/\/patients\/\d+/, { timeout: 20000 });
-await page.waitForTimeout(3000);
+await createPatient(page, { name, phone: phone, base: BASE });
 console.log("1) أُنشئ ملف المريض");
 console.log("2) فُتح ملف المريض");
 
@@ -108,13 +93,8 @@ await type(page.getByLabel("اسم المريض"), name);
 await type(page.getByLabel("هاتف المريض"), phone);
 await page.getByRole("button", { name: "وصل", exact: true }).click();
 await page.waitForTimeout(2000);
-await page.getByRole("button", { name: /نادِ · كرسي 1/ }).first().click();
-await page.waitForTimeout(1800);
-await page.getByRole("button", { name: "دخل الكرسي" }).first().click();
-await page.waitForTimeout(2000);
-await page.getByRole("link", { name: "وثّق وأغلق" }).first().click();
-await page.waitForURL(/\/visits\/\d+/, { timeout: 15000 });
-await page.waitForTimeout(2500);
+await callAndSeat(page, name);
+await openChart(page, name);
 
 await type(page.getByLabel("التشخيص"), "تسوّس الرحى الأولى");
 await type(page.getByLabel("ما نُفّذ"), "حشوة ضوئية");

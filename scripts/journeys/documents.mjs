@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { loadChromium, executablePath } from "./playwright.mjs";
+import { login } from "./login.mjs";
+import { createPatient } from "./patient.mjs";
 
 /**
  * رحلة الأشعة — من جهاز الاستقبال إلى ملف المريض.
@@ -30,28 +32,11 @@ const page = await ctx.newPage();
 page.on("pageerror", (e) => console.log("[خطأ صفحة]", String(e).slice(0, 160)));
 const type = async (locator, text) => { await locator.click(); await locator.pressSequentially(text, { delay: 16 }); };
 
-await page.goto(BASE + "/login", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await type(page.locator("#username"), USER);
-await type(page.locator("#password"), PASS);
-await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
-await page.click('button[type="submit"]');
-await page.waitForURL((u) => !u.pathname.includes("login"), { timeout: 15000 });
+await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4000);
 
 const name = "مريض الأشعة " + Date.now().toString().slice(-5);
-await page.goto(BASE + "/patients", { waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-await page.getByRole("button", { name: "+ مريض جديد" }).click();
-await page.waitForTimeout(1200);
-await type(page.getByLabel("الاسم الكامل"), name);
-await page.waitForFunction(() => {
-  const button = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("احفظ وافتح الملف"));
-  return button && !button.disabled;
-});
-await page.getByRole("button", { name: /احفظ وافتح الملف/ }).click();
-await page.waitForURL(/\/patients\/\d+/, { timeout: 20000 });
-await page.waitForTimeout(3000);
+await createPatient(page, { name, phone: null, base: BASE });
 console.log("1) أُنشئ ملف المريض");
 
 await page.getByRole("button", { name: "الأشعة" }).click();

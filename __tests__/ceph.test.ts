@@ -5,6 +5,10 @@ import {
   distanceBetween,
   formatMeasurement,
   isLandmarkCode,
+  lineAngle,
+  say,
+  LANDMARKS,
+  SKELETAL_LABEL,
   millimetresPerUnit,
   skeletalClass,
   verdictFor,
@@ -72,6 +76,13 @@ describe("التحليل على وجهٍ سويّ", () => {
   it("والتصنيف الأول", () => {
     expect(result.skeletal?.klass).toBe("I");
     expect(result.missing).toEqual([]);
+  });
+
+  it("والنصوص بلغتين", () => {
+    const sna = result.measurements.find((m) => m.key === "SNA")!;
+    expect(say(sna.meaning, "ar")).toContain("الفك العلوي");
+    expect(say(sna.meaning, "en")).toContain("Maxillary");
+    expect(say(SKELETAL_LABEL.I, "en")).toContain("Class I");
   });
 
   it("والقياس يذكر نقاطه — فيُعرف ما يُراجَع", () => {
@@ -155,5 +166,135 @@ describe("الحكم والعرض", () => {
   it("ورمز النقطة قائمة مغلقة", () => {
     expect(isLandmarkCode("S")).toBe(true);
     expect(isLandmarkCode("XX")).toBe(false);
+  });
+});
+
+
+/*
+ * زوايا المستويات — الاصطلاح مثبَّتٌ بالبناء لا بالذاكرة.
+ *
+ * يُبنى وجهٌ سويّ في إطار فرانكفورت من قيمٍ معيارية، ثم يُختبر أمران:
+ * أوّلهما أن يعيد كل قياس معياره، وثانيهما — وهو الأهم — أن **تتحقق علاقتان
+ * متقاطعتان** لا تصحّان إلا إن صحّ الاصطلاح كلّه معًا. ثم يُختبر اتجاه التغيّر،
+ * وهو الحارس الذي لا يمرّ منه اصطلاحٌ مقلوب أبدًا.
+ */
+const rad = (deg: number) => (deg * Math.PI) / 180;
+
+// إطار فرانكفورت أفقي، ثم يُقلب المحور الرأسي إلى اصطلاح الصورة (y نزولًا).
+const frame = (x: number, y: number) => ({ x: x / 200, y: (100 - y) / 200 });
+const along = (from: { x: number; y: number }, deg: number, len: number) =>
+  ({ x: from.x + Math.cos(rad(deg)) * len, y: from.y + Math.sin(rad(deg)) * len });
+
+const fPo = { x: 0, y: 0 }, fOr = { x: 75, y: 0 };
+const fS = { x: 20, y: 20 };
+const fN = along(fS, 7, 71);                        // SN بميل ٧° عن فرانكفورت
+const dirNS = (Math.atan2(fS.y - fN.y, fS.x - fN.x) * 180) / Math.PI;
+const fA = along(fN, dirNS + 82, 50);               // SNA ٨٢
+const fB = along(fN, dirNS + 80, 75);               // SNB ٨٠
+const fGo = { x: 15, y: -45 }, fMe = { x: 85, y: -78 };
+// Gn على الذقن بين Pogonion وMenton — أمامه بمليمتر وعلى ارتفاعه تقريبًا، كما
+// يقول الدليل. ووضعُه أعلى من Menton بستّة مليمترات (كما جرّبتُ أولًا) يجعل
+// مستوى Go-Gn أضحل من مستوى Go-Me فتخرج SN-GoGn أقل من معيارها — وهو خطأٌ في
+// الوجه المصنوع لا في الصيغة، ولولا اشتراط المعيار لمرّ.
+const fGn = { x: 86, y: -78.1 };
+const fU1A = { x: 88, y: -10 }, fU1T = along(fU1A, -70, 25);
+const fL1A = { x: 80, y: -48 }, fL1T = along(fL1A, 64.8, 25);
+
+const FACE: Tracing = {
+  S: frame(fS.x, fS.y), N: frame(fN.x, fN.y), A: frame(fA.x, fA.y), B: frame(fB.x, fB.y),
+  Po: frame(fPo.x, fPo.y), Or: frame(fOr.x, fOr.y),
+  Go: frame(fGo.x, fGo.y), Me: frame(fMe.x, fMe.y), Gn: frame(fGn.x, fGn.y),
+  U1A: frame(fU1A.x, fU1A.y), U1T: frame(fU1T.x, fU1T.y),
+  L1A: frame(fL1A.x, fL1A.y), L1T: frame(fL1T.x, fL1T.y),
+};
+
+const measured = (tracing: Tracing, key: string) =>
+  analyse({ tracing }).measurements.find((m) => m.key === key)?.value ?? Number.NaN;
+
+describe("زوايا المستويات على وجهٍ سويّ", () => {
+  it("كلٌّ يعيد معياره", () => {
+    expect(measured(FACE, "FMA")).toBeCloseTo(25, 0);
+    expect(measured(FACE, "SN-GoGn")).toBeCloseTo(32, 0);
+    expect(measured(FACE, "IMPA")).toBeCloseTo(90, 0);
+    expect(measured(FACE, "U1-SN")).toBeCloseTo(103, 0);
+    expect(measured(FACE, "U1-NA")).toBeCloseTo(21, 0);
+    expect(measured(FACE, "L1-NB")).toBeCloseTo(22, 0);
+    expect(measured(FACE, "U1-L1")).toBeCloseTo(135, 0);
+  });
+
+  it("ومحور Y ضمن نطاق معياره", () => {
+    const y = measured(FACE, "Y-Axis");
+    expect(y).toBeGreaterThan(NORMS.Y_AXIS.mean - NORMS.Y_AXIS.tolerance);
+    expect(y).toBeLessThan(NORMS.Y_AXIS.mean + NORMS.Y_AXIS.tolerance);
+  });
+
+  it("والعلاقة الأولى: SN-MP − FMA = ميل SN عن فرانكفورت", () => {
+    // على مستوى الفك نفسه (Go→Me) كي تُقارن الزاويتان على خطٍّ واحد.
+    const snmp = lineAngle(FACE.S!, FACE.N!, FACE.Go!, FACE.Me!);
+    const fma = lineAngle(FACE.Po!, FACE.Or!, FACE.Go!, FACE.Me!);
+    expect(snmp - fma).toBeCloseTo(7, 1);
+  });
+
+  it("والعلاقة الثانية: SNA + U1-NA = U1-SN", () => {
+    expect(measured(FACE, "SNA") + measured(FACE, "U1-NA"))
+      .toBeCloseTo(measured(FACE, "U1-SN"), 1);
+  });
+});
+
+describe("اتجاه التغيّر — الحارس الذي لا يمرّ منه اصطلاحٌ مقلوب", () => {
+  it("قاطعٌ سفلي يُمال أمامًا تزيد IMPA، ومنتصبًا تنقص", () => {
+    const proclined = { ...FACE, L1T: frame(along(fL1A, 45, 25).x, along(fL1A, 45, 25).y) };
+    const upright = { ...FACE, L1T: frame(along(fL1A, 85, 25).x, along(fL1A, 85, 25).y) };
+    expect(measured(proclined, "IMPA")).toBeGreaterThan(90);
+    expect(measured(upright, "IMPA")).toBeLessThan(90);
+  });
+
+  it("وفكٌّ أشدّ انحدارًا تزيد FMA وSN-GoGn معًا", () => {
+    const steep = { ...FACE, Me: frame(85, -95), Gn: frame(88, -92) };
+    expect(measured(steep, "FMA")).toBeGreaterThan(measured(FACE, "FMA"));
+    expect(measured(steep, "SN-GoGn")).toBeGreaterThan(measured(FACE, "SN-GoGn"));
+  });
+
+  it("وقاطعان يُمالان أمامًا تنقص الزاوية بينهما", () => {
+    const flared = {
+      ...FACE,
+      U1T: frame(along(fU1A, -50, 25).x, along(fU1A, -50, 25).y),
+      L1T: frame(along(fL1A, 45, 25).x, along(fL1A, 45, 25).y),
+    };
+    expect(measured(flared, "U1-L1")).toBeLessThan(measured(FACE, "U1-L1"));
+    expect(measured(flared, "U1-SN")).toBeGreaterThan(measured(FACE, "U1-SN"));
+  });
+});
+
+describe("النقاط الأربع والعشرون المعتمدة", () => {
+  it("عددها ٢٤ كما في الدليل الموقَّع", () => {
+    expect(LANDMARKS.length).toBe(24);
+  });
+
+  it("وتوزيعها كما في خريطة الدليل", () => {
+    const count = (group: string) => LANDMARKS.filter((l) => l.group === group).length;
+    expect(count("cranial")).toBe(6);
+    expect(count("maxilla")).toBe(3);
+    expect(count("mandible")).toBe(7);
+    expect(count("teeth")).toBe(4);
+    expect(count("soft")).toBe(4);
+  });
+
+  it("ولكلٍّ اسمٌ وتعريفٌ بلغتين", () => {
+    for (const item of LANDMARKS) {
+      expect(item.name.ar.length).toBeGreaterThan(1);
+      expect(item.name.en.length).toBeGreaterThan(1);
+      expect(item.hint.ar.length).toBeGreaterThan(10);
+      expect(item.hint.en.length).toBeGreaterThan(10);
+    }
+  });
+
+  it("وقرارات الدليل مكتوبةٌ في التلميحات", () => {
+    const po = LANDMARKS.find((l) => l.code === "Po")!;
+    expect(po.hint.ar).toContain("قضيب الأذن");   // البوريون التشريحي لا الميكانيكي
+    const co = LANDMARKS.find((l) => l.code === "Co")!;
+    expect(co.hint.ar).toContain("الأبعد عن الفيلم");
+    const u1a = LANDMARKS.find((l) => l.code === "U1A")!;
+    expect(u1a.hint.ar).toContain("نفسه");        // الطرف والذروة من السن نفسه
   });
 });
