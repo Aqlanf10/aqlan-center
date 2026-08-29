@@ -270,12 +270,21 @@ describe("اتجاه التغيّر — الحارس الذي لا يمرّ من
 });
 
 describe("النقاط الأربع والعشرون المعتمدة", () => {
+  /*
+   * والفحص مقصورٌ على نقاط الدليل وحدها.
+   *
+   * أُضيفت بعده نقاطٌ من الأدبيات بإذن المالك، ولو عدّها هذا الفحص لَصار كل إضافةٍ
+   * تكسره فيُرفع العدد — فيضيع ما بُني له: أن يبقى **محتوى الدليل الموقَّع** كما
+   * وُقّع، لا أن يُعدّ ما في الشاشة.
+   */
+  const manual = LANDMARKS.filter((item) => !item.source);
+
   it("عددها ٢٤ كما في الدليل الموقَّع", () => {
-    expect(LANDMARKS.length).toBe(24);
+    expect(manual.length).toBe(24);
   });
 
   it("وتوزيعها كما في خريطة الدليل", () => {
-    const count = (group: string) => LANDMARKS.filter((l) => l.group === group).length;
+    const count = (group: string) => manual.filter((l) => l.group === group).length;
     expect(count("cranial")).toBe(6);
     expect(count("maxilla")).toBe(3);
     expect(count("mandible")).toBe(7);
@@ -312,9 +321,27 @@ describe("النقاط الأربع والعشرون المعتمدة", () => {
  * محسوبٌ لا مقروءٌ من المخرجات.
  */
 const CAL = { from: frame(0, 0), to: frame(100, 0), millimetres: 100 };
-const FACE_MM: Tracing = { ...FACE, Pog: frame(84, -70), ANS: frame(80, -8) };
+/*
+ * الوجه الكامل — بنقاط الأدبيات معه.
+ *
+ * وPogonion **أمام** النقطة B لا خلفها: وضعتُه أولًا عند ٨٤ فخرجت زاوية مستوى
+ * A-B موجبةً، ومعيار داونز لها سالبٌ (‎−4.6‎) — فالخلل في الذقن المصنوع لا في
+ * الصيغة: ذقنٌ خلف النقطة B ليس ذقنًا. ولولا اشتراطُ المعيار بإشارته لَمرّ.
+ */
+const FACE_MM: Tracing = {
+  ...FACE,
+  Pog: frame(88, -70), ANS: frame(80, -8),
+  // مستوى الإطباق الوظيفي — Jacobson
+  U6: frame(55, -23), L6: frame(55, -25),
+  // الأنسجة الرخوة — Ricketts، والشفتان خلف الخط الجمالي كما في السويّ
+  Pn: frame(108, -18), PogS: frame(92, -72),
+  LS: frame(98.1, -38), LI: frame(96.5, -50),
+};
 
 const mmValue = (tracing: Tracing, key: string, calibration = CAL) =>
+  analyse({ tracing, calibration }).measurements.find((m) => m.key === key)?.value ?? Number.NaN;
+
+const measuredIn = (tracing: Tracing, key: string, calibration?: typeof CAL) =>
   analyse({ tracing, calibration }).measurements.find((m) => m.key === key)?.value ?? Number.NaN;
 
 describe("المعايرة تُشغّل ما كان معطّلًا", () => {
@@ -475,5 +502,115 @@ describe("أسماء المعايير تطابق المعايير", () => {
     const judged = analyse({ tracing: FACE_MM, calibration: CAL }).measurements
       .filter((m) => m.norm !== null).map((m) => m.name);
     for (const name of judged) expect(named.has(name)).toBe(true);
+  });
+});
+
+
+/*
+ * تحاليل من الأدبيات المنشورة — بإذن المالك، وكلٌّ بمرجعه.
+ *
+ * والفحص لا يقنع بمطابقة المقدار: يشترط أن يقع كل قياسٍ **داخل معياره المنشور**
+ * على وجهٍ واحد مصنوع، وأن تصحّ إشارتُه. فوقوعُ عشرين قياسًا من ثلاثة تحاليل
+ * مختلفة داخل معاييرها معًا لا يحتمله اصطلاحٌ مقلوب في واحد منها.
+ */
+const full = analyse({ tracing: FACE_MM, calibration: CAL });
+const got = (key: string) => full.measurements.find((m) => m.key === key)!;
+
+describe("مثلث تويد — يُغلق أو لا يكون", () => {
+  it("مجموع زواياه ١٨٠ بالضبط", () => {
+    // ولا تُحسب الثالثة طرحًا من ١٨٠: كلٌّ من نقاطها مستقلّةً، فيكون المجموع
+    // برهانًا لا تحصيلَ حاصل. واصطلاحٌ مقلوب في أيّها يكسره.
+    const sum = got("FMA").value + got("IMPA").value + got("FMIA").value;
+    expect(sum).toBeCloseTo(180, 6);
+  });
+
+  it("وFMIA على معيارها", () => {
+    expect(got("FMIA").value).toBeCloseTo(64.8, 1);
+    expect(got("FMIA").verdict).toBe("normal");
+  });
+});
+
+describe("تحليل داونز", () => {
+  it("الزوايا الثلاث داخل معاييرها المنشورة", () => {
+    for (const key of ["Facial", "Convexity", "AB-plane"]) {
+      expect(got(key).verdict, key).toBe("normal");
+    }
+  });
+
+  it("وزاوية مستوى A-B سالبة — كما يقول المعيار", () => {
+    // إشارتُها هي الفحص: معيار داونز ‎−4.6‎، وموجبةٌ تعني ذقنًا خلف النقطة B.
+    expect(got("AB-plane").value).toBeLessThan(0);
+  });
+
+  it("وذقنٌ متقدّم يرفع الزاوية الوجهية", () => {
+    const jutting = { ...FACE_MM, Pog: frame(96, -70) };
+    expect(measuredIn(jutting, "Facial")).toBeGreaterThan(got("Facial").value);
+  });
+
+  it("وذقنٌ متراجع يزيد التحدّب", () => {
+    const receding = { ...FACE_MM, Pog: frame(80, -70) };
+    expect(measuredIn(receding, "Convexity")).toBeGreaterThan(got("Convexity").value);
+  });
+});
+
+describe("تقييم Wits — يُقرأ حيث تُضلّل ANB", () => {
+  it("على وجهٍ سويّ يقع داخل معياره", () => {
+    expect(got("Wits").verdict).toBe("normal");
+  });
+
+  it("وفكٌّ سفليٌّ متقدّم يجعله سالبًا — وهو الصنف الثالث", () => {
+    const classIII = { ...FACE_MM, B: frame(95, -46.24) };
+    expect(measuredIn(classIII, "Wits", CAL)).toBeLessThan(-2);
+  });
+
+  it("وفكٌّ علويٌّ متقدّم يرفعه — وهو الصنف الثاني", () => {
+    const classII = { ...FACE_MM, A: frame(96, -21.34) };
+    expect(measuredIn(classII, "Wits", CAL)).toBeGreaterThan(got("Wits").value + 3);
+  });
+
+  it("ولا يُحسب بلا معايرة — لأنه مسافة", () => {
+    expect(analyse({ tracing: FACE_MM }).measurements.find((m) => m.key === "Wits")).toBeUndefined();
+  });
+
+  it("ولا تقلبه الصورة المقلوبة", () => {
+    const mirrored: Tracing = Object.fromEntries(
+      Object.entries(FACE_MM).map(([code, point]) => [code, { x: 1 - point.x, y: point.y }]),
+    );
+    const mirroredCal = { ...CAL, from: { x: 1 - CAL.from.x, y: CAL.from.y }, to: { x: 1 - CAL.to.x, y: CAL.to.y } };
+    expect(measuredIn(mirrored, "Wits", mirroredCal)).toBeCloseTo(got("Wits").value, 8);
+  });
+});
+
+describe("الخط الجمالي", () => {
+  it("الشفتان خلفه في الوجه السويّ — فالقيمتان سالبتان وضمن المعيار", () => {
+    expect(got("E-LS").value).toBeLessThan(0);
+    expect(got("E-LI").value).toBeLessThan(0);
+    expect(got("E-LS").verdict).toBe("normal");
+    expect(got("E-LI").verdict).toBe("normal");
+  });
+
+  it("وشفةٌ بارزة تُقرَّب من الصفر ثم تتجاوزه", () => {
+    const protrusive = { ...FACE_MM, LS: frame(106, -38) };
+    expect(measuredIn(protrusive, "E-LS", CAL)).toBeGreaterThan(got("E-LS").value);
+  });
+});
+
+describe("مصدر تعريف كل نقطة مكتوب", () => {
+  it("أربعٌ وعشرون من الدليل الموقَّع", () => {
+    expect(LANDMARKS.filter((item) => !item.source)).toHaveLength(24);
+  });
+
+  it("وأربعٌ من الأدبيات، كلٌّ بمرجعه", () => {
+    const cited = LANDMARKS.filter((item) => item.source);
+    expect(cited).toHaveLength(4);
+    expect(cited.map((item) => item.code).sort()).toEqual(["Ba", "L6", "PogS", "U6"]);
+    for (const item of cited) expect(item.source!.trim().length).toBeGreaterThan(8);
+  });
+
+  it("ولا نقطةَ بلا تعريفٍ بلغتين", () => {
+    for (const item of LANDMARKS) {
+      expect(item.hint.ar.length, item.code).toBeGreaterThan(10);
+      expect(item.hint.en.length, item.code).toBeGreaterThan(10);
+    }
   });
 });

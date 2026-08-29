@@ -31,10 +31,29 @@ const NORMAL = {
   N: { x: 0.62, y: 0.26 },
   A: { x: 0.5588, y: 0.5230 },
   B: { x: 0.5158, y: 0.6462 },
-  // Go وMe لأجل الارتفاعين ونسبتهما — واختيرا ليخرج ياراباك ضمن معياره.
-  Go: { x: 0.30, y: 0.576 },
-  Me: { x: 0.60, y: 0.80 },
+  // فرانكفورت — لأجل FMA وFMIA وزاوية داونز الوجهية
+  Po: { x: 0.275, y: 0.320 }, Or: { x: 0.600, y: 0.305 },
+  Go: { x: 0.30, y: 0.576 }, Me: { x: 0.60, y: 0.80 },
+  // Pog أمام B لا خلفه — ذقنٌ خلف النقطة B ليس ذقنًا، وزاوية داونز تكشفه
+  Pog: { x: 0.528, y: 0.735 },
+  U1A: { x: 0.555, y: 0.545 }, U1T: { x: 0.545, y: 0.615 },
+  L1A: { x: 0.520, y: 0.680 }, L1T: { x: 0.538, y: 0.622 },
+  // مستوى الإطباق الوظيفي — لأجل Wits (Jacobson)
+  U6: { x: 0.395, y: 0.585 }, L6: { x: 0.395, y: 0.598 },
+  // الأنسجة الرخوة — الشفتان خلف الخط الجمالي كما في السويّ
+  Pn: { x: 0.645, y: 0.500 }, PogS: { x: 0.592, y: 0.745 },
+  LS: { x: 0.612, y: 0.585 }, LI: { x: 0.606, y: 0.640 },
 };
+
+/*
+ * ولا تُفحص المعايير هنا.
+ *
+ * هذا الوجه بُني ليخرج SNA وSNB وANB صحيحةً على صورةٍ مربّعة، لا ليكون وجهًا سويًّا
+ * في كل زاوية — ومطابقةُ المعايير مفحوصةٌ في اختبارات الوحدة على وجهٍ مبنيّ في إطار
+ * فرانكفورت لذلك. فما تفحصه الرحلة هنا ثلاثة: أن تظهر التحاليل بأسمائها على الشاشة،
+ * وأن تصحّ **الإشارات**، وأن يُغلق مثلث تويد — وهو متطابقةٌ هندسية تصحّ على أيّ وجه،
+ * فلا تحتاج وجهًا مضبوطًا لتُفحص.
+ */
 
 // خط معايرة أفقي طوله نصف عرض الصورة، وطولُه الحقيقي ١٠٠ مم — فالمقياس ٢٠٠
 // مليمترًا للوحدة النسبية، وكل مسافةٍ متوقَّعة تُحسب باليد لا تُقرأ من الشاشة.
@@ -79,13 +98,25 @@ console.log("   ويذكر الدليل المعتمد:", /ADP-LM-LAT/.test(open
 const tracer = page.getByRole("dialog");
 const image = tracer.locator("img").first();
 const box = await image.boundingBox();
-for (const code of ["S", "N", "A", "B", "Go", "Me"]) {
+for (const code of Object.keys(NORMAL)) {
   await tracer.getByRole("button", { name: code, exact: true }).click();
   const p = NORMAL[code];
   await page.mouse.click(box.x + p.x * box.width, box.y + p.y * box.height);
   await page.waitForTimeout(400);
 }
-console.log("4) نُقرت النقاط الأربع");
+{
+  const header = await tracer.innerText();
+  const placedText = /(\d+) من (\d+) نقطة/.exec(header);
+  // الرمز الموضوع يُلوَّن أخضر في شريط الرموز — فيُقرأ الناقص من الشاشة لا يُخمَّن.
+  const missing = await page.evaluate((codes) => codes.filter((code) => {
+    const chip = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === code);
+    return !chip || !chip.className.includes("emerald");
+  }), Object.keys(NORMAL));
+  console.log(`4) نُقرت ${Object.keys(NORMAL).length} نقطة — الشاشة تقول ${placedText ? placedText[1] : "؟"}`);
+  if (placedText && Number(placedText[1]) !== Object.keys(NORMAL).length) {
+    console.log("   [تشخيص] لم تُوضع:", missing.join(" ") || "(غير معروف)");
+  }
+}
 
 await page.waitForTimeout(1200);
 const traced = await page.locator("body").innerText();
@@ -115,7 +146,10 @@ const snaOf = async () => {
 };
 
 const beforeDrag = await snaOf();
-// تُسحب A إلى موضعٍ آخر بالمؤشّر — لا تُنقر من جديد بعد اختيارها من القائمة.
+// تُختار النقطة أولًا — فتنتقل الشاشة من وضع التعليم إلى وضع التصحيح.
+await tracer.getByRole("button", { name: "A", exact: true }).click();
+await page.waitForTimeout(400);
+// ثم تُسحب بالمؤشّر — لا تُنقر من جديد في موضعها الجديد.
 const aPoint = { x: box.x + NORMAL.A.x * box.width, y: box.y + NORMAL.A.y * box.height };
 await page.mouse.move(aPoint.x, aPoint.y);
 await page.mouse.down();
@@ -196,6 +230,33 @@ console.log("    مطابقة للحساب:",
     ? "✓ (ضمن مليمتر ونصف)" : "✗ خارج التسامح");
 await page.screenshot({ path: OUT + "/ceph-4-calibrated.png", fullPage: false });
 
+/*
+ * ٦ج) التحاليل المسمّاة — وإشاراتها.
+ *
+ * والفحص على الإشارة قبل المقدار: مستوى A-B سالبٌ في السويّ، والشفتان خلف الخط
+ * الجمالي فقيمتاهما سالبتان. واصطلاحٌ مقلوب يوافق المقدار ولا يوافق الإشارة.
+ */
+const named = await tracer.innerText();
+const value = (label) => {
+  const found = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[^\\n]*\\n?\\s*(-?\\d+(?:\\.\\d+)?)\\s*(?:°|مم)").exec(named);
+  return found ? Number(found[1]) : null;
+};
+for (const analysis of ["Tweed", "Downs", "Wits", "Ricketts", "Steiner"]) {
+  console.log(`    ${analysis}:`, named.includes(analysis) ? "✓" : "غائب ✗");
+}
+const fma = value("FMA"), impa = value("IMPA"), fmia = value("FMIA");
+console.log("6ج) مثلث تويد يُغلق:",
+  fma !== null && impa !== null && fmia !== null && Math.abs(fma + impa + fmia - 180) < 0.3
+    ? `${fma}+${impa}+${fmia} = 180 ✓` : `لا يُغلق ✗ (${fma}+${impa}+${fmia})`);
+const ab = value("A-B plane"), els = value("E-line · LS"), eli = value("E-line · LI");
+console.log("    ومستوى A-B سالب:", ab !== null && ab < 0 ? `${ab}° ✓` : `${ab} ✗`);
+console.log("    والشفتان خلف الخط الجمالي:",
+  els !== null && eli !== null && els < 0 && eli < 0 ? `${els} · ${eli} ✓` : `${els} · ${eli} ✗`);
+console.log("    وWits محسوب:", value("Wits") !== null ? `${value("Wits")} مم ✓` : "غائب ✗");
+console.log("    ومصدر النقطة معلن:",
+  /من الدليل الموقَّع|من الأدبيات/.test(named) ? "✓" : "صامت ✗");
+await page.screenshot({ path: OUT + "/ceph-6-analyses.png", fullPage: false });
+
 await tracer.getByRole("button", { name: "احفظ التتبّع" }).click();
 await page.waitForTimeout(2500);
 console.log("7) حُفظ التتبّع:", /محفوظ/.test(await page.locator("body").innerText()) ? "✓" : "لم يُحفظ");
@@ -206,7 +267,7 @@ await page.getByRole("button", { name: "تتبّع سيفالومتري" }).clic
 await page.waitForTimeout(3000);
 const reopened = await page.locator("body").innerText();
 console.log("8) وعاد بعد الفتح من جديد:",
-  /6 من 24 نقطة/.test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+  new RegExp(`${Object.keys(NORMAL).length} من 28 نقطة`).test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
 // المعايرة تُحفظ مع النقاط: لو ضاعت لعادت المسافات معطّلةً بعد كل إغلاق.
 console.log("   والمعايرة معها:", /N-Me/.test(reopened) && /مم/.test(reopened) ? "✓" : "ضاعت ✗");
 

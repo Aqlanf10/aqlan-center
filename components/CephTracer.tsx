@@ -61,15 +61,17 @@ const T = {
     high: { ar: "أعلى من المعيار", en: "above norm" },
   },
   note: {
-    ar: "تعريفات النقاط منقولة من الدليل السريري المعتمد والموقَّع. وأيّ تعديل عليها يستلزم إصدارًا جديدًا منه لا تغييرًا في البرنامج.",
-    en: "Landmark definitions are taken from the approved and signed clinical manual. Any change requires a new manual version, not a code change.",
+    ar: "أربعٌ وعشرون نقطة من الدليل السريري المعتمد والموقَّع، وتعديلها يستلزم إصدارًا جديدًا منه لا تغييرًا في البرنامج. وما بعدها من الأدبيات المنشورة — موسومٌ بمرجعه.",
+    en: "Twenty-four landmarks come from the approved and signed clinical manual; changing them needs a new manual version, not a code change. The rest come from published literature — each tagged with its reference.",
   },
+  fromManual: { ar: "من الدليل الموقَّع", en: "From the signed manual" },
+  fromLiterature: { ar: "من الأدبيات", en: "From the literature" },
   undo: { ar: "تراجع", en: "Undo" },
   redo: { ar: "إعادة", en: "Redo" },
   magnifier: { ar: "المكبّرة", en: "Magnifier" },
   keys: {
-    ar: "اسحب النقطة لتصحيحها · الأسهم تُزيحها بدقّة (مع Shift أسرع) · Ctrl+Z تراجع",
-    en: "Drag a point to correct it · arrows nudge it finely (Shift for faster) · Ctrl+Z undo",
+    ar: "اختر رمز النقطة ثم اسحبها لتصحيحها · الأسهم تُزيحها بدقّة (مع Shift أسرع) · Ctrl+Z تراجع",
+    en: "Select the landmark chip, then drag it to correct · arrows nudge finely (Shift for faster) · Ctrl+Z undo",
   },
   calibration: { ar: "المعايرة", en: "Calibration" },
   calibrateHint: {
@@ -172,6 +174,15 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
    */
   const latest = useRef<Tracing>({});
   latest.current = points;
+  /*
+   * وموضعُ المؤشّر في مرجعٍ كذلك.
+   *
+   * كان يُقرأ من حالة React، وبين حركة المؤشّر ونقرته لا يتّسع الوقت لدورة عرضٍ
+   * تُحدّث المعالِج — فيقرأ المعالِجُ موضعًا قديمًا أو لا شيء. والرحلة أمسكتها:
+   * ثماني عشرة نقطة من تسع عشرة، والساقطة `L1T` — تحت `U1T` ببضعة بكسلات —
+   * فغاب معها IMPA وFMIA وWits، ثلاثةُ قياسات من نقطةٍ واحدة.
+   */
+  const hoverAt = useRef<TracedPoint | null>(null);
 
   const commit = useCallback((next: Tracing) => {
     history.current = [...history.current.slice(0, cursor.current + 1), next];
@@ -196,6 +207,17 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
     };
   };
 
+  const placeAt = useCallback((point: TracedPoint) => {
+    commit({ ...points, [active]: point });
+
+    // ينتقل تلقائيًّا إلى النقطة التالية غير الموضوعة: التتبّع عشرون نقرة، وأن
+    // يختار الطبيب النقطة بيده بين كل نقرتين يضاعف العمل بلا فائدة.
+    const order = LANDMARKS.map((item) => item.code);
+    const next = order.slice(order.indexOf(active) + 1)
+      .find((code) => !points[code] && code !== active);
+    if (next) setActive(next);
+  }, [active, commit, points]);
+
   const place = useCallback((event: React.MouseEvent<HTMLImageElement>) => {
     if (!canWrite) return;
     const { x, y } = relative(event, event.currentTarget);
@@ -207,15 +229,8 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
       return;
     }
 
-    commit({ ...points, [active]: { x, y } });
-
-    // ينتقل تلقائيًّا إلى النقطة التالية غير الموضوعة: التتبّع عشرون نقرة، وأن
-    // يختار الطبيب النقطة بيده بين كل نقرتين يضاعف العمل بلا فائدة.
-    const order = LANDMARKS.map((item) => item.code);
-    const next = order.slice(order.indexOf(active) + 1)
-      .find((code) => !points[code] && code !== active);
-    if (next) setActive(next);
-  }, [active, canWrite, commit, mode, points]);
+    placeAt({ x, y });
+  }, [canWrite, mode, placeAt]);
 
   /*
    * السحب — تصحيحُ النقطة في مكانها.
@@ -226,8 +241,14 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
    */
   const startDrag = useCallback((code: LandmarkCode) => (event: React.PointerEvent) => {
     if (!canWrite || mode === "calibrate") return;
+    /*
+     * ولا `preventDefault` هنا.
+     *
+     * منعُ الأصل على `pointerdown` يكبح حدث النقر التوافقي بعده — فلا يصل `click`
+     * إلى المِقبض، فتضيع النقرة الساكنة التي تضع نقطةً فوق نقطة. والصورة ممنوعةٌ
+     * من السحب بخاصّتها لا بمنع الأصل.
+     */
     event.stopPropagation();
-    event.preventDefault();
     dragging.current = code;
     moved.current = false;
     setActive(code);
@@ -235,7 +256,9 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
 
   const onImageMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const { x, y } = relative(event, event.currentTarget);
-    setHover(x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null);
+    const inside = x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
+    hoverAt.current = inside;
+    setHover(inside);
     const code = dragging.current;
     if (!code) return;
     moved.current = true;
@@ -296,6 +319,21 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [active, canWrite, commit, step]);
+
+  /*
+   * الوضع والتصحيح لا يتزاحمان على النقرة نفسها.
+   *
+   * جعلتُ مقبض كل نقطةٍ قابلًا للسحب دائمًا، فامتنع وضعُ نقطةٍ قريبةٍ من أخرى:
+   * حافّة القاطع السفلي تحت العلوي ببضعة بكسلات، فالنقرة تُمسك المقبض المجاور بدل
+   * أن تضع النقطة. والرحلة أمسكتها بالاسم: `L1T` وحدها من تسع عشرة لم تُوضع —
+   * فغاب معها IMPA وFMIA وWits، ثلاثةُ قياسات من نقطةٍ واحدة.
+   *
+   * وجرّبتُ التمييز بالحركة — ضغطةٌ ساكنة وضعٌ وسحبٌ تصحيح — فلم يصل النقر إلى
+   * المِقبض أصلًا. فصار التمييز من سير العمل: ما دام المَعلم الحالي **لم يوضع**
+   * فالشاشة في وضع التعليم والمقابض شفّافة؛ فإذا اختِير معلمٌ موضوع صارت حيّةً
+   * للسحب. ونقرةٌ واحدة على رمز النقطة تنقل بين الحالين.
+   */
+  const placing = !points[active];
 
   const analysis = analyse({ tracing: points, calibration, aspect, norms });
 
@@ -397,7 +435,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
           <div className="relative"
             onPointerMove={onImageMove}
             onPointerUp={endDrag}
-            onPointerLeave={() => { endDrag(); setHover(null); }}>
+            onPointerLeave={() => { endDrag(); hoverAt.current = null; setHover(null); }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img ref={imageRef} src={`/api/documents/${documentId}`} alt={title}
             onLoad={(event) => {
@@ -443,7 +481,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                 onPointerDown={startDrag(item.code)}
                 style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
                 className={`absolute -translate-x-1/2 -translate-y-1/2 ${
-                  canWrite && mode === "landmark" ? "cursor-grab touch-none" : "pointer-events-none"
+                  canWrite && mode === "landmark" && !placing ? "cursor-grab touch-none" : "pointer-events-none"
                 } ${item.code === active ? "text-amber-300" : "text-emerald-300"}`}>
                 <span className="block h-2.5 w-2.5 rounded-full border-2 border-current bg-black/40" />
                 <span className="pointer-events-none absolute right-3 top-0 whitespace-nowrap text-[10px] font-bold">
@@ -489,11 +527,27 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
             <p className="mb-2 text-[10px] font-bold text-slate-400">
               {say(GROUP_LABEL[current.group], lang)}
             </p>
+            {/*
+              * مصدر التعريف تحت التعريف نفسه.
+              *
+              * الطبيب يوقّع على تشخيصٍ مبنيّ على هذه النقطة، فحقُّه أن يعرف: هل
+              * تعريفُها ممّا اعتمده ووقّعه، أم ممّا أُخذ من مرجعٍ منشور؟ والفرق
+              * ليس شكليًّا: الأول التزامٌ منه، والثاني اجتهادٌ يُراجعه.
+              */}
+            <p className={`mb-2 rounded-md px-2 py-1 text-[10px] font-bold ${
+              current.source ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800"
+            }`}>
+              {current.source
+                ? `${say(T.fromLiterature, lang)} · ${current.source}`
+                : `${say(T.fromManual, lang)} · ${LANDMARK_MANUAL}`}
+            </p>
             <div className="flex flex-wrap gap-1">
               {LANDMARKS.map((item) => (
                 <button key={item.code} onClick={() => setActive(item.code)}
-                  title={say(item.name, lang)}
+                  title={`${say(item.name, lang)}${item.source ? ` — ${item.source}` : ""}`}
                   className={`rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${
+                    item.source ? "border-dashed " : ""
+                  }${
                     item.code === active ? "border-navy-800 bg-navy-800 text-white"
                       : points[item.code] ? "border-emerald-300 bg-emerald-50 text-emerald-800"
                       : item.required ? "border-amber-300 bg-amber-50 text-amber-800"
@@ -517,7 +571,19 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
               <p className="text-xs text-slate-400">{say(T.markToStart, lang)}</p>
             ) : (
               <ul className="space-y-1.5">
-                {analysis.measurements.map((item) => (
+                {/*
+                  * مجموعةً بتحاليلها كما تُقرأ في المراجع.
+                  *
+                  * ستّةٌ وعشرون رقمًا في قائمةٍ واحدة تُقرأ رقمًا رقمًا؛ ومجموعةً
+                  * بتحاليلها تُقرأ حكمًا حكمًا — «تويد يقول كذا وداونز كذا». وما
+                  * لا ينتمي إلى تحليلٍ بعينه يبقى بلا عنوان فلا يُنسب إلى واحد.
+                  */}
+                {analysis.measurements.map((item, index) => [
+                  item.analysis && item.analysis !== analysis.measurements[index - 1]?.analysis ? (
+                    <li key={`${item.key}-head`} className="px-1 pt-1.5 text-[10px] font-extrabold text-slate-400" dir="ltr">
+                      {item.analysis}
+                    </li>
+                  ) : null,
                   <li key={item.key} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-extrabold" dir="ltr">{item.name}</span>
@@ -538,8 +604,8 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                         </>
                       ) : null}
                     </p>
-                  </li>
-                ))}
+                  </li>,
+                ])}
               </ul>
             )}
 
