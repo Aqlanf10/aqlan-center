@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   GROUP_LABEL, LANDMARKS, LANDMARK_BY_CODE, LANDMARK_MANUAL, SKELETAL_LABEL, analyse, formatMeasurement, say,
-  type Calibration, type Lang, type LandmarkCode, type TracedPoint, type Tracing,
+  type Calibration, type Lang, type LandmarkCode, type Norm, type TracedPoint, type Tracing,
 } from "@/lib/ceph";
 
 /**
@@ -107,6 +107,8 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
   const [mode, setMode] = useState<"landmark" | "calibrate">("landmark");
   const [draft, setDraft] = useState<{ from: TracedPoint; to: TracedPoint | null } | null>(null);
   const [millimetres, setMillimetres] = useState("");
+  // المعايير من المجموعة المرجعية لا من الكود — تصل مع التتبّع.
+  const [norms, setNorms] = useState<Record<string, Norm> | undefined>(undefined);
   const imageRef = useRef<HTMLImageElement>(null);
   const rtl = lang === "ar";
 
@@ -116,6 +118,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
         const response = await fetch(`/api/documents/${documentId}/tracing`, { cache: "no-store" });
         if (!response.ok) return;
         const payload = await response.json();
+        if (payload.norms) setNorms(payload.norms);
         if (payload.tracing) {
           setPoints(payload.tracing.points ?? {});
           setCalibration(payload.tracing.calibration ?? null);
@@ -151,7 +154,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
     if (next) setActive(next);
   }, [active, canWrite, mode, points]);
 
-  const analysis = analyse({ tracing: points, calibration, aspect });
+  const analysis = analyse({ tracing: points, calibration, aspect, norms });
 
   const save = async () => {
     if (saving) return;

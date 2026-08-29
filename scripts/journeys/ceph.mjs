@@ -53,7 +53,7 @@ await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4000);
 
 const name = "مريض السيفالو " + Date.now().toString().slice(-5);
-await createPatient(page, { name, phone: null, base: BASE });
+const patientUrl = await createPatient(page, { name, phone: null, base: BASE });
 console.log("1) أُنشئ ملف المريض");
 
 await page.getByRole("button", { name: "الأشعة" }).click();
@@ -211,5 +211,56 @@ const guard = await clerkPage.evaluate(async (id) => {
 console.log("10) الاستقبال أُنشئت:", made === 201 ? "✓" : `✗ (${made})`);
 console.log("    ولا تقرأ التتبّع:",
   guard.status === 403 ? `✓ — ${guard.body?.message ?? ""}` : `تقرأه ✗ (${guard.status})`);
+
+/*
+ * ١١) المعيار يُعدَّل من الشاشة، فينقلب الحكم على الرقم نفسه.
+ *
+ * وهذا هو الفرق بين معيارٍ «في القاعدة» ومعيارٍ **قابل للتعديل**: أن يملكه المالك
+ * من شاشته، لا أن يُنقل من الكود إلى جدولٍ لا يصل إليه أحد.
+ */
+await page.goto(BASE + "/settings/ceph", { waitUntil: "networkidle" });
+await page.waitForTimeout(2500);
+const normsScreen = await page.locator("body").innerText();
+console.log("11) شاشة المعايير:", /SNA/.test(normsScreen) && /Steiner/.test(normsScreen) ? "✓" : "لم تُعرض ✗");
+
+const row = page.locator("li").filter({ hasText: "موضع الفك العلوي" }).first();
+await row.getByRole("button", { name: "عدّل" }).click();
+await page.waitForTimeout(600);
+const setField = async (label, value) => {
+  const field = row.getByLabel(label);
+  await field.click();
+  await field.fill("");
+  await field.pressSequentially(value, { delay: 20 });
+};
+await setField("المتوسط", "74");
+await setField("المرجع", "مجموعة الرحلة");
+await row.getByRole("button", { name: "احفظ المعيار" }).click();
+await page.waitForTimeout(2500);
+console.log("    عُدّل المتوسط إلى ٧٤:",
+  /74/.test(await page.locator("body").innerText()) ? "✓" : "لم يُحفظ ✗");
+await page.screenshot({ path: OUT + "/ceph-5-norms.png", fullPage: true });
+
+// ثم يُقرأ التتبّع نفسه من جديد — الرقم كما هو، والحكم انقلب.
+await page.goto(patientUrl, { waitUntil: "networkidle" });
+await page.waitForTimeout(2500);
+await page.getByRole("button", { name: "الأشعة" }).click();
+await page.waitForTimeout(1800);
+await page.getByRole("button", { name: "تتبّع سيفالومتري" }).click();
+await page.waitForTimeout(3500);
+const rejudged = await page.getByRole("dialog").innerText();
+const stillSNA = /SNA[^\n]*\n?\s*(\d+(?:\.\d+)?)°/.exec(rejudged);
+console.log("    والرقم كما هو:", stillSNA && Math.abs(Number(stillSNA[1]) - 82) <= 0.6 ? `${stillSNA[1]}° ✓` : "تغيّر ✗");
+console.log("    والحكم انقلب:", /أعلى من المعيار/.test(rejudged) ? "«أعلى من المعيار» ✓" : "لم ينقلب ✗");
+console.log("    والمرجع الجديد ظاهر:", /مجموعة الرحلة/.test(rejudged) ? "✓" : "غائب ✗");
+
+// وتُعاد كما كانت: الرحلة لا تترك أثرًا في المعايير.
+await page.evaluate(async () => {
+  const sets = await (await fetch("/api/ceph/reference")).json();
+  const active = sets.sets.find((set) => set.isDefault);
+  await fetch("/api/ceph/reference", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ setId: active.id, measurement: "SNA", mean: 82, tolerance: 2, source: "Steiner" }),
+  });
+});
 
 await b.close();

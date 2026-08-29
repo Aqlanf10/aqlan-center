@@ -149,6 +149,46 @@ try {
   const bad = await db.getCephTracing(xray.id);
   check("ومعايرةٌ بطول صفر تُرفض", !bad.analysis.calibrated && bad.calibration === null);
 
+  console.log("\n  ── المعايير تُقرأ من المجموعة المرجعية لا من الكود ──");
+
+  const sets = await db.listReferenceSets();
+  const active = sets.find((set) => set.isDefault);
+  check("زُرعت مجموعةٌ افتراضية واحدة", Boolean(active) && sets.filter((s) => s.isDefault).length === 1);
+  check("وفيها معيارٌ لكل قياس", active.values.length >= 15, `${active?.values.length} قيمة`);
+  check("وكلٌّ بمرجعه المكتوب", active.values.every((value) => value.source.trim().length > 0));
+
+  await db.saveCephTracing({ documentId: xray.id, points: NORMAL, actor: "فحص", note: null, calibration: null });
+  const beforeEdit = await db.getCephTracing(xray.id);
+  const verdict = (tracing, key) => tracing.analysis.measurements.find((m) => m.key === key)?.verdict;
+  check("و٨٢ ضمن معيار ستاينر", verdict(beforeEdit, "SNA") === "normal");
+
+  /*
+   * وهذا هو الفحص الذي بُنيت الميزة له: تعديلُ المعيار يقلب الحكم.
+   *
+   * لو بقيت المعايير في الكود لَما أمكن هذا أصلًا — ولَبقي معيارُ مجتمعٍ آخر
+   * حاكمًا على كل مريضٍ في المركز بلا سبيل إلى تغييره إلا بنشرةٍ جديدة.
+   */
+  const edited = await db.setReferenceValue({
+    setId: active.id, measurement: "SNA", mean: 74, tolerance: 2,
+    source: "مجموعة اختبار", actor: "فحص",
+  });
+  check("عُدّل المعيار", edited.ok);
+
+  const afterEdit = await db.getCephTracing(xray.id);
+  check("فانقلب الحكم على الرقم نفسه", verdict(afterEdit, "SNA") === "high",
+    `${verdict(beforeEdit, "SNA")} ← ${verdict(afterEdit, "SNA")}`);
+  check("والمرجع الجديد يُعرض مع الرقم",
+    afterEdit.analysis.measurements.find((m) => m.key === "SNA")?.norm?.source === "مجموعة اختبار");
+
+  const zero = await db.setReferenceValue({
+    setId: active.id, measurement: "SNA", mean: 82, tolerance: 0, source: "خطأ", actor: "فحص",
+  });
+  check("وانحرافٌ بصفر يُرفض", !zero.ok, zero.message ?? "");
+  const bare = await db.setReferenceValue({
+    setId: active.id, measurement: "SNA", mean: 82, tolerance: 2, source: "  ", actor: "فحص",
+  });
+  check("ورقمٌ بلا مرجع يُرفض", !bare.ok, bare.message ?? "");
+
   console.log("\n  ── حذف الصورة يحذف تتبّعها ──");
 
   await db.getPool().query(`DELETE FROM patient_documents WHERE id = $1`, [xray.id]);

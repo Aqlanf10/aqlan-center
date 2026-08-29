@@ -374,7 +374,15 @@ export function verdictFor(value: number, norm: Norm): Verdict {
   return "normal";
 }
 
-export const NORMS: Record<string, Norm> = {
+/**
+ * المعايير الافتراضية — الكلاسيكية المنشورة، كلٌّ بمرجعه.
+ *
+ * وهي **بذرةٌ لا حكم**: تُزرع بها المجموعة المرجعية الافتراضية في القاعدة عند أول
+ * تشغيل، ثم تُقرأ المعايير من هناك — فللمدير أن يعدّلها أو يضيف مجموعةً محلّية
+ * لمرضى المركز. وبقاؤها هنا لأن للنظام أن يعمل قبل أن تُزرع القاعدة، ولأن الافتراض
+ * يجب أن يكون مكتوبًا في مكانٍ واحد يُقرأ ويُراجَع.
+ */
+export const DEFAULT_NORMS: Record<string, Norm> = {
   // المعايير القوقازية لستاينر، وهي الأوسع استعمالًا في التقويم السريري.
   // وليست مطلقة: تختلف بالعرق والجنس والعمر — ولذلك يُذكر المرجع ويُقرأ الرقم
   // مع الوجه لا وحده.
@@ -435,8 +443,11 @@ export function analyse(input: {
   tracing: Tracing;
   aspect?: number;
   calibration?: Calibration | null;
+  /** المعايير المعتمدة — من المجموعة المرجعية. وبلا تمريرها تُستعمل الافتراضية. */
+  norms?: Record<string, Norm>;
 }): Analysis {
   const { tracing } = input;
+  const NORMS = { ...DEFAULT_NORMS, ...(input.norms ?? {}) };
   const aspect = input.aspect && input.aspect > 0 ? input.aspect : 1;
   const missing = LANDMARKS.filter((item) => item.required && !tracing[item.code])
     .map((item) => item.code);
@@ -687,3 +698,32 @@ export function formatMeasurement(value: number, unit: Unit, lang: Lang = "ar"):
   if (unit === "ratio") return `${rounded}%`;
   return `${rounded} ${lang === "ar" ? "مم" : "mm"}`;
 }
+
+
+/** الاسم القديم مُبقًى: الافتراضُ هو المعيار حين لا تُمرَّر مجموعة. */
+export const NORMS = DEFAULT_NORMS;
+
+
+/**
+ * أسماء المعايير للعرض في شاشة الإدارة.
+ *
+ * ومفتاحُ المعيار غير اسم القياس: `SN_GoGn` مفتاحٌ في القاعدة، و`SN-GoGn` اسمٌ
+ * على الشاشة. وجمعُهما هنا يمنع أن يُكتب الاسم مرّتين فيختلفا.
+ */
+export const NORM_LABEL: Record<string, { name: string; unit: Unit; meaning: Bilingual }> = {
+  SNA: { name: "SNA", unit: "deg", meaning: { ar: "موضع الفك العلوي", en: "Maxillary position" } },
+  SNB: { name: "SNB", unit: "deg", meaning: { ar: "موضع الفك السفلي", en: "Mandibular position" } },
+  ANB: { name: "ANB", unit: "deg", meaning: { ar: "العلاقة بين الفكّين", en: "Inter-jaw relation" } },
+  SN_GoGn: { name: "SN-GoGn", unit: "deg", meaning: { ar: "انحدار الفك السفلي", en: "Mandibular plane angle" } },
+  FMA: { name: "FMA", unit: "deg", meaning: { ar: "انحدار الفك عن فرانكفورت", en: "Mandibular plane to Frankfort" } },
+  IMPA: { name: "IMPA", unit: "deg", meaning: { ar: "ميل القاطع السفلي", en: "Lower incisor inclination" } },
+  U1_SN: { name: "U1-SN", unit: "deg", meaning: { ar: "ميل القاطع العلوي عن SN", en: "Upper incisor to SN" } },
+  U1_NA: { name: "U1-NA", unit: "deg", meaning: { ar: "ميل القاطع العلوي عن NA", en: "Upper incisor to NA" } },
+  L1_NB: { name: "L1-NB", unit: "deg", meaning: { ar: "ميل القاطع السفلي عن NB", en: "Lower incisor to NB" } },
+  INTERINCISAL: { name: "U1-L1", unit: "deg", meaning: { ar: "الزاوية بين القاطعين", en: "Interincisal angle" } },
+  Y_AXIS: { name: "Y-Axis", unit: "deg", meaning: { ar: "اتجاه النمو", en: "Growth direction" } },
+  U1_NA_MM: { name: "U1-NA (mm)", unit: "mm", meaning: { ar: "بروز القاطع العلوي", en: "Upper incisor prominence" } },
+  L1_NB_MM: { name: "L1-NB (mm)", unit: "mm", meaning: { ar: "بروز القاطع السفلي", en: "Lower incisor prominence" } },
+  POG_NB_MM: { name: "Pog-NB (mm)", unit: "mm", meaning: { ar: "بروز الذقن", en: "Chin prominence" } },
+  JARABAK: { name: "Jarabak %", unit: "ratio", meaning: { ar: "نمط النمو", en: "Growth pattern" } },
+};

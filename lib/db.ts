@@ -531,6 +531,43 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS ceph_tracings_patient_idx
         ON ceph_tracings (patient_id, traced_at DESC);
 
+      /*
+       * المجموعات المرجعية السيفالومترية.
+       *
+       * كانت المعايير ثابتةً في الكود: متوسّطٌ وانحرافٌ لكل قياس، بلا عمرٍ ولا جنسٍ
+       * ولا مجتمع. وهذا يخالف قاعدة المشروع — لا تثبيت للقواعد التشغيلية في الكود —
+       * ويُطبّق معيارَ ستاينر المأخوذ من مجتمعٍ آخر على مريضٍ في تعز بلا تمييز.
+       *
+       * فصارت مجموعاتٍ تُدار: واحدةٌ افتراضية تُزرع بالقيم الكلاسيكية موثَّقةً
+       * بمرجعها، وللمدير أن يضيف مجموعةً محلّية متى جمع بياناته ويجعلها الافتراضية.
+       */
+      CREATE TABLE IF NOT EXISTS ceph_reference_sets (
+        id          SERIAL PRIMARY KEY,
+        name        TEXT    NOT NULL,
+        -- المرجع العلمي — كي يُراجَع الرقم لا يُصدَّق.
+        source      TEXT    NOT NULL,
+        note        TEXT,
+        is_default  BOOLEAN NOT NULL DEFAULT FALSE,
+        archived    BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by  TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by  TEXT,
+        updated_at  TIMESTAMPTZ
+      );
+      -- مجموعةٌ افتراضية واحدة لا أكثر: واثنتان تعنيان أن «المعيار» سؤالٌ بجوابين.
+      CREATE UNIQUE INDEX IF NOT EXISTS ceph_reference_one_default
+        ON ceph_reference_sets (is_default) WHERE is_default;
+
+      CREATE TABLE IF NOT EXISTS ceph_reference_values (
+        set_id      INTEGER NOT NULL REFERENCES ceph_reference_sets(id) ON DELETE CASCADE,
+        measurement TEXT    NOT NULL,
+        mean        DOUBLE PRECISION NOT NULL,
+        -- الانحراف موجبٌ دائمًا: صفرٌ يجعل كل قياسٍ خارج المعيار إلا المطابق تمامًا.
+        tolerance   DOUBLE PRECISION NOT NULL CHECK (tolerance > 0),
+        source      TEXT    NOT NULL,
+        PRIMARY KEY (set_id, measurement)
+      );
+
       -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
       ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
       CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
@@ -5777,8 +5814,8 @@ export async function closeOrthoCase(input: {
 // ─── التتبّع السيفالومتري ────────────────────────────────────────────────────
 
 import {
-  analyse, isLandmarkCode,
-  type Analysis, type Calibration, type Tracing,
+  DEFAULT_NORMS, analyse, isLandmarkCode,
+  type Analysis, type Calibration, type Norm, type Tracing,
 } from "./ceph";
 
 export interface CephTracing {
@@ -5834,6 +5871,7 @@ const toTracing = (row: {
   id: number; document_id: number; patient_id: number; points: unknown;
   calibration: unknown; note: string | null; traced_by: string; traced_at: Date;
   updated_by: string | null; updated_at: Date | null; aspect?: number;
+  norms?: Record<string, Norm>;
 }): CephTracing => {
   const points = sanitizeTracing(row.points);
   const calibration = sanitizeCalibration(row.calibration);
@@ -5848,29 +5886,163 @@ const toTracing = (row: {
     tracedAt: row.traced_at.toISOString(),
     updatedBy: row.updated_by,
     updatedAt: row.updated_at ? row.updated_at.toISOString() : null,
-    analysis: analyse({ tracing: points, calibration, aspect: row.aspect }),
+    analysis: analyse({ tracing: points, calibration, aspect: row.aspect, norms: row.norms }),
   };
 };
 
 const TRACING_COLUMNS = `id, document_id, patient_id, points, calibration, note,
        traced_by, traced_at, updated_by, updated_at`;
 
+/* ─── المجموعات المرجعية ─────────────────────────────────────────────────── */
+
+export interface ReferenceValue {
+  measurement: string;
+  mean: number;
+  tolerance: number;
+  source: string;
+}
+
+export interface ReferenceSet {
+  id: number;
+  name: string;
+  source: string;
+  note: string | null;
+  isDefault: boolean;
+  archived: boolean;
+  values: ReferenceValue[];
+}
+
+/**
+ * تُزرع المجموعة الافتراضية مرّةً واحدة، بالقيم الكلاسيكية موثَّقةً بمرجعها.
+ *
+ * والزرع مشروطٌ بخلوّ الجدول لا بغياب الاسم: لو زُرعت في كل تشغيل لَعادت القيم
+ * الأصلية فوق تعديل المدير في كل إقلاع — وهو أسوأ من ألّا تكون قابلةً للتعديل
+ * أصلًا، لأنه يبدو قابلًا ثم يرجع.
+ */
+async function ensureReferenceSeed(): Promise<void> {
+  const pool = getPool();
+  const { rows } = await pool.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ceph_reference_sets`);
+  if (Number(rows[0]?.count ?? 0) > 0) return;
+
+  const entries = Object.entries(DEFAULT_NORMS);
+  const { rows: created } = await pool.query<{ id: number }>(
+    `INSERT INTO ceph_reference_sets (name, source, note, is_default, created_by)
+     VALUES ($1, $2, $3, TRUE, $4) RETURNING id`,
+    [
+      "المعايير الكلاسيكية",
+      "Steiner · Tweed · Downs · Jarabak",
+      "القيم المنشورة الأوسع استعمالًا. وهي مأخوذة من مجتمعاتٍ غير يمنية — فتُقرأ مع الوجه لا وحدها، وللمدير أن يضيف مجموعةً محلّية ويجعلها الافتراضية.",
+      "النظام",
+    ],
+  );
+  const setId = created[0].id;
+  await pool.query(
+    `INSERT INTO ceph_reference_values (set_id, measurement, mean, tolerance, source)
+     SELECT $1, m, v, t, s FROM UNNEST($2::text[], $3::float8[], $4::float8[], $5::text[]) AS u(m, v, t, s)`,
+    [
+      setId,
+      entries.map(([key]) => key),
+      entries.map(([, norm]) => norm.mean),
+      entries.map(([, norm]) => norm.tolerance),
+      entries.map(([, norm]) => norm.source),
+    ],
+  );
+}
+
+const toReferenceSet = (row: Record<string, unknown>, values: ReferenceValue[]): ReferenceSet => ({
+  id: row.id as number,
+  name: row.name as string,
+  source: row.source as string,
+  note: (row.note as string | null) ?? null,
+  isDefault: Boolean(row.is_default),
+  archived: Boolean(row.archived),
+  values,
+});
+
+export async function listReferenceSets(): Promise<ReferenceSet[]> {
+  await ensureSchema();
+  await ensureReferenceSeed();
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT id, name, source, note, is_default, archived FROM ceph_reference_sets
+      ORDER BY is_default DESC, archived, id`,
+  );
+  const { rows: values } = await pool.query<ReferenceValue & { set_id: number }>(
+    `SELECT set_id, measurement, mean, tolerance, source FROM ceph_reference_values
+      ORDER BY set_id, measurement`,
+  );
+  return rows.map((row) => toReferenceSet(
+    row, values.filter((value) => value.set_id === row.id)
+      .map(({ measurement, mean, tolerance, source }) => ({ measurement, mean: Number(mean), tolerance: Number(tolerance), source })),
+  ));
+}
+
+/**
+ * معايير المجموعة الافتراضية، بالشكل الذي يقرأه `analyse`.
+ *
+ * ولا تُخبَّأ في الذاكرة: تعديلُ المدير يجب أن يظهر في القراءة التالية لا بعد
+ * إعادة تشغيل — والقراءة صفٌّ واحدٌ من عشرة، لا حملَ فيها.
+ */
+export async function referenceNorms(): Promise<Record<string, Norm>> {
+  await ensureSchema();
+  await ensureReferenceSeed();
+  const { rows } = await getPool().query<{ measurement: string; mean: string; tolerance: string; source: string }>(
+    `SELECT v.measurement, v.mean, v.tolerance, v.source
+       FROM ceph_reference_values v
+       JOIN ceph_reference_sets s ON s.id = v.set_id
+      WHERE s.is_default AND NOT s.archived`,
+  );
+  const norms: Record<string, Norm> = {};
+  for (const row of rows) {
+    norms[row.measurement] = { mean: Number(row.mean), tolerance: Number(row.tolerance), source: row.source };
+  }
+  return norms;
+}
+
+/** تعديل قيمة في مجموعة — للمدير وحده، ومُسجَّلٌ باسمه. */
+export async function setReferenceValue(input: {
+  setId: number; measurement: string; mean: number; tolerance: number; source: string; actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  if (!Number.isFinite(input.mean)) return { ok: false, message: "المتوسط رقمٌ مطلوب." };
+  if (!(input.tolerance > 0)) return { ok: false, message: "الانحراف يجب أن يكون أكبر من صفر." };
+  if (!input.source.trim()) return { ok: false, message: "اكتب مرجع القيمة — رقمٌ بلا مرجع لا يُراجَع." };
+
+  const { rowCount } = await getPool().query(
+    `INSERT INTO ceph_reference_values (set_id, measurement, mean, tolerance, source)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (set_id, measurement)
+     DO UPDATE SET mean = EXCLUDED.mean, tolerance = EXCLUDED.tolerance, source = EXCLUDED.source`,
+    [input.setId, input.measurement, input.mean, input.tolerance, input.source.trim()],
+  );
+  if (!rowCount) return { ok: false, message: "المجموعة المرجعية غير موجودة." };
+  await getPool().query(
+    `UPDATE ceph_reference_sets SET updated_by = $2, updated_at = NOW() WHERE id = $1`,
+    [input.setId, input.actor],
+  );
+  return { ok: true };
+}
+
 export async function getCephTracing(documentId: number, aspect?: number): Promise<CephTracing | null> {
   await ensureSchema();
-  const { rows } = await getPool().query(
-    `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE document_id = $1`, [documentId],
-  );
-  return rows[0] ? toTracing({ ...rows[0], aspect }) : null;
+  const [{ rows }, norms] = await Promise.all([
+    getPool().query(`SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE document_id = $1`, [documentId]),
+    referenceNorms(),
+  ]);
+  return rows[0] ? toTracing({ ...rows[0], aspect, norms }) : null;
 }
 
 export async function listPatientTracings(patientId: number): Promise<CephTracing[]> {
   await ensureSchema();
-  const { rows } = await getPool().query(
-    `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE patient_id = $1
-      ORDER BY traced_at DESC`,
-    [patientId],
-  );
-  return rows.map((row) => toTracing(row));
+  const [{ rows }, norms] = await Promise.all([
+    getPool().query(
+      `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE patient_id = $1
+        ORDER BY traced_at DESC`,
+      [patientId],
+    ),
+    referenceNorms(),
+  ]);
+  return rows.map((row) => toTracing({ ...row, norms }));
 }
 
 /**

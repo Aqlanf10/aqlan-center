@@ -11,6 +11,8 @@ import {
   SKELETAL_LABEL,
   millimetresPerUnit,
   offsetFromLine,
+  DEFAULT_NORMS,
+  NORM_LABEL,
   skeletalClass,
   verdictFor,
   NORMS,
@@ -428,5 +430,50 @@ describe("صياغة الرقم", () => {
   it("والنسبة بالمئة، والدرجة بعلامتها", () => {
     expect(formatMeasurement(63.5, "ratio")).toBe("63.5%");
     expect(formatMeasurement(82, "deg")).toBe("82.0°");
+  });
+});
+
+
+describe("المعايير تُمرَّر ولا تُثبَّت", () => {
+  const verdictOf = (key: string, norms?: Record<string, { mean: number; tolerance: number; source: string }>) =>
+    analyse({ tracing: FACE, norms }).measurements.find((m) => m.key === key)?.verdict;
+
+  it("بلا تمرير: الافتراضي هو المعمول به", () => {
+    expect(verdictOf("SNA")).toBe("normal");
+  });
+
+  it("ومجموعةٌ أخرى تقلب الحكم — وهذا هو المقصود", () => {
+    // معيارٌ يجعل ٨٢ مرتفعة: لو بقيت المعايير في الكود لما أمكن هذا أصلًا.
+    expect(verdictOf("SNA", { SNA: { mean: 74, tolerance: 2, source: "محلّي" } })).toBe("high");
+    expect(verdictOf("SNA", { SNA: { mean: 90, tolerance: 2, source: "محلّي" } })).toBe("low");
+  });
+
+  it("والمرجع يظهر مع الرقم — فيُراجَع لا يُصدَّق", () => {
+    const measured = analyse({
+      tracing: FACE, norms: { SNA: { mean: 82, tolerance: 2, source: "مرضى تعز ٢٠٢٦" } },
+    }).measurements.find((m) => m.key === "SNA")!;
+    expect(measured.norm!.source).toBe("مرضى تعز ٢٠٢٦");
+  });
+
+  it("ومجموعةٌ ناقصة لا تُعطّل ما لم تُذكر فيه", () => {
+    // تُمرَّر SNA وحدها، فتبقى SNB على الافتراضي بدل أن تختفي.
+    const partial = analyse({ tracing: FACE, norms: { SNA: { mean: 74, tolerance: 2, source: "محلّي" } } });
+    expect(partial.measurements.find((m) => m.key === "SNB")!.norm).toEqual(DEFAULT_NORMS.SNB);
+  });
+});
+
+
+describe("أسماء المعايير تطابق المعايير", () => {
+  it("لكل معيارٍ اسمٌ للعرض — ولا اسمَ بلا معيار", () => {
+    expect(Object.keys(NORM_LABEL).sort()).toEqual(Object.keys(DEFAULT_NORMS).sort());
+  });
+
+  it("وكل اسمٍ معروضٍ في التحليل له مفتاحٌ يُعدَّل منه", () => {
+    // القياسات التي لها معيار يجب أن يوجد لها صفٌّ في شاشة الإدارة — وإلّا صار
+    // معيارٌ يحكم على المريض ولا سبيل إلى تغييره.
+    const named = new Set(Object.values(NORM_LABEL).map((entry) => entry.name));
+    const judged = analyse({ tracing: FACE_MM, calibration: CAL }).measurements
+      .filter((m) => m.norm !== null).map((m) => m.name);
+    for (const name of judged) expect(named.has(name)).toBe(true);
   });
 });

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AUDIT_LABEL, isSensitive, type AuditAction, type AuditEntry } from "@/lib/audit";
 import { PageHeader } from "@/components/PageHeader";
+import { settingsTabs } from "@/lib/settingsNav";
 import { Icon } from "@/components/Icon";
 import { clinicDateString } from "@/lib/schedule";
 import { friendlyDateLong } from "@/lib/reminders";
@@ -67,12 +68,7 @@ export default function AuditPage() {
       <PageHeader
         title="سجل التدقيق"
         subtitle="من فعل ماذا ومتى — يُكتب ولا يُعدَّل ولا يُحذف"
-        links={[
-          { href: "/settings", label: "عام" },
-          { href: "/settings/users", label: "المستخدمون والصلاحيات" },
-          { href: "/settings/audit", label: "سجل التدقيق", current: true },
-          { href: "/settings/export", label: "النسخ والتصدير" },
-        ]}
+        links={settingsTabs("/settings/audit")}
       />
 
       {error ? (
