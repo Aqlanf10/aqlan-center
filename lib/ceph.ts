@@ -265,6 +265,39 @@ export function distanceBetween(a: TracedPoint, b: TracedPoint, aspect = 1): num
   return norm(subtract(toAnalysis(a, aspect), toAnalysis(b, aspect)));
 }
 
+/**
+ * بُعد نقطةٍ عن خطّ، بإشارةٍ تقول أيّ جهةٍ هي منه.
+ *
+ * والإشارة هنا هي القياس كلّه: `U1-NA = 4mm` تعني أن القاطع **أمام** خط NA بأربعة،
+ * و`-4` تعني أنه خلفه بأربعة — وبينهما علاجان مختلفان تمامًا. فالقيمة المطلقة
+ * تمحو التشخيص لا تُبسّطه.
+ *
+ * ولا تُؤخذ الجهة من محور الصورة: الأشعة الجانبية تُصوَّر ووجهها إلى اليمين أحيانًا
+ * وإلى اليسار أحيانًا، فربطُ «الأمام» بـ`+x` يقلب كل إشارةٍ على نصف الصور. فتُؤخذ
+ * الجهة من التشريح نفسه: تُمرَّر نقطةٌ **معلومة الخلفية** (السرج S خلف كل شيء)،
+ * ويكون الموجب هو الجهة المقابلة لها. فتصحّ الإشارة على الصورتين بلا إعداد.
+ */
+export function offsetFromLine(
+  point: TracedPoint,
+  from: TracedPoint, to: TracedPoint,
+  behind: TracedPoint,
+  aspect = 1,
+): number {
+  const a = toAnalysis(from, aspect), b = toAnalysis(to, aspect);
+  const direction = subtract(b, a);
+  const length = norm(direction);
+  if (length === 0) return Number.NaN;
+  // العمودي على الخط، ثم إسقاط الفرق عليه: حاصل الضرب المتّجه في المستوي.
+  const side = (p: Vector) => {
+    const d = subtract(p, a);
+    return (direction.x * d.y - direction.y * d.x) / length;
+  };
+  const behindSide = side(toAnalysis(behind, aspect));
+  if (behindSide === 0) return Number.NaN;
+  // الموجب هو الجهة المقابلة للنقطة الخلفية.
+  return side(toAnalysis(point, aspect)) * (behindSide < 0 ? 1 : -1);
+}
+
 /* ─────────────────────────── المعايرة ─────────────────────────── */
 
 /**
@@ -313,15 +346,24 @@ export type Lang = "ar" | "en";
 
 export const say = (text: Bilingual, lang: Lang): string => text[lang];
 
+export type Unit = "deg" | "mm" | "ratio";
+
 export interface Measurement {
   key: string;
   name: string;
   /** ما يعنيه القياس سريريًّا — لا تعريفه الهندسي. */
   meaning: Bilingual;
-  unit: "deg" | "mm";
+  unit: Unit;
   value: number;
-  norm: Norm;
-  verdict: Verdict;
+  /**
+   * المعيار — وقد لا يكون له معيار.
+   *
+   * ارتفاعُ الوجه الأمامي يختلف بالعمر والجنس اختلافًا كبيرًا، فمعيارٌ واحد له
+   * لكل المرضى رقمٌ مخترع. فيُعرض الطول بلا حكم: قيمةٌ تُقرأ ولا تُصنَّف — وهذا
+   * أصدق من «ضمن المعيار» مبنيّةٍ على معيارٍ لا يخصّ هذا المريض.
+   */
+  norm: Norm | null;
+  verdict: Verdict | null;
   /** النقاط التي بُني عليها — فيُعرف أيّها يُراجَع إن بدا الرقم غريبًا. */
   from: LandmarkCode[];
 }
@@ -347,6 +389,12 @@ export const NORMS: Record<string, Norm> = {
   L1_NB: { mean: 25, tolerance: 4, source: "Steiner" },
   INTERINCISAL: { mean: 131, tolerance: 9, source: "Downs" },
   Y_AXIS: { mean: 59, tolerance: 4, source: "Downs" },
+  // القياسات الطولية بالمليمتر — ولا تُحسب إلا بعد المعايرة.
+  U1_NA_MM: { mean: 4, tolerance: 2, source: "Steiner" },
+  L1_NB_MM: { mean: 4, tolerance: 2, source: "Steiner" },
+  POG_NB_MM: { mean: 4, tolerance: 2, source: "Steiner" },
+  // نسبةٌ لا طول: تُقسم فيها المسافتان فيسقط المقياس — فتُحسب بلا معايرة أصلًا.
+  JARABAK: { mean: 63.5, tolerance: 1.5, source: "Jarabak" },
 };
 
 /**
@@ -445,7 +493,7 @@ export function analyse(input: {
     });
   };
 
-  const { Po, Or, Go, Me, Gn, U1T, U1A, L1T, L1A } = tracing;
+  const { Po, Or, Go, Me, Gn, Pog, ANS, U1T, U1A, L1T, L1A } = tracing;
 
   // نمط النمو: كم ينحدر الفك السفلي عن قاعدة الجمجمة. المرتفع وجهٌ طويل مفتوح
   // العضّة، والمنخفض وجهٌ قصير عميق العضّة — ولكلٍّ علاجٌ مختلف.
@@ -521,17 +569,121 @@ export function analyse(input: {
     });
   }
 
+  /*
+   * النسب — تُحسب بلا معايرة.
+   *
+   * المقياس يسقط بالقسمة: نسبةُ ارتفاعٍ إلى ارتفاع هي هي، صُوّرت الأشعة بتكبير
+   * عشرة في المئة أو عشرين. فالنسبة تصحّ حيث يمتنع الطول — وهذا ليس تحايلًا على
+   * المعايرة بل خاصّةٌ في النسبة نفسها.
+   */
+  if (S && Go && N && Me) {
+    const posterior = distanceBetween(S, Go, aspect);
+    const anterior = distanceBetween(N, Me, aspect);
+    if (anterior > 0) {
+      const value = (posterior / anterior) * 100;
+      measurements.push({
+        key: "Jarabak", name: "Jarabak %", unit: "ratio", value,
+        meaning: {
+          ar: "نسبة الارتفاع الخلفي إلى الأمامي — نمط النمو: أقلّ من ٦٢ رأسيّ، وأكثر من ٦٥ أفقيّ",
+          en: "Posterior-to-anterior facial height — growth pattern: below 62 vertical, above 65 horizontal",
+        },
+        norm: NORMS.JARABAK, verdict: verdictFor(value, NORMS.JARABAK),
+        from: ["S", "Go", "N", "Me"],
+      });
+    }
+  }
+
+  /*
+   * القياسات الطولية — ولا واحد منها بلا معايرة.
+   *
+   * لا يُعرض الطول بالبكسل ولا بأيّ وحدةٍ أخرى حين تغيب المعايرة: رقمٌ بلا وحدة
+   * يُقرأ كأنه مليمترات ويُبنى عليه قرار. فإمّا مليمترٌ صحيح أو لا شيء.
+   */
+  const scale = input.calibration ? millimetresPerUnit(input.calibration, aspect) : null;
+
+  if (scale) {
+    const mm = (input: {
+      key: string; name: string; meaning: Bilingual; norm: Norm | null;
+      from: LandmarkCode[]; value: number;
+    }) => {
+      const value = input.value * scale;
+      measurements.push({
+        key: input.key, name: input.name, unit: "mm", value,
+        meaning: input.meaning, norm: input.norm,
+        verdict: input.norm ? verdictFor(value, input.norm) : null,
+        from: input.from,
+      });
+    };
+
+    // بروز القاطع العلوي عن خط NA — موجبٌ أمامه، سالبٌ خلفه، والجهة من S لا من الصورة.
+    if (N && A && U1T && S) {
+      mm({
+        key: "U1-NA-mm", name: "U1-NA (mm)", norm: NORMS.U1_NA_MM, from: ["N", "A", "U1T"],
+        meaning: { ar: "بروز حافة القاطع العلوي أمام خط NA", en: "Upper incisor edge ahead of the NA line" },
+        value: offsetFromLine(U1T, N, A, S, aspect),
+      });
+    }
+
+    if (N && B && L1T && S) {
+      mm({
+        key: "L1-NB-mm", name: "L1-NB (mm)", norm: NORMS.L1_NB_MM, from: ["N", "B", "L1T"],
+        meaning: { ar: "بروز حافة القاطع السفلي أمام خط NB", en: "Lower incisor edge ahead of the NB line" },
+        value: offsetFromLine(L1T, N, B, S, aspect),
+      });
+    }
+
+    // بروز الذقن: يُقرأ مع L1-NB — تقاربهما هو توازن الوجه السفلي.
+    if (N && B && Pog && S) {
+      mm({
+        key: "Pog-NB-mm", name: "Pog-NB (mm)", norm: NORMS.POG_NB_MM, from: ["N", "B", "Pog"],
+        meaning: { ar: "بروز الذقن أمام خط NB — يُقرأ مع بروز القاطع السفلي", en: "Chin prominence ahead of the NB line — read with the lower incisor" },
+        value: offsetFromLine(Pog, N, B, S, aspect),
+      });
+    }
+
+    // الارتفاعات: تُعرض بلا حكم — معيارها يختلف بالعمر والجنس، ولا معيار واحد لها.
+    if (N && Me) {
+      mm({
+        key: "N-Me", name: "N-Me", norm: null, from: ["N", "Me"],
+        meaning: { ar: "ارتفاع الوجه الأمامي الكلّي — يختلف بالعمر والجنس، فيُقرأ ولا يُصنَّف", en: "Total anterior facial height — varies with age and sex, so read not graded" },
+        value: distanceBetween(N, Me, aspect),
+      });
+    }
+
+    if (ANS && Me) {
+      mm({
+        key: "ANS-Me", name: "ANS-Me", norm: null, from: ["ANS", "Me"],
+        meaning: { ar: "ارتفاع الوجه الأمامي السفلي", en: "Lower anterior facial height" },
+        value: distanceBetween(ANS, Me, aspect),
+      });
+    }
+
+    if (S && Go) {
+      mm({
+        key: "S-Go", name: "S-Go", norm: null, from: ["S", "Go"],
+        meaning: { ar: "ارتفاع الوجه الخلفي", en: "Posterior facial height" },
+        value: distanceBetween(S, Go, aspect),
+      });
+    }
+  }
+
   return {
     measurements,
     skeletal: anb === null ? null : { anb, klass: skeletalClass(anb) },
     missing,
-    calibrated: Boolean(input.calibration && millimetresPerUnit(input.calibration, aspect)),
+    calibrated: Boolean(scale),
   };
 }
 
-/** صياغة الرقم للعرض — درجةٌ بمنزلة عشرية واحدة، والمليمتر كذلك. */
-export function formatMeasurement(value: number, unit: "deg" | "mm"): string {
+/**
+ * صياغة الرقم للعرض — بمنزلة عشرية واحدة، ووحدةٍ تتبع لغة الشاشة.
+ *
+ * وكانت «مم» مكتوبةً في الكود بالعربية وحدها، فتظهر عربيةً في الشاشة الإنجليزية.
+ */
+export function formatMeasurement(value: number, unit: Unit, lang: Lang = "ar"): string {
   if (!Number.isFinite(value)) return "—";
   const rounded = value.toFixed(1);
-  return unit === "deg" ? `${rounded}°` : `${rounded} مم`;
+  if (unit === "deg") return `${rounded}°`;
+  if (unit === "ratio") return `${rounded}%`;
+  return `${rounded} ${lang === "ar" ? "مم" : "mm"}`;
 }

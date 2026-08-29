@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   GROUP_LABEL, LANDMARKS, LANDMARK_BY_CODE, LANDMARK_MANUAL, SKELETAL_LABEL, analyse, formatMeasurement, say,
-  type Calibration, type Lang, type LandmarkCode, type Tracing,
+  type Calibration, type Lang, type LandmarkCode, type TracedPoint, type Tracing,
 } from "@/lib/ceph";
 
 /**
@@ -64,10 +64,24 @@ const T = {
     ar: "تعريفات النقاط منقولة من الدليل السريري المعتمد والموقَّع. وأيّ تعديل عليها يستلزم إصدارًا جديدًا منه لا تغييرًا في البرنامج.",
     en: "Landmark definitions are taken from the approved and signed clinical manual. Any change requires a new manual version, not a code change.",
   },
-  // حدُّ المرحلة، مكتوبًا حيث يُقرأ العمل لا في مستندٍ جانبي.
-  anglesOnly: {
-    ar: "زوايا فقط — لا قياسات خطية بالمليمتر بعد، فلا معايرة في هذه المرحلة.",
-    en: "Angles only — no millimetre measurements yet, so no calibration at this stage.",
+  calibration: { ar: "المعايرة", en: "Calibration" },
+  calibrateHint: {
+    ar: "انقر طرفَي مسطرة الأشعة أو أيّ طولٍ معلوم على الصورة، ثم اكتب طوله الحقيقي بالمليمتر.",
+    en: "Click the two ends of the ruler — or any known length on the film — then type its true length in millimetres.",
+  },
+  calibrateStart: { ar: "عايِر الصورة", en: "Calibrate image" },
+  calibrateStop: { ar: "عُد إلى المعالم", en: "Back to landmarks" },
+  calibrateApply: { ar: "اعتمد المعايرة", en: "Apply calibration" },
+  calibrateClear: { ar: "أزل المعايرة", en: "Remove calibration" },
+  calibrateFirst: { ar: "انقر الطرف الأول.", en: "Click the first end." },
+  calibrateSecond: { ar: "انقر الطرف الآخر.", en: "Click the other end." },
+  calibrateMm: { ar: "الطول الحقيقي (مم)", en: "True length (mm)" },
+  calibrated: { ar: "معايَرة", en: "Calibrated" },
+  notCalibrated: { ar: "غير معايَرة", en: "Not calibrated" },
+  // الحدّ يُقال حيث يُقرأ العمل لا في مستندٍ جانبي.
+  needsCalibration: {
+    ar: "الزوايا والنسب تُحسب بلا معايرة. أمّا المسافات بالمليمتر فلا تُعرض حتى تُعايَر الصورة — ورقمٌ بلا وحدةٍ صحيحة يُقرأ كأنه مليمترات ويُبنى عليه قرار.",
+    en: "Angles and ratios need no calibration. Millimetre distances stay hidden until the image is calibrated — a number without a true unit gets read as millimetres and decisions get built on it.",
   },
   // ورسائل العطل بلغتين كذلك: من يقرأ الشاشة بالإنجليزية يقرأ عطلها بها.
   saveFailed: { ar: "تعذّر الحفظ.", en: "Could not save." },
@@ -84,6 +98,15 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [lang, setLang] = useState<Lang>("ar");
+  /*
+   * وضع المعايرة: النقر يرسم طرفَي المؤشّر المعلوم بدل أن يضع معلمًا.
+   *
+   * وهو وضعٌ مستقلّ لا زرٌّ جانبي، لأن النقرة نفسها تعني شيئين مختلفين — ولو
+   * تُرك التمييز للسياق لَوضع الطبيبُ معلمًا وهو يظنّ أنه يعاير.
+   */
+  const [mode, setMode] = useState<"landmark" | "calibrate">("landmark");
+  const [draft, setDraft] = useState<{ from: TracedPoint; to: TracedPoint | null } | null>(null);
+  const [millimetres, setMillimetres] = useState("");
   const imageRef = useRef<HTMLImageElement>(null);
   const rtl = lang === "ar";
 
@@ -110,6 +133,13 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
     const x = (event.clientX - rect.left) / rect.width;
     const y = (event.clientY - rect.top) / rect.height;
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
+
+    if (mode === "calibrate") {
+      // النقرة الأولى طرفٌ، والثانية الطرف الآخر، والثالثة تبدأ من جديد.
+      setDraft((current) => (!current || current.to ? { from: { x, y }, to: null } : { ...current, to: { x, y } }));
+      return;
+    }
+
     setPoints((current) => ({ ...current, [active]: { x, y } }));
     setDirty(true);
 
@@ -119,7 +149,7 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
     const next = order.slice(order.indexOf(active) + 1)
       .find((code) => !points[code] && code !== active);
     if (next) setActive(next);
-  }, [active, canWrite, points]);
+  }, [active, canWrite, mode, points]);
 
   const analysis = analyse({ tracing: points, calibration, aspect });
 
@@ -223,6 +253,29 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
               </span>
             );
           })}
+          {/* خط المعايرة: يُرى وهو يُرسم، ويبقى مرئيًّا بعد اعتماده. */}
+          {(() => {
+            const ends = draft ?? (calibration ? { from: calibration.from, to: calibration.to } : null);
+            if (!ends) return null;
+            return (
+              <>
+                {[ends.from, ends.to].map((end, index) => end ? (
+                  <span key={index} style={{ left: `${end.x * 100}%`, top: `${end.y * 100}%` }}
+                    className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 text-sky-300">
+                    <span className="block h-2.5 w-2.5 rotate-45 border-2 border-current bg-black/40" />
+                  </span>
+                ) : null)}
+                {ends.to ? (
+                  <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100"
+                    preserveAspectRatio="none">
+                    <line x1={ends.from.x * 100} y1={ends.from.y * 100}
+                      x2={ends.to.x * 100} y2={ends.to.y * 100}
+                      stroke="rgb(125 211 252)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
+                  </svg>
+                ) : null}
+              </>
+            );
+          })()}
           </div>
         </div>
 
@@ -269,16 +322,22 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                   <li key={item.key} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-extrabold" dir="ltr">{item.name}</span>
-                      <span className={`text-sm font-extrabold ${VERDICT_STYLE[item.verdict]}`} dir="ltr">
-                        {formatMeasurement(item.value, item.unit)}
+                      <span className={`text-sm font-extrabold ${item.verdict ? VERDICT_STYLE[item.verdict] : "text-navy-900"}`} dir="ltr">
+                        {formatMeasurement(item.value, item.unit, lang)}
                       </span>
                     </div>
+                    {/* قياسٌ بلا معيار يُعرض بلا حكم — ولا يُخترع له معيار ليمتلئ السطر. */}
                     <p className="text-[10px] text-slate-500">
-                      {say(item.meaning, lang)} · {say(T.norm, lang)} {item.norm.mean}±{item.norm.tolerance}{" "}
-                      ({item.norm.source}) ·{" "}
-                      <span className={VERDICT_STYLE[item.verdict]}>
-                        {say(T.verdict[item.verdict], lang)}
-                      </span>
+                      {say(item.meaning, lang)}
+                      {item.norm && item.verdict ? (
+                        <>
+                          {" · "}{say(T.norm, lang)} {item.norm.mean}±{item.norm.tolerance}{" "}
+                          ({item.norm.source}) ·{" "}
+                          <span className={VERDICT_STYLE[item.verdict]}>
+                            {say(T.verdict[item.verdict], lang)}
+                          </span>
+                        </>
+                      ) : null}
                     </p>
                   </li>
                 ))}
@@ -291,15 +350,79 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
               </p>
             ) : null}
 
-            {/*
-              * حدُّ المرحلة يُقال هنا لا في مستند.
-              *
-              * المعايرة تُحفظ في القاعدة ولا تُنتج شيئًا بعد: لا قياس خطيًّا واحدًا
-              * في التحليل. وطبيبٌ يرى حقلًا للمعايرة يظنّ أن المسافات تُقاس — فحُذف
-              * الظنّ وقيل الحدّ. ويُرفع هذا السطر يوم تُضاف القياسات الخطية.
-              */}
-            <p className="mt-2 text-[10px] text-slate-400">{say(T.anglesOnly, lang)}</p>
+            {!analysis.calibrated ? (
+              <p className="mt-2 rounded-lg bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-500">
+                {say(T.needsCalibration, lang)}
+              </p>
+            ) : null}
           </div>
+
+          {/*
+            * المعايرة — أداةٌ في الشاشة لا حقلٌ في قاعدة البيانات.
+            *
+            * كانت تُحفظ وتُقرأ ولا سبيل إلى ضبطها إلا بمناداة المسار مباشرةً، ولا
+            * تُنتج شيئًا بعد ضبطها: لا قياس طوليًّا واحدًا. فصارت تُرسم على الصورة
+            * وتُدخل بالمليمتر، وتُشغّل المسافات التي كانت معطّلة.
+            */}
+          {canWrite ? (
+            <div className="rounded-xl bg-white p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[11px] font-bold text-slate-500">{say(T.calibration, lang)}</p>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
+                  analysis.calibrated ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"
+                }`}>
+                  {say(analysis.calibrated ? T.calibrated : T.notCalibrated, lang)}
+                </span>
+              </div>
+
+              {mode === "calibrate" ? (
+                <>
+                  <p className="mb-2 text-[10px] leading-4 text-slate-500">{say(T.calibrateHint, lang)}</p>
+                  <p className="mb-2 text-[11px] font-bold text-sky-700">
+                    {say(!draft || draft.to ? T.calibrateFirst : T.calibrateSecond, lang)}
+                  </p>
+                  <label className="block text-[10px] font-bold text-slate-500" htmlFor="ceph-mm">
+                    {say(T.calibrateMm, lang)}
+                  </label>
+                  <input id="ceph-mm" inputMode="decimal" value={millimetres} dir="ltr"
+                    onChange={(event) => setMillimetres(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-blue" />
+                  <div className="mt-2 flex gap-1.5">
+                    <button
+                      onClick={() => {
+                        const value = Number(millimetres);
+                        if (!draft?.to || !(value > 0)) return;
+                        setCalibration({ from: draft.from, to: draft.to, millimetres: value });
+                        setDirty(true);
+                        setDraft(null);
+                        setMode("landmark");
+                      }}
+                      disabled={!draft?.to || !(Number(millimetres) > 0)}
+                      className="flex-1 rounded-lg bg-sky-700 px-3 py-1.5 text-[11px] font-extrabold text-white disabled:opacity-40">
+                      {say(T.calibrateApply, lang)}
+                    </button>
+                    <button onClick={() => { setMode("landmark"); setDraft(null); }}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-600">
+                      {say(T.calibrateStop, lang)}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="flex gap-1.5">
+                  <button onClick={() => { setMode("calibrate"); setDraft(null); setMillimetres(calibration ? String(calibration.millimetres) : ""); }}
+                    className="flex-1 rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-[11px] font-extrabold text-sky-800">
+                    {say(T.calibrateStart, lang)}
+                  </button>
+                  {calibration ? (
+                    <button onClick={() => { setCalibration(null); setDirty(true); }}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-600">
+                      {say(T.calibrateClear, lang)}
+                    </button>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
 
           {/*
             * ما لم يُنفَّذ بعد — يُقال ولا يُترك للطبيب أن يكتشفه بنفسه.

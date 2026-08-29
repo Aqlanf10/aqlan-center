@@ -31,7 +31,18 @@ const NORMAL = {
   N: { x: 0.62, y: 0.26 },
   A: { x: 0.5588, y: 0.5230 },
   B: { x: 0.5158, y: 0.6462 },
+  // Go وMe لأجل الارتفاعين ونسبتهما — واختيرا ليخرج ياراباك ضمن معياره.
+  Go: { x: 0.30, y: 0.576 },
+  Me: { x: 0.60, y: 0.80 },
 };
+
+// خط معايرة أفقي طوله نصف عرض الصورة، وطولُه الحقيقي ١٠٠ مم — فالمقياس ٢٠٠
+// مليمترًا للوحدة النسبية، وكل مسافةٍ متوقَّعة تُحسب باليد لا تُقرأ من الشاشة.
+const CAL = { from: { x: 0.20, y: 0.90 }, to: { x: 0.70, y: 0.90 }, mm: 100 };
+const SCALE = CAL.mm / (CAL.to.x - CAL.from.x);
+const span = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) * SCALE;
+const EXPECT_N_ME = span(NORMAL.N, NORMAL.Me);
+const EXPECT_S_GO = span(NORMAL.S, NORMAL.Go);
 
 const b = await chromium.launch({ executablePath });
 const page = await (await b.newContext({ viewport: { width: 1400, height: 1000 }, locale: "ar" })).newPage();
@@ -68,7 +79,7 @@ console.log("   ويذكر الدليل المعتمد:", /ADP-LM-LAT/.test(open
 const tracer = page.getByRole("dialog");
 const image = tracer.locator("img").first();
 const box = await image.boundingBox();
-for (const code of ["S", "N", "A", "B"]) {
+for (const code of ["S", "N", "A", "B", "Go", "Me"]) {
   await tracer.getByRole("button", { name: code, exact: true }).click();
   const p = NORMAL[code];
   await page.mouse.click(box.x + p.x * box.width, box.y + p.y * box.height);
@@ -90,6 +101,45 @@ console.log("6) مطابقة للحساب المجرّد:",
 console.log("   والتصنيف:", /الصنف الأول/.test(traced) ? "الأول ✓" : "غير متوقّع");
 await page.screenshot({ path: OUT + "/ceph-1-traced.png", fullPage: false });
 
+/*
+ * ٦أ) النسبة تُحسب بلا معايرة، والمسافة لا تُعرض بلا معايرة.
+ *
+ * وهذا حدّان لا واحد: أن تظهر النسبة يُثبت أن غياب المعايرة لا يُعطّل ما لا يحتاجها،
+ * وأن تغيب المسافة يُثبت أنه لا رقمَ بلا وحدةٍ صحيحة يُعرض ليُقرأ كأنه مليمترات.
+ */
+const before = await tracer.innerText();
+console.log("6أ) نسبة ياراباك بلا معايرة:", /Jarabak/.test(before) ? "ظاهرة ✓" : "غائبة ✗");
+console.log("    ولا مسافة بالمليمتر قبلها:", /\d\s*مم/.test(before) ? "ظهرت ✗" : "✓");
+console.log("    والحالة معلنة:", /غير معايَرة/.test(before) ? "«غير معايَرة» ✓" : "صامتة ✗");
+
+// ٦ب) تُعايَر الصورة من الشاشة نفسها — طرفان يُنقران وطولٌ يُكتب
+await tracer.getByRole("button", { name: "عايِر الصورة" }).click();
+await page.waitForTimeout(600);
+for (const end of [CAL.from, CAL.to]) {
+  await page.mouse.click(box.x + end.x * box.width, box.y + end.y * box.height);
+  await page.waitForTimeout(300);
+}
+const mmField = tracer.getByLabel("الطول الحقيقي (مم)");
+await mmField.click();
+await mmField.pressSequentially(String(CAL.mm), { delay: 20 });
+await tracer.getByRole("button", { name: "اعتمد المعايرة" }).click();
+await page.waitForTimeout(1200);
+
+const after = await tracer.innerText();
+const mm = (label) => {
+  const found = new RegExp(label + "[^\\n]*\\n?\\s*(-?\\d+(?:\\.\\d+)?)\\s*مم").exec(after);
+  return found ? Number(found[1]) : null;
+};
+const nMe = mm("N-Me"), sGo = mm("S-Go");
+console.log("6ب) بعد المعايرة — الحالة:", /معايَرة/.test(after) && !/غير معايَرة/.test(after) ? "✓" : "لم تُعتمد ✗");
+console.log("    N-Me:", nMe === null ? "غائب ✗" : `${nMe} مم (المتوقَّع ${EXPECT_N_ME.toFixed(1)})`);
+console.log("    S-Go:", sGo === null ? "غائب ✗" : `${sGo} مم (المتوقَّع ${EXPECT_S_GO.toFixed(1)})`);
+console.log("    مطابقة للحساب:",
+  nMe !== null && sGo !== null
+    && Math.abs(nMe - EXPECT_N_ME) <= 1.5 && Math.abs(sGo - EXPECT_S_GO) <= 1.5
+    ? "✓ (ضمن مليمتر ونصف)" : "✗ خارج التسامح");
+await page.screenshot({ path: OUT + "/ceph-4-calibrated.png", fullPage: false });
+
 await tracer.getByRole("button", { name: "احفظ التتبّع" }).click();
 await page.waitForTimeout(2500);
 console.log("7) حُفظ التتبّع:", /محفوظ/.test(await page.locator("body").innerText()) ? "✓" : "لم يُحفظ");
@@ -100,7 +150,9 @@ await page.getByRole("button", { name: "تتبّع سيفالومتري" }).clic
 await page.waitForTimeout(3000);
 const reopened = await page.locator("body").innerText();
 console.log("8) وعاد بعد الفتح من جديد:",
-  /4 من 24 نقطة/.test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+  /6 من 24 نقطة/.test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+// المعايرة تُحفظ مع النقاط: لو ضاعت لعادت المسافات معطّلةً بعد كل إغلاق.
+console.log("   والمعايرة معها:", /N-Me/.test(reopened) && /مم/.test(reopened) ? "✓" : "ضاعت ✗");
 
 // ٩) اللغة تُبدَّل بزرّ واحد — والرموز لا تُترجم
 await tracer.getByRole("button", { name: "EN" }).click();
