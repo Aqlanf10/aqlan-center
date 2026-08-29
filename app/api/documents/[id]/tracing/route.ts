@@ -27,6 +27,9 @@ const idFrom = async (context: { params: Promise<{ id: string }> }) => {
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const session = await requireSession();
   if (!session) return denied();
+  // القراءة كالكتابة: مواضع المعالم والقياسات تشخيصٌ سريري، لا حالةُ موعد.
+  // كان الحارس على الكتابة وحدها، فكانت الاستقبال تقرأ تحليل المريض كاملًا.
+  if (!isAdmin(session.role) && session.role !== "doctor") return clinicalOnly();
   const documentId = await idFrom(context);
   if (!documentId) return NextResponse.json({ message: "رقم الصورة غير صالح." }, { status: 400 });
 

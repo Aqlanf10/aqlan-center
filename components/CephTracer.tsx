@@ -64,6 +64,11 @@ const T = {
     ar: "تعريفات النقاط منقولة من الدليل السريري المعتمد والموقَّع. وأيّ تعديل عليها يستلزم إصدارًا جديدًا منه لا تغييرًا في البرنامج.",
     en: "Landmark definitions are taken from the approved and signed clinical manual. Any change requires a new manual version, not a code change.",
   },
+  // حدُّ المرحلة، مكتوبًا حيث يُقرأ العمل لا في مستندٍ جانبي.
+  anglesOnly: {
+    ar: "زوايا فقط — لا قياسات خطية بالمليمتر بعد، فلا معايرة في هذه المرحلة.",
+    en: "Angles only — no millimetre measurements yet, so no calibration at this stage.",
+  },
   // ورسائل العطل بلغتين كذلك: من يقرأ الشاشة بالإنجليزية يقرأ عطلها بها.
   saveFailed: { ar: "تعذّر الحفظ.", en: "Could not save." },
   offline: { ar: "تعذّر الاتصال بالخادم.", en: "Could not reach the server." },
@@ -285,6 +290,15 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                 {say(SKELETAL_LABEL[analysis.skeletal.klass], lang)}
               </p>
             ) : null}
+
+            {/*
+              * حدُّ المرحلة يُقال هنا لا في مستند.
+              *
+              * المعايرة تُحفظ في القاعدة ولا تُنتج شيئًا بعد: لا قياس خطيًّا واحدًا
+              * في التحليل. وطبيبٌ يرى حقلًا للمعايرة يظنّ أن المسافات تُقاس — فحُذف
+              * الظنّ وقيل الحدّ. ويُرفع هذا السطر يوم تُضاف القياسات الخطية.
+              */}
+            <p className="mt-2 text-[10px] text-slate-400">{say(T.anglesOnly, lang)}</p>
           </div>
 
           {/*

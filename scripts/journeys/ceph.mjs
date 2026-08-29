@@ -125,4 +125,39 @@ await tracer.getByRole("button", { name: "ع" }).click();
 await page.waitForTimeout(1000);
 console.log("   وتعود للعربية:", (await tracer.getAttribute("dir")) === "rtl" ? "✓" : "بقيت LTR");
 await page.screenshot({ path: OUT + "/ceph-2-reopened.png", fullPage: false });
+
+/*
+ * ١٠) والحارس على الخادم لا في إخفاء الزرّ.
+ *
+ * كانت الكتابة محميّة بالطبيب والمدير، والقراءة مفتوحةً لكل من يملك جلسة —
+ * فتقرأ الاستقبال مواضع المعالم والقياسات، وهي تشخيصٌ سريري لا حالةُ موعد.
+ * والفحص يستدعي المسار مباشرةً بجلسة استقبال: إخفاء الزرّ من الشاشة لا يُثبت شيئًا،
+ * ومن يريد القراءة لا يمرّ بالشاشة أصلًا.
+ */
+const docId = await page.evaluate(async () => {
+  const id = /\/patients\/(\d+)/.exec(location.pathname)?.[1];
+  const list = await (await fetch(`/api/patients/${id}/documents`)).json();
+  return list.documents?.[0]?.id ?? null;
+});
+
+const clerk = `estqbal${Date.now().toString().slice(-6)}`;
+const made = await page.evaluate(async ({ username }) => {
+  const response = await fetch("/api/users", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password: "reception-only-1234", role: "reception", displayName: "استقبال الفحص" }),
+  });
+  return response.status;
+}, { username: clerk });
+
+const clerkPage = await (await b.newContext({ locale: "ar" })).newPage();
+await login(clerkPage, { base: BASE, user: clerk, pass: "reception-only-1234" });
+const guard = await clerkPage.evaluate(async (id) => {
+  const response = await fetch(`/api/documents/${id}/tracing`);
+  return { status: response.status, body: await response.json().catch(() => null) };
+}, docId);
+
+console.log("10) الاستقبال أُنشئت:", made === 201 ? "✓" : `✗ (${made})`);
+console.log("    ولا تقرأ التتبّع:",
+  guard.status === 403 ? `✓ — ${guard.body?.message ?? ""}` : `تقرأه ✗ (${guard.status})`);
+
 await b.close();
