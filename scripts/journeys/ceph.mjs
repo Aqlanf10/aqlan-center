@@ -102,6 +102,62 @@ console.log("   والتصنيف:", /الصنف الأول/.test(traced) ? "ال
 await page.screenshot({ path: OUT + "/ceph-1-traced.png", fullPage: false });
 
 /*
+ * ٥أ) مساحة العمل — سحبٌ وأسهمٌ وتراجع.
+ *
+ * ووضعُ النقطة بالنقر وحده كان يعني أن تصحيحها يمرّ باختيار معلمها من القائمة ثم
+ * النقر من جديد؛ وهو في وجهٍ فيه أربعٌ وعشرون نقطة عملٌ يُنفَّر منه، فتُترك النقطة
+ * قريبةً «كفاية» — والقربُ كفايةً في السيفالو مليمترٌ يزيح زاويةً درجة.
+ */
+const snaOf = async () => {
+  const text = await tracer.innerText();
+  const found = /SNA[^\n]*\n?\s*(\d+(?:\.\d+)?)°/.exec(text);
+  return found ? Number(found[1]) : null;
+};
+
+const beforeDrag = await snaOf();
+// تُسحب A إلى موضعٍ آخر بالمؤشّر — لا تُنقر من جديد بعد اختيارها من القائمة.
+const aPoint = { x: box.x + NORMAL.A.x * box.width, y: box.y + NORMAL.A.y * box.height };
+await page.mouse.move(aPoint.x, aPoint.y);
+await page.mouse.down();
+await page.mouse.move(aPoint.x + 18, aPoint.y, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(700);
+const afterDrag = await snaOf();
+console.log("5أ) النقطة تُسحب فيتغيّر القياس:",
+  beforeDrag !== null && afterDrag !== null && Math.abs(afterDrag - beforeDrag) > 0.3
+    ? `${beforeDrag}° ← ${afterDrag}° ✓` : "لم تتحرّك ✗");
+
+// وتراجعٌ واحد يعيدها — والسحبة كلّها خطوةٌ واحدة لا خطوةٌ لكل بكسل.
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(600);
+const undone = await snaOf();
+console.log("    وتراجعٌ واحد يعيدها:",
+  undone !== null && Math.abs(undone - beforeDrag) < 0.15 ? `${undone}° ✓` : `${undone}° ✗`);
+
+await page.keyboard.press("Control+y");
+await page.waitForTimeout(600);
+const redone = await snaOf();
+console.log("    والإعادة تُرجع السحب:",
+  redone !== null && Math.abs(redone - afterDrag) < 0.15 ? "✓" : `${redone}° ✗`);
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(600);
+
+// والأسهم تُزيح النقطة النشطة إزاحةً لا تبلغها اليد.
+await tracer.getByRole("button", { name: "A", exact: true }).click();
+await page.waitForTimeout(400);
+const beforeKeys = await snaOf();
+for (let i = 0; i < 5; i += 1) { await page.keyboard.press("ArrowRight"); await page.waitForTimeout(120); }
+const afterKeys = await snaOf();
+console.log("    والأسهم تُزيحها بدقّة:",
+  beforeKeys !== null && afterKeys !== null && afterKeys !== beforeKeys
+    && Math.abs(afterKeys - beforeKeys) < 2
+    ? `${beforeKeys}° ← ${afterKeys}° ✓` : "لم تُزح أو قفزت ✗");
+for (let i = 0; i < 5; i += 1) { await page.keyboard.press("Control+z"); await page.waitForTimeout(120); }
+const restored = await snaOf();
+console.log("    وتعود بالتراجع:",
+  restored !== null && Math.abs(restored - beforeKeys) < 0.15 ? "✓" : `${restored}° ✗`);
+
+/*
  * ٦أ) النسبة تُحسب بلا معايرة، والمسافة لا تُعرض بلا معايرة.
  *
  * وهذا حدّان لا واحد: أن تظهر النسبة يُثبت أن غياب المعايرة لا يُعطّل ما لا يحتاجها،
