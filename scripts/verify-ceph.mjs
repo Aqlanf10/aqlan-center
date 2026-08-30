@@ -180,6 +180,27 @@ try {
   check("والمرجع الجديد يُعرض مع الرقم",
     afterEdit.analysis.measurements.find((m) => m.key === "SNA")?.norm?.source === "مجموعة اختبار");
 
+  console.log("\n  ── والمعيار يتبع جنس المريض حيث يفرّق المرجع ──");
+
+  const witsRows = active.values.filter((value) => value.measurement === "WITS");
+  check("Wits مزروعٌ بقيمتين لا واحدة", witsRows.length === 2,
+    witsRows.map((row) => `${row.sex}:${row.mean}`).join(" · "));
+  check("وما لا يفرّق فيه المرجع يبقى صفًّا واحدًا عامًّا",
+    active.values.filter((value) => value.measurement === "SNA").every((value) => value.sex === "any"));
+
+  const maleNorms = await db.referenceNorms("male");
+  const femaleNorms = await db.referenceNorms("female");
+  const plainNorms = await db.referenceNorms(null);
+  check("فمعيار الذكور ١±٢", maleNorms.WITS?.mean === 1);
+  check("ومعيار الإناث ٠±٢", femaleNorms.WITS?.mean === 0);
+  check("وبلا جنسٍ معروف لا ينكسر شيء", plainNorms.WITS === undefined || plainNorms.WITS.mean === 1,
+    plainNorms.WITS ? `عامّ ${plainNorms.WITS.mean}` : "لا قيمة عامّة — والقياس يُعرض بلا حكم");
+  // ولا تُقارَن بقيمةٍ مكتوبة هنا: هذا الفحص نفسه عدّل SNA قبل قليل، فمقارنتُها
+  // بـ٨٢ كانت ستفحص التعديل لا السلوك. المقصود أن تكون **واحدةً للجنسين** أيًّا كانت.
+  check("والعامّ يبقى للجميع — SNA واحدة للجنسين",
+    maleNorms.SNA?.mean === femaleNorms.SNA?.mean && maleNorms.SNA !== undefined,
+    `${maleNorms.SNA?.mean} لكليهما`);
+
   const zero = await db.setReferenceValue({
     setId: active.id, measurement: "SNA", mean: 82, tolerance: 0, source: "خطأ", actor: "فحص",
   });

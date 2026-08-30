@@ -18,8 +18,11 @@ import { settingsTabs } from "@/lib/settingsNav";
  */
 
 interface ReferenceValue {
-  measurement: string; mean: number; tolerance: number; source: string;
+  measurement: string; sex: "any" | "male" | "female";
+  mean: number; tolerance: number; source: string;
 }
+
+const SEX_LABEL: Record<string, string> = { any: "", male: "ذكور", female: "إناث" };
 interface ReferenceSet {
   id: number; name: string; source: string; note: string | null;
   isDefault: boolean; archived: boolean; values: ReferenceValue[];
@@ -60,7 +63,7 @@ export default function CephNormsPage() {
       const response = await fetch("/api/ceph/reference", {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          setId: active.id, measurement,
+          setId: active.id, measurement: measurement.split(":")[0], sex: measurement.split(":")[1],
           mean: Number(form.mean), tolerance: Number(form.tolerance), source: form.source,
         }),
       });
@@ -104,13 +107,20 @@ export default function CephNormsPage() {
           <ul className="mt-3 space-y-2">
             {active.values.map((value) => {
               const label = NORM_LABEL[value.measurement];
-              const open = editing === value.measurement;
+              const row = `${value.measurement}:${value.sex}`;
+              const open = editing === row;
               return (
-                <li key={value.measurement} className="rounded-2xl border border-slate-200 bg-white p-3">
+                <li key={row} className="rounded-2xl border border-slate-200 bg-white p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="text-sm font-extrabold text-navy-900" dir="ltr">
-                        {label?.name ?? value.measurement}
+                      <p className="flex items-center gap-1.5 text-sm font-extrabold text-navy-900">
+                        <span dir="ltr">{label?.name ?? value.measurement}</span>
+                        {/* الجنس يُعلَن حيث يفرّق المرجع — وسكوتُه يعني أنه لا يفرّق. */}
+                        {value.sex !== "any" ? (
+                          <span className="rounded-full bg-navy-100 px-2 py-0.5 text-[10px] font-bold text-navy-800">
+                            {SEX_LABEL[value.sex]}
+                          </span>
+                        ) : null}
                       </p>
                       <p className="text-[11px] text-slate-500">{label ? label.meaning.ar : "—"}</p>
                     </div>
@@ -122,7 +132,7 @@ export default function CephNormsPage() {
                     </div>
                     <button
                       onClick={() => {
-                        setEditing(open ? null : value.measurement);
+                        setEditing(open ? null : row);
                         setForm({ mean: String(value.mean), tolerance: String(value.tolerance), source: value.source });
                       }}
                       className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600">
@@ -151,7 +161,7 @@ export default function CephNormsPage() {
                           className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-blue" />
                       </label>
                       <div className="sm:col-span-3">
-                        <button onClick={() => void save(value.measurement)} disabled={busy}
+                        <button onClick={() => void save(row)} disabled={busy}
                           className="rounded-xl bg-navy-900 px-4 py-2 text-xs font-extrabold text-white disabled:opacity-40">
                           احفظ المعيار
                         </button>

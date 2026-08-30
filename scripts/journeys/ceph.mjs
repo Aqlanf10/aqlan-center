@@ -71,8 +71,8 @@ const type = async (l, t) => { await l.click(); await l.pressSequentially(t, { d
 await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4000);
 
-const name = "مريض السيفالو " + Date.now().toString().slice(-5);
-const patientUrl = await createPatient(page, { name, phone: null, base: BASE });
+const name = "مريضة السيفالو " + Date.now().toString().slice(-5);
+const patientUrl = await createPatient(page, { name, phone: null, base: BASE, gender: "أنثى" });
 console.log("1) أُنشئ ملف المريض");
 
 await page.getByRole("button", { name: "الأشعة" }).click();
@@ -253,6 +253,25 @@ console.log("    ومستوى A-B سالب:", ab !== null && ab < 0 ? `${ab}° �
 console.log("    والشفتان خلف الخط الجمالي:",
   els !== null && eli !== null && els < 0 && eli < 0 ? `${els} · ${eli} ✓` : `${els} · ${eli} ✗`);
 console.log("    وWits محسوب:", value("Wits") !== null ? `${value("Wits")} مم ✓` : "غائب ✗");
+/*
+ * ومعياره يتبع جنس المريضة.
+ *
+ * معيار جاكوبسون للإناث ٠±٢ وللذكور ١±٢ — ومليمترٌ واحد هنا يقلب حكمًا. والملف
+ * يعرف الجنس، فلا يُسأل عنه الطبيب من جديد ولا يُطبَّق معيار الذكور على الجميع.
+ */
+const femaleNorm = /Wits[\s\S]{0,220}?المعيار 0±2/.test(named);
+console.log("    ومعياره يتبع جنسها:", femaleNorm ? "«المعيار 0±2» للإناث ✓"
+  : /Wits[\s\S]{0,220}?المعيار 1±2/.test(named) ? "طُبّق معيار الذكور ✗" : "بلا معيار ✗");
+if (!femaleNorm) {
+  // التشخيص عند السقوط وحده: ما الذي أرسله الخادم فعلًا؟
+  const probe = await page.evaluate(async () => {
+    const id = /\/patients\/(\d+)/.exec(location.pathname)?.[1];
+    const list = await (await fetch(`/api/patients/${id}/documents`)).json();
+    const payload = await (await fetch(`/api/documents/${list.documents?.[0]?.id}/tracing`)).json();
+    return { wits: payload.norms?.WITS ?? null, count: Object.keys(payload.norms ?? {}).length };
+  });
+  console.log("    [تشخيص] المعيار من الخادم:", JSON.stringify(probe));
+}
 console.log("    ومصدر النقطة معلن:",
   /من الدليل الموقَّع|من الأدبيات/.test(named) ? "✓" : "صامت ✗");
 await page.screenshot({ path: OUT + "/ceph-6-analyses.png", fullPage: false });

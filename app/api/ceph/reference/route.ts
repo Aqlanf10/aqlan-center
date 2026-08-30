@@ -49,6 +49,7 @@ export async function PUT(request: Request) {
   try {
     const saved = await setReferenceValue({
       setId, measurement,
+      sex: typeof source.sex === "string" ? source.sex : "any",
       mean: Number(source.mean),
       tolerance: Number(source.tolerance),
       source: typeof source.source === "string" ? source.source : "",
@@ -60,7 +61,7 @@ export async function PUT(request: Request) {
       action: "settings.update",
       entity: "ceph_reference_values",
       entityId: setId,
-      entityLabel: `معيار ${measurement}`,
+      entityLabel: `معيار ${measurement}${source.sex && source.sex !== "any" ? ` (${source.sex})` : ""}`,
       details: { المتوسط: Number(source.mean), الانحراف: Number(source.tolerance) },
       actor: session.username,
       actorRole: session.role,

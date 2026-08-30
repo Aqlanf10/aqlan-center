@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCephTracing, recordAudit, referenceNorms, saveCephTracing } from "@/lib/db";
+import { getCephTracing, patientSexForDocument, recordAudit, referenceNorms, saveCephTracing } from "@/lib/db";
 import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -39,9 +39,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   try {
     // المعايير تُرسل مع التتبّع: الشاشة تعيد الحساب مع كل تحريك نقطة، فلو حكمت
     // بالمعايير الافتراضية لَاختلف حكمُها عن حكم الخادم بلا أن يظهر السبب.
+    const sex = await patientSexForDocument(documentId);
     const [tracing, norms] = await Promise.all([
       getCephTracing(documentId, Number.isFinite(aspect) && aspect > 0 ? aspect : undefined),
-      referenceNorms(),
+      referenceNorms(sex),
     ]);
     return NextResponse.json({ tracing, norms });
   } catch {
