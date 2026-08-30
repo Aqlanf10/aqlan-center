@@ -8,6 +8,8 @@ import { useSetting } from "./SettingsProvider";
 import { useSession } from "./SessionProvider";
 import { isAdmin } from "@/lib/roles";
 import { Icon } from "./Icon";
+import { ServicePicker, ToothSelect, type CatalogService } from './ClinicSelectors';
+import { QUICK_NOTES } from '@/lib/clinicCatalog';
 import { PHASE_LABEL, type OrthoPhase } from "@/lib/ortho";
 
 const orthoPhaseLabel = (phase: string): string =>
@@ -35,7 +37,8 @@ function sinceText(days: number | null): string {
  * بالضبط ما يجعل المريض يُفوتَر بغير ما اتُّفق عليه.
  */
 
-interface Service { id: number; name: string; category: string | null; priceMinor: number }
+type Service = CatalogService;
+interface PendingItem { id:number;serviceId:number;serviceName:string;toothCode:number|null;quantity:number;unitPriceMinor:number;status:string;planTitle:string;installments:boolean }
 interface Doctor { id: number; name: string }
 interface Visit {
   id: number; patientId: number | null; patientName: string;
@@ -53,7 +56,7 @@ interface Visit {
   } | null;
 }
 
-interface Draft { serviceId: number; toothCode: string; surfaces: string; quantity: number; price: string; doctorId: number | null }
+interface Draft { planItemId?: number | null; serviceId: number; toothCode: string; surfaces: string; quantity: number; price: string; doctorId: number | null }
 
 export function ClinicalVisit({ visitId, onSigned }: {
   visitId: number;
@@ -65,6 +68,7 @@ export function ClinicalVisit({ visitId, onSigned }: {
   const canWrite = isAdmin(session?.role) || session?.role === "doctor";
 
   const [visit, setVisit] = useState<Visit | null>(null);
+  const [pendingItems,setPendingItems]=useState<PendingItem[]>([]);
   const [services, setServices] = useState<Service[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -78,10 +82,9 @@ export function ClinicalVisit({ visitId, onSigned }: {
 
   const load = useCallback(async () => {
     try {
-      const [visitResponse, serviceResponse, partyResponse] = await Promise.all([
+      const [visitResponse, serviceResponse] = await Promise.all([
         fetch(`/api/visits/${visitId}/clinical`, { cache: "no-store" }),
-        fetch("/api/services", { cache: "no-store" }),
-        fetch("/api/parties?kind=doctor", { cache: "no-store" }),
+        fetch("/api/clinical/catalog", { cache: "no-store" }),
       ]);
       const payload = await visitResponse.json();
       if (!visitResponse.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
@@ -94,15 +97,20 @@ export function ClinicalVisit({ visitId, onSigned }: {
       });
       setDoctorId(loaded.doctorId);
       setDrafts(loaded.procedures.map((line) => ({
-        serviceId: line.serviceId, toothCode: line.toothCode ? String(line.toothCode) : "",
+        planItemId: line.planItemId, serviceId: line.serviceId, toothCode: line.toothCode ? String(line.toothCode) : "",
         surfaces: line.surfaces ?? "", quantity: line.quantity,
         price: formatAmount(line.unitPriceMinor, base), doctorId: line.doctorId,
       })));
-      if (serviceResponse.ok) setServices(await serviceResponse.json());
-      if (partyResponse.ok) {
-        const parties = await partyResponse.json();
-        setDoctors(Array.isArray(parties) ? parties : parties.balances ?? []);
-      }
+      const catalog=await serviceResponse.json();
+      if (!serviceResponse.ok) throw new Error(catalog.message ?? 'تعذّر تحميل دليل الأعمال.');
+      setServices(catalog.services);setDoctors(catalog.doctors);
+      if(loaded.patientId && loaded.status==='open') {
+        const pr=await fetch(`/api/plans?patientId=${loaded.patientId}`,{cache:'no-store'});
+        if(!pr.ok)throw new Error('تعذّر تحميل خطة المريض. حدّث الصفحة قبل اختيار الإجراءات.');
+        const {plans}=await pr.json();
+        setPendingItems(plans.filter((p:{status:string;consentAt:string|null})=>p.status==='active'&&p.consentAt)
+          .flatMap((p:{title:string;installments:unknown[];items:PendingItem[]})=>p.items.filter(i=>i.status==='planned'&&i.serviceId).map(i=>({...i,planTitle:p.title,installments:p.installments.length>0}))));
+      } else setPendingItems([]);
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
@@ -113,6 +121,7 @@ export function ClinicalVisit({ visitId, onSigned }: {
 
   const send = useCallback(async (body: Record<string, unknown>) => {
     if (busy) return false;
+    if (Array.isArray(body.procedures) && drafts.some(d=>parseAmount(d.price,base)===null)) {setError('راجع أسعار الإجراءات قبل الحفظ.');return false;}
     setBusy(true);
     try {
       const response = await fetch(`/api/visits/${visitId}/clinical`, {
@@ -130,7 +139,7 @@ export function ClinicalVisit({ visitId, onSigned }: {
     } finally {
       setBusy(false);
     }
-  }, [busy, visitId, load]);
+  }, [busy, visitId, load, drafts, base]);
 
   if (!visit) {
     return <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">
@@ -144,16 +153,22 @@ export function ClinicalVisit({ visitId, onSigned }: {
     unitPriceMinor: parseAmount(draft.price, base) ?? 0,
   }));
   const total = visitTotal(lines);
+  const covered = new Set<number>();
+  const billableTotal = visitTotal(drafts.filter(d => {
+    const match=pendingItems.find(p=>!covered.has(p.id)&&p.installments&&(d.planItemId ? p.id===d.planItemId : p.serviceId===d.serviceId&&p.toothCode===(d.toothCode?Number(d.toothCode):null)&&p.quantity===d.quantity));
+    if(match){covered.add(match.id);return false;}return true;
+  }).map(d=>({quantity:d.quantity,unitPriceMinor:parseAmount(d.price,base)??0})));
 
   const payload = () => ({
     ...notes, doctorId,
     procedures: drafts.map((draft) => ({
+      planItemId: draft.planItemId ?? null,
       serviceId: draft.serviceId,
       toothCode: draft.toothCode ? Number(draft.toothCode) : null,
       surfaces: draft.surfaces || null,
       quantity: draft.quantity,
       unitPriceMinor: parseAmount(draft.price, base) ?? 0,
-      doctorId: draft.doctorId,
+      doctorId: draft.doctorId ?? doctorId,
     })),
   });
 
@@ -174,11 +189,11 @@ export function ClinicalVisit({ visitId, onSigned }: {
           {signed ? (
             <p className="text-[11px] font-semibold text-slate-500">
               وقّعها {visit.signedBy} · {visit.signedAt?.slice(0, 10)}
-              {visit.invoiceId ? ` · فاتورة #${visit.invoiceId}` : " · بلا فاتورة (كشف)"}
+              {visit.invoiceId ? ` · فاتورة #${visit.invoiceId}` : " · بلا فاتورة جديدة (توثيق / عمل مشمول بالأقساط)"}
             </p>
           ) : null}
         </div>
-        {signed && visit.invoiceId ? (
+        {signed && visit.invoiceId && session?.role!=="doctor" ? (
           <a href={`/print/invoice/${visit.invoiceId}`} target="_blank" rel="noopener"
             className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">
             الفاتورة
@@ -186,20 +201,24 @@ export function ClinicalVisit({ visitId, onSigned }: {
         ) : null}
       </div>
 
+      {signed && visit.patientId && <div className="mb-4 flex gap-2 text-sm font-bold">
+        <a className="rounded-xl border bg-white p-2" href={`/patients/${visit.patientId}?tab=plans`}>خطة المريض والأعمال المتبقية</a>
+        {session?.role!=='doctor'&&<a className="rounded-xl bg-navy-800 p-2 text-white" href={`/patients/${visit.patientId}?tab=ledger${visit.invoiceId?`&invoiceId=${visit.invoiceId}`:''}`}>حساب المريض وتحصيل الدفعة</a>}
+      </div>}
       <div className="mb-4 grid gap-2 sm:grid-cols-2">
-        <Field label="الشكوى الرئيسية" value={notes.chiefComplaint} disabled={signed}
+        <Field label="الشكوى الرئيسية" value={notes.chiefComplaint} disabled={signed || !canWrite}
           onChange={(value) => setNotes((c) => ({ ...c, chiefComplaint: value }))} />
-        <Field label="الفحص" value={notes.examination} disabled={signed}
+        <Field label="الفحص" value={notes.examination} disabled={signed || !canWrite}
           onChange={(value) => setNotes((c) => ({ ...c, examination: value }))} />
-        <Field label="التشخيص" value={notes.diagnosis} disabled={signed}
+        <Field label="التشخيص" value={notes.diagnosis} disabled={signed || !canWrite}
           onChange={(value) => setNotes((c) => ({ ...c, diagnosis: value }))} />
-        <Field label="ما نُفّذ" value={notes.treatmentDone} disabled={signed}
+        <Field label="ما نُفّذ" value={notes.treatmentDone} disabled={signed || !canWrite}
           onChange={(value) => setNotes((c) => ({ ...c, treatmentDone: value }))} />
-        <Field label="الخطة القادمة" value={notes.nextPlan} disabled={signed}
+        <Field label="الخطة القادمة" value={notes.nextPlan} disabled={signed || !canWrite}
           onChange={(value) => setNotes((c) => ({ ...c, nextPlan: value }))} />
         <label className="block">
           <span className="mb-1 block text-[11px] font-bold text-slate-500">الطبيب المعالج</span>
-          <select value={doctorId ?? ""} disabled={signed}
+          <select value={doctorId ?? ""} disabled={signed || !canWrite}
             onChange={(event) => setDoctorId(Number(event.target.value) || null)}
             className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50">
             <option value="">—</option>
@@ -242,27 +261,21 @@ export function ClinicalVisit({ visitId, onSigned }: {
                       </span>
                     )}
                   </div>
-                  {!signed ? (
+                  {!signed && canWrite ? (
                     <div className="flex flex-wrap gap-2">
-                      <input value={draft.toothCode} inputMode="numeric" dir="ltr"
-                        onChange={(event) => setDrafts((rows) => rows.map((row, i) =>
-                          i === index ? { ...row, toothCode: event.target.value } : row))}
-                        placeholder="السن (FDI)" aria-label="رقم السن"
-                        className={`w-24 rounded-xl border px-3 py-2 text-sm ${
-                          draft.toothCode && !isValidTooth(Number(draft.toothCode))
-                            ? "border-danger-300 bg-danger-50" : "border-slate-200"
-                        }`} />
-                      <input value={draft.surfaces} dir="ltr"
+                      <div className="min-w-48 flex-1"><ToothSelect value={draft.toothCode} disabled={!!draft.planItemId}
+                        onChange={value=>setDrafts(rows=>rows.map((row,i)=>i===index?{...row,toothCode:value}:row))}/></div>
+                      <input value={draft.surfaces} list="tooth-surfaces" dir="ltr"
                         onChange={(event) => setDrafts((rows) => rows.map((row, i) =>
                           i === index ? { ...row, surfaces: event.target.value } : row))}
                         placeholder="الأسطح" aria-label="الأسطح"
                         className="w-24 rounded-xl border border-slate-200 px-3 py-2 text-sm" />
-                      <input value={draft.quantity} type="number" min={1} dir="ltr"
+                      <input disabled={!!draft.planItemId} value={draft.quantity} type="number" min={1} dir="ltr"
                         onChange={(event) => setDrafts((rows) => rows.map((row, i) =>
                           i === index ? { ...row, quantity: Math.max(1, Number(event.target.value) || 1) } : row))}
                         aria-label="الكمية"
                         className="w-20 rounded-xl border border-slate-200 px-3 py-2 text-sm" />
-                      <input value={draft.price} inputMode="decimal" dir="ltr"
+                      <input disabled={!!draft.planItemId} value={draft.price} inputMode="decimal" dir="ltr"
                         onChange={(event) => setDrafts((rows) => rows.map((row, i) =>
                           i === index ? { ...row, price: event.target.value } : row))}
                         aria-label="السعر"
@@ -275,26 +288,21 @@ export function ClinicalVisit({ visitId, onSigned }: {
           </ul>
         )}
 
-        {!signed && canWrite ? (
-          <select value="" aria-label="أضف إجراءً"
-            onChange={(event) => {
-              const service = services.find((row) => row.id === Number(event.target.value));
-              if (!service) return;
-              // السعر يأتي من الدليل لا من الذاكرة — ويجوز تعديله بعدها بمبرّر.
-              setDrafts((rows) => [...rows, {
-                serviceId: service.id, toothCode: "", surfaces: "", quantity: 1,
-                price: formatAmount(service.priceMinor, base), doctorId,
-              }]);
-            }}
-            className="mt-2 w-full rounded-xl border-2 border-dashed border-slate-300 bg-white px-3 py-2.5 text-sm font-bold text-navy-800">
-            <option value="">+ أضف إجراءً من دليل الخدمات</option>
-            {services.map((service) => (
-              <option key={service.id} value={service.id}>
-                {service.name} — {formatAmount(service.priceMinor, base)}
-              </option>
-            ))}
-          </select>
-        ) : null}
+        {!signed && canWrite ? <>
+          <datalist id="tooth-surfaces">{['O','M','D','B','L','P','I','MO','DO','MOD'].map(v=><option key={v} value={v}/>)}</datalist>
+          <ServicePicker services={services} base={base} onSelect={service=>setDrafts(rows=>[...rows,{
+            serviceId:service.id,toothCode:'',surfaces:'',quantity:1,price:formatAmount(service.priceMinor,base),doctorId,
+          }])}/>
+          {pendingItems.length>0&&<div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+            <h4 className="text-sm font-bold">بنود متبقية من خطة المريض</h4>
+            <p className="text-xs">اختر ما أُنجز اليوم فقط. جلسات المتابعة تُوثق في «ما نُفّذ» دون تكرار الإجراء المستحق.</p>
+            {pendingItems.map(item=><button key={item.id} disabled={drafts.some(d=>d.planItemId===item.id)}
+              onClick={()=>setDrafts(rows=>[...rows,{planItemId:item.id,serviceId:item.serviceId,toothCode:item.toothCode?String(item.toothCode):'',surfaces:'',quantity:item.quantity,price:formatAmount(item.unitPriceMinor,base),doctorId}])}
+              className="mt-2 block w-full rounded-lg border bg-white p-2 text-right text-xs disabled:opacity-40">
+              + {item.serviceName} {item.toothCode?`— سن ${item.toothCode}`:''} · {formatMoney(item.unitPriceMinor*item.quantity,base)} · {item.installments?'مشمول بالأقساط؛ دون فاتورة جديدة':'يفوتر عند التنفيذ'}
+            </button>)}
+          </div>}
+        </> : null}
       </section>
 
       {signed ? (
@@ -402,7 +410,7 @@ export function ClinicalVisit({ visitId, onSigned }: {
             }}
             disabled={busy}
             className="flex-[2] rounded-xl bg-navy-900 py-2.5 text-sm font-extrabold text-white disabled:opacity-40">
-            وقّع الزيارة{total > 0 ? ` وأصدر فاتورة ${formatMoney(total, base)}` : ""}
+            وقّع الزيارة{billableTotal > 0 ? ` وأصدر فاتورة ${formatMoney(billableTotal, base)}` : " — دون استحقاق إضافي"}
           </button>
         </div>
         </>
@@ -426,7 +434,10 @@ function Field({ label, value, onChange, disabled }: {
   return (
     <label className="block">
       <span className="mb-1 block text-[11px] font-bold text-slate-500">{label}</span>
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={2} disabled={disabled}
+      {!disabled&&QUICK_NOTES[label]&&<select aria-label={`اختيار سريع: ${label}`} value="" onChange={e=>{if(e.target.value)onChange(value?`${value}؛ ${e.target.value}`:e.target.value);}} className="mb-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+        <option value="">اختر نصًا جاهزًا أو اكتب أدناه</option>{QUICK_NOTES[label].map(option=><option key={option} value={option}>{option}</option>)}
+      </select>}
+      <textarea aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} rows={2} disabled={disabled}
         className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-blue disabled:bg-slate-50 disabled:text-slate-500" />
     </label>
   );

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pgConnection } from "../lib/pgConnection.ts";
 import "./load-env.mjs";
 import { readFileSync } from "node:fs";
 import { Client } from "pg";
@@ -21,19 +22,14 @@ if (!file || !url.trim()) {
 }
 
 const sql = readFileSync(file, "utf8");
-if (!sql.includes("COMMIT;")) {
+if (!/COMMIT;\s*(?:-- AQLAN_BACKUP_COMPLETE\s*)?$/.test(sql.trim()) || /^ROLLBACK;/m.test(sql)) {
   console.error("الملف ناقص: لا يحمل خاتمة سليمة. لا تُستعاد منه قاعدة.");
   process.exit(1);
 }
 
-function sslFor(target) {
-  const lowered = target.toLowerCase();
-  if (lowered.includes("sslmode=disable")) return false;
-  if (/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(lowered)) return false;
-  return { rejectUnauthorized: false };
-}
 
-const client = new Client({ connectionString: url, ssl: sslFor(url) });
+
+const client = new Client(pgConnection(url));
 try {
   await client.connect();
   await client.query(sql);

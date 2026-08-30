@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile, rename, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { isSafeKey, storageKey } from "./storage";
 
@@ -44,7 +45,7 @@ export interface StorageStatus {
 
 function configuredDirectory(): string | null {
   const raw = process.env.DOCUMENTS_DIR?.trim();
-  return raw ? resolve(raw) : null;
+  return raw ? resolve(/* turbopackIgnore: true */ raw) : null;
 }
 
 export async function storageStatus(): Promise<StorageStatus> {
@@ -86,7 +87,7 @@ export async function putFile(bytes: Buffer, extension: string): Promise<StoredF
 
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const key = storageKey(sha256, extension);
-  const path = join(status.directory, key);
+  const path = join(/* turbopackIgnore: true */ status.directory, key);
 
   try {
     const existing = await stat(path);
@@ -96,7 +97,11 @@ export async function putFile(bytes: Buffer, extension: string): Promise<StoredF
   }
 
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, bytes);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
+    await rename(temporary, path);
+  } finally { await unlink(temporary).catch(() => {}); }
   return { sha256, key, sizeBytes: bytes.length, deduplicated: false };
 }
 
@@ -105,7 +110,7 @@ export async function readFileByKey(key: string): Promise<Buffer | null> {
   const status = await storageStatus();
   if (!status.directory) return null;
   try {
-    return await readFile(join(status.directory, key));
+    return await readFile(join(/* turbopackIgnore: true */ status.directory, key));
   } catch {
     return null;
   }

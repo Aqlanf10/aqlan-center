@@ -75,7 +75,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     });
     if ("reason" in result) {
       return NextResponse.json(
-        { message: "لا توجد وردية مفتوحة. افتح الوردية من شاشة الصندوق أولًا." },
+        { message: result.reason==="exceeds_balance" ? "المبلغ أكبر من باقي الخطة. حدّث الحساب قبل التحصيل." : result.reason==="invalid_plan" ? "الخطة غير صالحة لتحصيل قسط. استخدم حساب المريض للخطة المفوترة بالزيارات." : "لا توجد وردية مفتوحة. افتح الوردية من شاشة الصندوق أولًا." },
         { status: 409 },
       );
     }

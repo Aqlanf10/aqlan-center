@@ -77,6 +77,7 @@ export async function POST(request: Request) {
     const serviceId = Number(raw.serviceId);
     const service = Number.isInteger(serviceId) ? services.get(serviceId) : undefined;
 
+    if (service && (!service.isActive || !service.priceConfigured)) return NextResponse.json({message:"الخدمة موقوفة أو لم يُحدد سعرها."},{status:400});
     const description = service
       ? service.name
       : typeof raw.description === "string" ? raw.description.trim().slice(0, 160) : "";

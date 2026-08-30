@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pgConnection } from "../lib/pgConnection.ts";
 import "./load-env.mjs";
 import { Client } from "pg";
 
@@ -13,12 +14,7 @@ import { Client } from "pg";
 const source = process.env.SOURCE_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
 if (!source.trim()) { console.error("خطأ: SOURCE_DATABASE_URL غير مضبوط."); process.exit(1); }
 
-const sslFor = (url) => {
-  const l = url.toLowerCase();
-  if (l.includes("sslmode=disable")) return false;
-  if (/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(l)) return false;
-  return { rejectUnauthorized: false };
-};
+
 const withDatabase = (url, name) => {
   const parsed = new URL(url);
   parsed.pathname = `/${name}`;
@@ -29,7 +25,7 @@ const temporary = `audit_check_${Date.now()}`;
 const target = withDatabase(source, temporary);
 process.env.DATABASE_URL = target;
 
-const admin = new Client({ connectionString: source, ssl: sslFor(source) });
+const admin = new Client(pgConnection(source));
 let failed = false;
 
 try {
@@ -57,7 +53,7 @@ try {
     console.log(`التفاصيل بلا أسرار: ${keys.join("، ")}`);
   }
 
-  const direct = new Client({ connectionString: target, ssl: sslFor(target) });
+  const direct = new Client(pgConnection(target));
   await direct.connect();
 
   for (const [label, sql] of [

@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatAmount, formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { useSetting } from "@/components/SettingsProvider";
 import { PageHeader } from "@/components/PageHeader";
+import { CatalogSetup } from "@/components/CatalogSetup";
+import { categoryLabel } from "@/lib/clinicCatalog";
+import { useSession } from "@/components/SessionProvider";
 import { financeLinks } from "@/components/financeLinks";
 
 /**
@@ -16,10 +19,11 @@ import { financeLinks } from "@/components/financeLinks";
 
 interface Service {
   id: number; name: string; category: string | null;
-  priceMinor: number; isActive: boolean; sortOrder: number;
+  priceConfigured: boolean; catalogCode: string|null; priceMinor: number; isActive: boolean; sortOrder: number;
 }
 
 export default function ServicesPage() {
+  const session=useSession();
   const baseSetting = useSetting("finance.base_currency");
   const base: Currency = isCurrency(baseSetting) ? baseSetting : "YER";
 
@@ -99,6 +103,7 @@ export default function ServicesPage() {
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
       ) : null}
 
+      {session?.role==='admin'&&<CatalogSetup services={services} base={base} onChanged={()=>void load()}/>}
       <form onSubmit={add} className="mb-5 rounded-2xl border border-slate-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-bold">خدمة جديدة</h2>
         <div className="flex flex-wrap gap-2">
@@ -130,7 +135,7 @@ export default function ServicesPage() {
       ) : (
         grouped.map(([groupName, list]) => (
           <section key={groupName} className="mb-4">
-            <h2 className="mb-2 text-sm font-bold">{groupName}</h2>
+            <h2 className="mb-2 text-sm font-bold">{categoryLabel(groupName)}</h2>
             <ul className="space-y-2">
               {list.map((service) => (
                 <li key={service.id} className={`rounded-2xl border p-3 ${service.isActive ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-60"}`}>
@@ -161,7 +166,7 @@ export default function ServicesPage() {
                       </>
                     ) : (
                       <>
-                        <span className="text-sm font-bold">{formatMoney(service.priceMinor, base)}</span>
+                        <span className="text-sm font-bold">{service.priceConfigured ? formatMoney(service.priceMinor, base) : "لم يُحدد السعر"}</span>
                         <button
                           onClick={() => { setEditingId(service.id); setEditPrice(formatAmount(service.priceMinor, base).replace(/,/g, "")); }}
                           className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-navy-800">

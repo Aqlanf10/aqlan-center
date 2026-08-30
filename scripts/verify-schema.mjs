@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pgConnection } from "../lib/pgConnection.ts";
 import "./load-env.mjs";
 import { Client } from "pg";
 
@@ -31,14 +32,9 @@ const REQUIRED = [
 ];
 
 const temporary = `schema_check_${Date.now()}`;
-const admin = new Client({ connectionString: source, ssl: sslFor(source) });
+const admin = new Client(pgConnection(source));
 
-function sslFor(url) {
-  const lowered = url.toLowerCase();
-  if (lowered.includes("sslmode=disable")) return false;
-  if (/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(lowered)) return false;
-  return { rejectUnauthorized: false };
-}
+
 
 function withDatabase(url, name) {
   const parsed = new URL(url);

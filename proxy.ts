@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE } from "@/lib/sessionCookie";
+import { validateSessionToken } from "@/lib/sessionValidation";
+import { SESSION_COOKIE } from "@/lib/auth";
 
 /**
  * الباب الوحيد.
@@ -8,8 +9,7 @@ import { SESSION_COOKIE } from "@/lib/sessionCookie";
  * الحماية الموزّعة تُنسى في أول ملف. القائمة أدناه هي **ما يُسمح به** لا ما يُمنع —
  * والفرق جوهري: نسيان إضافة مسار هنا يعني إغلاقه، لا كشفه.
  *
- * التحقق هنا من وجود الكوكي وشكلها فقط؛ التحقق من التوقيع يجري في مسارات API نفسها،
- * لأن middleware يعمل على Edge حيث `node:crypto` غير متاح.
+ * التحقق من التوقيع والانتهاء هنا؛ حالة الحساب وإصدار الجلسة يُراجعان داخل المسارات.
  */
 const PUBLIC_PATHS = new Set([
   "/login",
@@ -39,10 +39,21 @@ const PUBLIC_API = new Set([
   "/api/book",
 ]);
 
-export function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
+  let hasSession = false;
+  try { hasSession = Boolean(await validateSessionToken(request.cookies.get(SESSION_COOKIE)?.value)); } catch { /* incomplete setup */ }
 
+  // Browser mutations must originate from this site. SameSite cookies remain a second layer.
+  if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+    const origin = request.headers.get("origin");
+    let foreignOrigin = false;
+    try { foreignOrigin = Boolean(origin && new URL(origin).host !== request.headers.get("host")); }
+    catch { foreignOrigin = true; }
+    if (request.headers.get("sec-fetch-site") === "cross-site" || foreignOrigin) {
+      return NextResponse.json({ message: "مصدر الطلب غير مسموح." }, { status: 403 });
+    }
+  }
   if (PUBLIC_API.has(pathname)) return NextResponse.next();
 
   if (pathname.startsWith("/api/")) {

@@ -43,31 +43,19 @@ await page.getByRole("button", { name: "خطة العلاج" }).click();
 await page.waitForTimeout(1500);
 await page.getByRole("button", { name: /خطة سريرية ببنودها/ }).click();
 await page.waitForTimeout(800);
-await page.getByRole("button", { name: /أنشئ الخطة ثم أضف بنودها/ }).click();
-await page.waitForTimeout(2500);
-await page.screenshot({ path: OUT + "/plan-1-empty.png", fullPage: true });
-console.log("3) أُنشئت الخطة السريرية");
-
-// ٣) بندان بأسعار الدليل
+await type(page.getByLabel("اسم الخطة"), "خطة علاج تجريبية");
 const pickService = async (needle) => {
-  const select = page.getByLabel("خدمة الخطة");
-  const value = await select.evaluate((el, text) =>
-    [...el.options].find((o) => o.textContent.includes(text))?.value ?? "", needle);
+  const select=page.getByLabel("أضف إجراءً");
+  const value=await select.evaluate((el,text)=>[...el.options].find(o=>o.textContent.includes(text)&&!o.disabled)?.value??"",needle);
   await select.selectOption(value);
 };
+await page.getByLabel("رقم السن").first().selectOption("16");
 await pickService("حشوة");
-await type(page.getByLabel("سن البند"), "16");
-await type(page.getByLabel("أسطح البند"), "mo");
-await page.getByRole("button", { name: "+ أضف" }).click();
-await page.waitForTimeout(2000);
-
+await page.getByLabel("رقم السن").first().selectOption("");
 await pickService("كشف");
-await page.getByRole("button", { name: "+ أضف" }).click();
-await page.waitForTimeout(2000);
-
-const drafted = await page.locator("body").innerText();
-console.log("4) البنود على الشاشة:", /سن 16 \(MO\)/.test(drafted) ? "سن 16 (MO) ✓" : "غير ظاهر");
-await page.screenshot({ path: OUT + "/plan-2-items.png", fullPage: true });
+await page.getByRole("button",{name:"احفظ الخطة بكل أعمالها"}).click();
+await page.waitForTimeout(2500);
+await page.screenshot({path:OUT+"/plan-2-items.png",fullPage:true});
 
 // ٤) الموافقة تُقفل الاتفاق
 await page.getByRole("button", { name: /سجّل موافقة المريض/ }).click();
@@ -105,7 +93,7 @@ const pickProc = async (needle) => {
 };
 await pickProc("حشوة");
 await page.waitForTimeout(1200);
-await type(page.getByLabel("رقم السن"), "16");
+await page.getByLabel("رقم السن").selectOption("16");
 await page.waitForTimeout(1200);
 // الحفظ بلا توقيع هو ما يُثبّت الإجراءات، وعليها يُحسب إشعار الخطة.
 await page.getByRole("button", { name: "احفظ بلا توقيع" }).click();
@@ -116,7 +104,7 @@ console.log("7) الزيارة تعرف الخطة:", /يشطب هذا العم�
 await page.screenshot({ path: OUT + "/plan-5-visit.png", fullPage: true });
 
 await page.getByRole("button", { name: /وقّع الزيارة/ }).click();
-await page.waitForURL(BASE + "/", { timeout: 25000 });
+await page.getByText("زيارة موقَّعة", { exact: false }).first().waitFor({ timeout: 25000 });
 await page.waitForTimeout(2500);
 
 // ٧) البند صار منفَّذًا في الخطة

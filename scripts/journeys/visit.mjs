@@ -51,7 +51,7 @@ const pick = async (needle) => {
 };
 await pick("حشوة ضوئية");
 await page.waitForTimeout(900);
-await type(page.getByLabel("رقم السن"), "16");
+await page.getByLabel("رقم السن").selectOption("16");
 await type(page.getByLabel("الأسطح"), "mo");
 await pick("كشف");
 await page.waitForTimeout(900);
@@ -61,7 +61,8 @@ const expected = signLabel.match(/[\d,]+/)[0];
 console.log("4) زرّ التوقيع:", signLabel);
 
 await page.getByRole("button", { name: /وقّع الزيارة/ }).click();
-await page.waitForURL(BASE + "/", { timeout: 25000 });
+await page.getByText("زيارة موقَّعة", { exact: false }).first().waitFor({ timeout: 25000 });
+await page.goto(BASE + "/", { waitUntil: "networkidle" });
 await page.waitForTimeout(2200);
 const board = await page.locator("body").innerText();
 console.log("5) وُقّعت — والكرسي فرغ:", !board.includes(name));

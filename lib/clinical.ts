@@ -14,6 +14,8 @@ import type { ToothCondition } from "./dental";
 
 /** إجراء منفَّذ في زيارة: خدمةٌ من الدليل، وسنٌّ إن كان الإجراء على سن. */
 export interface VisitProcedureInput {
+  planItemId?: number | null;
+  catalogCode?: string | null;
   serviceId: number;
   toothCode: number | null;
   surfaces: string | null;
@@ -43,7 +45,15 @@ export const CATEGORY_TO_CONDITION: Record<string, ToothCondition> = {
   ortho: "bracket",
 };
 
-export function conditionForCategory(category: string | null): ToothCondition | null {
+const CATALOG_CONDITIONS: Record<string,ToothCondition> = {
+  composite:'filling',glass_ionomer:'filling',temporary:'filling',core:'filling',inlay:'filling',filling_repair:'filling',child_filling:'filling',
+  rct:'rct',rct_anterior:'rct',rct_premolar:'rct',rct_molar:'rct',rct_retreatment:'rct',pulpectomy:'rct',
+  simple_extraction:'extracted',surgical_extraction:'extracted',wisdom_extraction:'extracted',retained_root:'extracted',child_extraction:'extracted',
+  zirconia:'crown',porcelain_metal:'crown',emax:'crown',temporary_crown:'crown',recement_crown:'crown',child_crown:'crown',implant_crown:'crown',
+  bridge:'bridge',bridge_cement:'bridge',implant:'implant',veneer:'veneer',composite_veneer:'veneer',sealant:'sealant',fixed_ortho:'bracket',bracket_repair:'bracket',
+};
+export function conditionForCategory(category: string | null, catalogCode?:string|null): ToothCondition | null {
+  if(catalogCode) return CATALOG_CONDITIONS[catalogCode] ?? null;
   if (!category) return null;
   return CATEGORY_TO_CONDITION[category] ?? null;
 }
@@ -60,6 +70,8 @@ export interface ClinicalVisitInput {
 }
 
 export interface ProcedureLine {
+  planItemId?: number | null;
+  catalogCode?: string | null;
   serviceId: number;
   serviceName: string;
   category: string | null;

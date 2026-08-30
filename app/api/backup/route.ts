@@ -44,13 +44,13 @@ export async function GET() {
   });
 
   const encoder = new TextEncoder();
+  const iterator = backupSqlLines();
   const stream = new ReadableStream({
-    async start(controller) {
+    async pull(controller) {
       try {
-        for await (const line of backupSqlLines()) {
-          controller.enqueue(encoder.encode(line));
-        }
-        controller.close();
+        const next = await iterator.next();
+        if (next.done) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
       } catch {
         // الملف الناقص أخطر من غيابه: من ينزّله يظنّه نسخة. فيُختم بسطر يُفشل
         // الاستعادة صراحةً — المعاملة تبقى مفتوحة بلا COMMIT ويقولها التعليق.
@@ -60,6 +60,7 @@ export async function GET() {
         controller.close();
       }
     },
+    async cancel() { await iterator.return(undefined); },
   });
 
   return new Response(stream, {

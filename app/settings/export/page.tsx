@@ -45,11 +45,11 @@ export default function ExportPage() {
       <section className="mb-5 rounded-2xl border-2 border-navy-800 bg-white p-4" aria-label="نسخة كاملة">
         <h2 className="text-sm font-extrabold">نسخة احتياطية كاملة</h2>
         <p className="mt-1 mb-3 text-[11px] font-bold leading-5 text-slate-500">
-          المرضى والمواعيد والفواتير والسندات والدفاتر في ملف واحد. هذا هو الملف الذي
+          المرضى والمواعيد والفواتير والسندات والدفاتر والأشعة في ملف واحد. هذا هو الملف الذي
           تُستعاد به العيادة لو ضاع كل شيء —
           <span className="text-navy-800"> وملفات CSV تحته للقراءة لا للاستعادة.</span>
         </p>
-        <a href="/api/backup"
+        <a href="/api/backup/full"
           className="block rounded-xl bg-navy-800 py-2.5 text-center text-sm font-extrabold text-white">
           نزّل النسخة الكاملة الآن
         </a>
@@ -66,13 +66,13 @@ export default function ExportPage() {
           */}
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
           <p className="text-xs font-extrabold text-navy-800">
-            والأشعة ليست في الملف أعلاه — نزّلها معه
+            تنزيلات منفصلة للمراجعة أو الترحيل
           </p>
           <p className="mt-1 mb-2 text-[11px] leading-5 text-slate-500">
-            صور الأشعة والمستندات محفوظة على القرص لا داخل قاعدة البيانات، فلا تحملها
-            نسخة SQL. هذا أرشيفها — مجلّدٌ لكل مريض برقم ملفّه، يُفتح بـ 7-Zip أو
+            النسخة الكاملة أعلاه تشمل البيانات والأشعة وفهرس الاستعادة. ويمكن أيضًا تنزيل أرشيف للقراءة — مجلّدٌ لكل مريض برقم ملفّه، يُفتح بـ 7-Zip أو
             WinRAR بلا حاجة إلى البرنامج.
           </p>
+          <a href="/api/backup" className="mb-2 block text-xs font-bold text-navy-800">قاعدة البيانات وحدها (SQL، بلا أشعة)</a>
           <a href="/api/backup/documents"
             className="block rounded-xl border border-navy-800 bg-white py-2 text-center text-xs font-extrabold text-navy-800">
             نزّل أرشيف الأشعة والمستندات
@@ -120,9 +120,8 @@ export default function ExportPage() {
         <p className="text-sm font-bold text-amber-900">احفظ النسخة خارج الجهاز</p>
         <p className="mt-1 text-[11px] leading-relaxed text-amber-800">
           ملفٌ على نفس الحاسب الذي قد يتعطّل ليس نسخة احتياطية. أرسلها إلى بريدك أو
-          إلى مجلد على السحابة بعد كل تنزيل. ونزّلها <strong>شهريًا على الأقل</strong> — وقبل أي
-          تغيير كبير في البرنامج. والنسخة الكاملة ملفّان لا ملفّ: قاعدة البيانات
-          وأرشيف الأشعة.
+          إلى مجلد على السحابة بعد كل تنزيل. ونزّلها <strong>يوميًا</strong> — وقبل أي
+          تغيير كبير في البرنامج. والنسخة الكاملة الآن ملف واحد يجمع قاعدة البيانات والأشعة.
         </p>
       </div>
     </main>

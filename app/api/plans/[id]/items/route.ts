@@ -28,7 +28,7 @@ const planIdFrom = async (context: { params: Promise<{ id: string }> }) => {
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const session = await requireSession();
   if (!session) return denied();
-  if (!canHandleMoney(session.role)) return forbidden();
+  if (!canHandleMoney(session.role) && session.role!=="doctor") return forbidden();
 
   const planId = await planIdFrom(context);
   if (!planId) return NextResponse.json({ message: "رقم الخطة غير صالح." }, { status: 400 });
@@ -57,6 +57,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   try {
     const service = await getService(serviceId);
+    if (service && (!service.isActive || !service.priceConfigured)) return NextResponse.json({message:"الخدمة موقوفة أو بلا سعر محدد."},{status:409});
     if (!service) return NextResponse.json({ message: "الخدمة غير موجودة في الدليل." }, { status: 404 });
 
     const result = await addPlanItem({
@@ -80,7 +81,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
   const session = await requireSession();
   if (!session) return denied();
-  if (!canHandleMoney(session.role)) return forbidden();
+  if (!canHandleMoney(session.role) && session.role!=="doctor") return forbidden();
 
   const planId = await planIdFrom(context);
   if (!planId) return NextResponse.json({ message: "رقم الخطة غير صالح." }, { status: 400 });

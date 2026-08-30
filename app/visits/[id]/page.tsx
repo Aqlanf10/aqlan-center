@@ -22,7 +22,7 @@ export default function VisitPage({ params }: { params: Promise<{ id: string }> 
         back={{ href: "/", label: "اللوحة" }}
       />
       {Number.isInteger(visitId) && visitId > 0 ? (
-        <ClinicalVisit visitId={visitId} onSigned={() => { window.location.href = "/"; }} />
+        <ClinicalVisit visitId={visitId} />
       ) : (
         <p className="rounded-2xl border border-danger-300 bg-danger-50 p-4 text-center text-sm font-semibold text-danger-700">
           رقم الزيارة غير صالح.
