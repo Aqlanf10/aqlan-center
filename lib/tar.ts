@@ -21,7 +21,7 @@ const pad = (value: number, length: number): string =>
  * يُستعمل تنسيق USTAR كي تُقبل الأسماء الطويلة والحروف العربية: الاسم يُكتب
  * بترميز UTF-8، وهو ما تفكّه أدوات فكّ الضغط الحديثة كما كُتب.
  */
-export function tarHeader(name: string, size: number, modified: Date): Uint8Array {
+function ustarHeader(name: string, size: number, modified: Date, type = "0"): Uint8Array {
   const header = new Uint8Array(BLOCK);
   const encoder = new TextEncoder();
   const write = (text: string, offset: number, length: number) => {
@@ -45,7 +45,7 @@ export function tarHeader(name: string, size: number, modified: Date): Uint8Arra
   write(pad(size, 12), 124, 12);
   write(pad(Math.floor(modified.getTime() / 1000), 12), 136, 12);
   write("        ", 148, 8);           // خانة المجموع تُملأ فراغات ثم تُحسب
-  write("0", 156, 1);                  // ملف عادي
+  write(type, 156, 1);                  // ملف عادي
   write("ustar\0", 257, 6);
   write("00", 263, 2);
 
@@ -55,6 +55,25 @@ export function tarHeader(name: string, size: number, modified: Date): Uint8Arra
   for (const byte of header) checksum += byte;
   write(checksum.toString(8).padStart(6, "0") + "\0 ", 148, 8);
   return header;
+}
+
+/** POSIX PAX declares UTF-8 and preserves paths of any length. */
+export function tarHeader(name: string, size: number, modified: Date): Uint8Array {
+  if (/^[\x20-\x7e]{1,100}$/.test(name)) return ustarHeader(name, size, modified);
+  const encoder = new TextEncoder();
+  const body = ` path=${name}\n`;
+  let length = encoder.encode(body).length + 1;
+  while (length !== encoder.encode(String(length) + body).length) {
+    length = encoder.encode(String(length) + body).length;
+  }
+  const data = encoder.encode(String(length) + body);
+  const extended = ustarHeader("PaxHeader", data.length, modified, "x");
+  const padding = tarPadding(data.length);
+  const file = ustarHeader("document", size, modified);
+  const result = new Uint8Array(extended.length + data.length + padding.length + file.length);
+  result.set(extended); result.set(data, extended.length);
+  result.set(file, extended.length + data.length + padding.length);
+  return result;
 }
 
 /** الحشو إلى مضاعف ٥١٢ — شرط الصيغة. */

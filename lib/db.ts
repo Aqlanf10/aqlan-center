@@ -1,6 +1,8 @@
+import { pgConnection } from "./pgConnection";
 import { Pool, type PoolClient } from "pg";
 import { toWhatsAppNumber } from "./reminders";
 import type { Visit, VisitStatus } from "./flow";
+import { chairCount } from "./settings";
 
 /**
  * قاعدة بيانات مستقلة عن النظام الأساسي — قرار المالك.
@@ -10,24 +12,6 @@ import type { Visit, VisitStatus } from "./flow";
  * بصمت. الثمن المقبول — وقد قرره المالك صراحة — أن بيانات هذه الأداة تُرحَّل لاحقًا
  * حين يدخل النظام الأساسي الخدمة.
  */
-
-/**
- * يقرر تشفير الاتصال من الرابط نفسه بدل افتراضه.
- *
- * فرض SSL دائمًا بدا الخيار الآمن، وكان خطأً: خادم Postgres بلا TLS يرفض الاتصال من
- * أصله برسالة «does not support SSL»، فتفتح اللوحة على «تعذّر تحميل قائمة اليوم» ولا
- * يعرف أحد لماذا. ظهر هذا عند أول تشغيل حقيقي، لا في البناء.
- *
- * القاعدة: المزوّدون المُدارون (Neon / Railway / Supabase) يفرضون TLS بشهادة وسيطة،
- * فيُفعَّل التشفير ويُعطَّل التحقق من سلسلة الشهادة لهم وحدهم؛ أما `localhost` أو
- * `sslmode=disable` صراحةً فبلا تشفير — وهو الصحيح لقاعدة على الجهاز نفسه.
- */
-function sslFor(connectionString: string): { rejectUnauthorized: boolean } | false {
-  const lowered = connectionString.toLowerCase();
-  if (lowered.includes("sslmode=disable")) return false;
-  if (/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(lowered)) return false;
-  return { rejectUnauthorized: false };
-}
 
 let pool: Pool | null = null;
 
@@ -59,7 +43,7 @@ export function getPool(): Pool {
   if (!connectionString) {
     throw new Error("رابط قاعدة البيانات غير مضبوط — أضف DATABASE_URL في إعدادات النشر.");
   }
-  pool = new Pool({ connectionString, ssl: sslFor(connectionString), max: 3 });
+  pool = new Pool({ ...pgConnection(connectionString), max: 5, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 30_000 });
   return pool;
 }
 
@@ -200,6 +184,9 @@ export function ensureSchema(): Promise<void> {
         sort_order    INTEGER     NOT NULL DEFAULT 100,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE services ADD COLUMN IF NOT EXISTS catalog_code TEXT;
+      ALTER TABLE services ADD COLUMN IF NOT EXISTS price_configured BOOLEAN NOT NULL DEFAULT TRUE;
+      CREATE UNIQUE INDEX IF NOT EXISTS services_catalog_code_idx ON services(catalog_code) WHERE catalog_code IS NOT NULL;
       CREATE INDEX IF NOT EXISTS services_active_idx ON services (is_active, sort_order);
 
       -- ورديات الصندوق. الدفع يتطلب وردية مفتوحة، والإغلاق يُقارن الجرد بالمتوقَّع.
@@ -717,6 +704,7 @@ export function ensureSchema(): Promise<void> {
         note             TEXT,
         created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE visit_procedures ADD COLUMN IF NOT EXISTS plan_item_id INTEGER REFERENCES plan_items(id);
       CREATE INDEX IF NOT EXISTS visit_procedures_visit_idx ON visit_procedures (visit_id);
 
       -- حالات الأسنان — سجلٌّ زمني لا حالة واحدة لكل سن.
@@ -792,6 +780,27 @@ export function ensureSchema(): Promise<void> {
         is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 1;
+      CREATE OR REPLACE FUNCTION revoke_changed_user_sessions() RETURNS TRIGGER AS $sessions$
+      BEGIN
+        IF NEW.password_hash IS DISTINCT FROM OLD.password_hash
+           OR NEW.role IS DISTINCT FROM OLD.role
+           OR NEW.is_active IS DISTINCT FROM OLD.is_active THEN
+          NEW.session_version := OLD.session_version + 1;
+        END IF;
+        RETURN NEW;
+      END;
+      $sessions$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS users_revoke_sessions ON users;
+      CREATE TRIGGER users_revoke_sessions BEFORE UPDATE ON users
+        FOR EACH ROW EXECUTE FUNCTION revoke_changed_user_sessions();
+
+      CREATE TABLE IF NOT EXISTS login_limits (
+        key TEXT PRIMARY KEY,
+        window_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        attempts INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE INDEX IF NOT EXISTS login_limits_window_idx ON login_limits(window_start);
     `);
   })().catch((error) => {
     // لا نحتفظ بوعد فاشل، وإلا بقيت الأداة معطّلة إلى إعادة التشغيل بعد عطل شبكة عابر.
@@ -946,24 +955,41 @@ export async function linkVisitToPatient(visitId: number, patientId: number): Pr
  * على كرسي واحد. الفحص هنا ذرّي، فيفوز واحد ويُخبَر الثاني.
  */
 export async function seatVisit(id: number, chair: number): Promise<Visit | null> {
+  return occupyChair(id, chair, "in_chair");
+}
+
+async function occupyChair(id: number, chair: number, status: "called" | "in_chair"): Promise<Visit | null> {
   // الحراسة محدودة بيوم العيادة عمدًا: زيارة أمس لم يضغط أحد «انتهى» عليها تبقى
   // `in_chair` في الجدول، وهي غير ظاهرة في لوحة اليوم — فلو شملها الفحص لظلّ الكرسي
   // مرفوضًا كل صباح برسالة «الكرسي شُغل للتو» بلا أحد عليه وبلا طريقة لتحريره.
   await ensureSchema();
-  const { rows } = await getPool().query<VisitRow>(
-    `UPDATE visits
-        SET status = 'in_chair', chair = $2, seated_at = NOW()
-      WHERE id = $1
-        AND status IN ('waiting', 'called')
-        AND NOT EXISTS (
-          SELECT 1 FROM visits busy
-           WHERE busy.status = 'in_chair' AND busy.chair = $2
-             AND (busy.arrived_at AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date
-        )
-      RETURNING *`,
-    [id, chair, CLINIC_TIME_ZONE],
-  );
-  return rows[0] ? toVisit(rows[0]) : null;
+  const settings = await getSettings();
+  if (!Number.isInteger(chair) || chair < 1 || chair > chairCount(settings)) return null;
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(41001, $1)", [chair]);
+    const { rows } = await client.query<VisitRow>(
+      `UPDATE visits
+          SET status = $4, chair = $2,
+              seated_at = CASE WHEN $4 = 'in_chair' THEN NOW() ELSE seated_at END,
+              called_at = CASE WHEN $4 = 'called' THEN NOW() ELSE called_at END
+        WHERE id = $1
+          AND (arrived_at AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date
+          AND (status = 'waiting' OR ($4 = 'in_chair' AND status = 'called'))
+          AND NOT EXISTS (
+            SELECT 1 FROM visits busy
+             WHERE busy.status IN ('called', 'in_chair') AND busy.chair = $2 AND busy.id <> $1
+               AND (busy.arrived_at AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date
+          )
+        RETURNING *`, [id, chair, CLINIC_TIME_ZONE, status],
+    );
+    await client.query("COMMIT");
+    return rows[0] ? toVisit(rows[0]) : null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { client.release(); }
 }
 
 /**
@@ -1118,6 +1144,7 @@ export async function createNextSession(input: {
 
 
 export interface StaffUser {
+  sessionVersion: number;
   id: number;
   username: string;
   displayName: string;
@@ -1127,6 +1154,7 @@ export interface StaffUser {
 }
 
 interface UserRow {
+  session_version: number;
   id: number;
   username: string;
   display_name: string;
@@ -1137,6 +1165,7 @@ interface UserRow {
 
 function toUser(row: UserRow): StaffUser {
   return {
+    sessionVersion: row.session_version,
     id: row.id,
     username: row.username,
     displayName: row.display_name,
@@ -1568,21 +1597,7 @@ export async function returnVisitToWaiting(id: number): Promise<Visit | null> {
  * دقيقة يمشي فيها المريض، ولو لم يُحجز الكرسي لنودي عليه مريض آخر في تلك الدقيقة.
  */
 export async function callVisit(id: number, chair: number): Promise<Visit | null> {
-  await ensureSchema();
-  const { rows } = await getPool().query<VisitRow>(
-    `UPDATE visits
-        SET status = 'called', chair = $2, called_at = NOW()
-      WHERE id = $1
-        AND status = 'waiting'
-        AND NOT EXISTS (
-          SELECT 1 FROM visits busy
-           WHERE busy.status IN ('called', 'in_chair') AND busy.chair = $2
-             AND (busy.arrived_at AT TIME ZONE $3)::date = (NOW() AT TIME ZONE $3)::date
-        )
-      RETURNING *`,
-    [id, chair, CLINIC_TIME_ZONE],
-  );
-  return rows[0] ? toVisit(rows[0]) : null;
+  return occupyChair(id, chair, "called");
 }
 
 // ─── طلبات الحجز ─────────────────────────────────────────────────────────────
@@ -2256,13 +2271,15 @@ export interface Service {
   name: string;
   category: string | null;
   priceMinor: number;
+  priceConfigured: boolean;
+  catalogCode: string | null;
   isActive: boolean;
   sortOrder: number;
 }
 
 interface ServiceRow {
   id: number; name: string; category: string | null;
-  price_minor: string; is_active: boolean; sort_order: number;
+  price_minor: string; is_active: boolean; sort_order: number; price_configured: boolean; catalog_code: string | null;
 }
 
 // `BIGINT` يصل من pg نصًّا لا رقمًا — وهو الصحيح لأنه قد يتجاوز حدّ العدد الآمن.
@@ -2275,6 +2292,8 @@ const toService = (row: ServiceRow): Service => ({
   name: row.name,
   category: row.category,
   priceMinor: toMinor(row.price_minor),
+  priceConfigured: row.price_configured,
+  catalogCode: row.catalog_code,
   isActive: row.is_active,
   sortOrder: row.sort_order,
 });
@@ -2282,7 +2301,7 @@ const toService = (row: ServiceRow): Service => ({
 export async function listServices(includeInactive = false): Promise<Service[]> {
   await ensureSchema();
   const { rows } = await getPool().query<ServiceRow>(
-    `SELECT id, name, category, price_minor, is_active, sort_order FROM services
+    `SELECT id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code FROM services
       ${includeInactive ? "" : "WHERE is_active"}
       ORDER BY sort_order, name`,
   );
@@ -2293,7 +2312,7 @@ export async function listServices(includeInactive = false): Promise<Service[]> 
 export async function getService(id: number): Promise<Service | null> {
   await ensureSchema();
   const { rows } = await getPool().query<ServiceRow>(
-    `SELECT id, name, category, price_minor, is_active, sort_order FROM services WHERE id = $1`,
+    `SELECT id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code FROM services WHERE id = $1`,
     [id],
   );
   return rows[0] ? toService(rows[0]) : null;
@@ -2305,7 +2324,7 @@ export async function createService(input: {
   await ensureSchema();
   const { rows } = await getPool().query<ServiceRow>(
     `INSERT INTO services (name, category, price_minor)
-     VALUES ($1, $2::text, $3) RETURNING id, name, category, price_minor, is_active, sort_order`,
+     VALUES ($1, $2::text, $3) RETURNING id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code`,
     [input.name, input.category, input.priceMinor],
   );
   return toService(rows[0]);
@@ -2320,9 +2339,10 @@ export async function updateService(id: number, input: {
        name        = COALESCE($2::text, name),
        category    = CASE WHEN $3::boolean THEN $4::text ELSE category END,
        price_minor = COALESCE($5::bigint, price_minor),
+       price_configured = CASE WHEN $5::bigint IS NOT NULL THEN TRUE ELSE price_configured END,
        is_active   = COALESCE($6::boolean, is_active)
      WHERE id = $1
-     RETURNING id, name, category, price_minor, is_active, sort_order`,
+     RETURNING id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code`,
     [
       id, input.name ?? null,
       input.category !== undefined, input.category ?? null,
@@ -2616,7 +2636,7 @@ export async function getInvoice(id: number): Promise<Invoice | null> {
 export async function listPatientInvoices(patientId: number): Promise<Invoice[]> {
   await ensureSchema();
   const { rows } = await getPool().query<InvoiceRow>(
-    `${INVOICE_SELECT} WHERE i.patient_id = $1 ORDER BY i.created_at DESC LIMIT 100`, [patientId],
+    `${INVOICE_SELECT} WHERE i.patient_id = $1 ORDER BY i.created_at DESC`, [patientId],
   );
   const items = await itemsFor(rows.map((row) => row.id));
   return rows.map((row) => toInvoice(row, items.get(row.id) ?? []));
@@ -2637,7 +2657,7 @@ export async function setInvoiceStatus(
 export async function listPatientPayments(patientId: number): Promise<Payment[]> {
   await ensureSchema();
   const { rows } = await getPool().query<PaymentRow>(
-    `${PAYMENT_SELECT} WHERE y.patient_id = $1 ORDER BY y.created_at DESC LIMIT 200`, [patientId],
+    `${PAYMENT_SELECT} WHERE y.patient_id = $1 ORDER BY y.created_at DESC`, [patientId],
   );
   return rows.map(toPayment);
 }
@@ -2693,31 +2713,63 @@ export async function recordPayment(input: {
   method: string;
   note: string | null;
   createdBy: string;
-}): Promise<{ payment: Payment | null; reason: "no_shift" | null }> {
+}): Promise<{ payment: Payment | null; reason: "no_shift" | "invalid_invoice" | null }> {
   await ensureSchema();
   const baseAmount = toBaseAmount(
     input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
   );
 
-  const { rows } = await getPool().query<{ id: number }>(
+  const client = await getPool().connect();
+  let released = false;
+  try {
+    await client.query("BEGIN");
+    const { rows: shifts } = await client.query<{ id: number }>(
+      "SELECT id FROM cashier_shifts WHERE status = 'open' LIMIT 1 FOR UPDATE",
+    );
+    if (!shifts[0]) { await client.query("ROLLBACK"); return { payment: null, reason: "no_shift" }; }
+    let linkedPlanId: number | null = null;
+    if (input.invoiceId !== null) {
+      const { rows: invoices } = await client.query(
+        "SELECT patient_id, status, base_currency, plan_id FROM invoices WHERE id = $1 FOR UPDATE", [input.invoiceId],
+      );
+      const invoice = invoices[0];
+      linkedPlanId = invoice?.plan_id ?? null;
+      if (!invoice || invoice.patient_id !== input.patientId || invoice.status === 'cancelled'
+          || invoice.base_currency !== input.baseCurrency) {
+        await client.query("ROLLBACK"); return { payment: null, reason: "invalid_invoice" };
+      }
+    }
+  const { rows } = await client.query<{ id: number }>(
     `INSERT INTO payments (
        receipt_number, patient_id, invoice_id, shift_id, kind, amount_minor, currency,
-       exchange_rate, base_amount_minor, base_currency, method, note, created_by)
+       exchange_rate, base_amount_minor, base_currency, method, note, created_by, plan_id)
      SELECT
        'R-' || LPAD(nextval('receipt_number_seq')::text, 5, '0'),
-       $1, $2::int, s.id, $3, $4, $5, $6, $7, $8, $9, $10::text, $11
+       $1, $2::int, s.id, $3, $4, $5, $6, $7, $8, $9, $10::text, $11, $12::int
        FROM cashier_shifts s
       WHERE s.status = 'open'
       LIMIT 1
      RETURNING id`,
     [
       input.patientId, input.invoiceId, input.kind, input.amountMinor, input.currency,
-      input.exchangeRate, baseAmount, input.baseCurrency, input.method, input.note, input.createdBy,
+      input.exchangeRate, baseAmount, input.baseCurrency, input.method, input.note, input.createdBy, linkedPlanId,
     ],
   );
 
-  if (!rows[0]) return { payment: null, reason: "no_shift" };
-  return { payment: await getPayment(rows[0].id), reason: null };
+  if(input.invoiceId!==null) {
+    await client.query(`UPDATE invoices SET status=CASE WHEN total_minor-discount_minor <=
+      (SELECT COALESCE(SUM(CASE WHEN kind='refund' THEN -base_amount_minor ELSE base_amount_minor END),0) FROM payments WHERE invoice_id=$1)
+      THEN 'paid' ELSE 'open' END WHERE id=$1 AND status<>'cancelled'`,[input.invoiceId]);
+  }
+  await client.query("COMMIT");
+  const id = rows[0]?.id;
+  client.release();
+  released = true;
+  return { payment: id ? await getPayment(id) : null, reason: id ? null : "no_shift" };
+  } catch (error) {
+    if (!released) await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { if (!released) client.release(); }
 }
 
 /** رصيد المريض: الفواتير والدفعات معًا، لأن الرقم لا يُقرأ من أحدهما وحده. */
@@ -2934,7 +2986,15 @@ export async function recordExpense(input: {
     input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
   );
 
-  const { rows } = await getPool().query<{ id: number }>(
+  const client = await getPool().connect();
+  let released = false;
+  try {
+    await client.query("BEGIN");
+    const { rows: shifts } = await client.query<{ id: number }>(
+      "SELECT id FROM cashier_shifts WHERE status = 'open' LIMIT 1 FOR UPDATE",
+    );
+    if (!shifts[0]) { await client.query("ROLLBACK"); return { expense: null, reason: "no_shift" }; }
+  const { rows } = await client.query<{ id: number }>(
     `INSERT INTO expenses (
        voucher_number, category, party_id, payee_text, shift_id, amount_minor, currency,
        exchange_rate, base_amount_minor, base_currency, payable_id, note, created_by)
@@ -2951,8 +3011,15 @@ export async function recordExpense(input: {
     ],
   );
 
-  if (!rows[0]) return { expense: null, reason: "no_shift" };
-  return { expense: await getExpense(rows[0].id), reason: null };
+  await client.query("COMMIT");
+  const id = rows[0]?.id;
+  client.release();
+  released = true;
+  return { expense: id ? await getExpense(id) : null, reason: id ? null : "no_shift" };
+  } catch (error) {
+    if (!released) await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { if (!released) client.release(); }
 }
 
 // ─── تقرير العمولات ──────────────────────────────────────────────────────────
@@ -3758,7 +3825,7 @@ export async function isPeriodLocked(date: string): Promise<boolean> {
 
 // ─── النسخة الاحتياطية الكاملة ───────────────────────────────────────────────
 
-import { insertStatement, insertionOrder, sequenceResets } from "./backup";
+import { insertStatement, insertionOrder, quoteIdentifier, sqlValue } from "./backup";
 
 /**
  * يبني ملف النسخة الاحتياطية سطرًا سطرًا.
@@ -3774,68 +3841,68 @@ export interface Queryable {
   query: (text: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 }
 
+/** A supplied source must be a dedicated connection, never a connection pool. */
 export async function* backupSqlLines(source?: Queryable): AsyncGenerator<string> {
-  // مصدرٌ مُمرَّر يعني قاعدةً غير قاعدة التطبيق — وهو ما يجعل فحص «هل تُستعاد النسخة؟»
-  // ممكنًا أصلًا: قراءةٌ من قاعدة وكتابةٌ في أخرى داخل عملية واحدة.
-  let pool: Queryable;
-  if (source) {
-    pool = source;
-  } else {
-    await ensureSchema();
-    pool = getPool();
+  if (!source) await ensureSchema();
+  const owned = source ? null : await getPool().connect();
+  const client: Queryable = source ?? owned!;
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    yield* snapshotSqlLines(client);
+    await client.query("COMMIT");
+  } finally {
+    // Also releases the snapshot when a client cancels its download.
+    await client.query("ROLLBACK").catch(() => {});
+    owned?.release();
   }
+}
 
-  const { rows: tableRows } = (await pool.query(
-    `SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-      ORDER BY table_name`,
-  )) as { rows: { table_name: string }[] };
-  const tables = tableRows.map((row) => row.table_name);
-
-  // الترتيب من مفاتيح القاعدة نفسها لا من قائمة مكتوبة بيد: قائمةٌ يدوية تنسى جدولًا
-  // يُضاف غدًا، فتفشل الاستعادة بخطأ مفتاح أجنبي في أسوأ لحظة.
-  const { rows: fkRows } = (await pool.query(
-    `SELECT tc.table_name AS child, ccu.table_name AS parent
-       FROM information_schema.table_constraints tc
-       JOIN information_schema.constraint_column_usage ccu
-         ON ccu.constraint_name = tc.constraint_name
-      WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'`,
-  )) as { rows: { child: string; parent: string }[] };
-  const dependsOn = new Map(tables.map((table) => [table, new Set<string>()]));
-  for (const row of fkRows) dependsOn.get(row.child)?.add(row.parent);
-  const ordered = insertionOrder(
-    tables.map((table) => ({ table, dependsOn: [...(dependsOn.get(table) ?? [])] })),
+/** Only call within a dedicated REPEATABLE READ transaction. Also used by full backups. */
+export async function* snapshotSqlLines(client: Queryable): AsyncGenerator<string> {
+  const { rows: tableRows } = await client.query(
+    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
   );
-
-  yield `-- نسخة احتياطية — انسياب العيادة\n`;
-  yield `-- أُخذت: ${new Date().toISOString()}\n`;
-  yield `-- الاستعادة: على قاعدة فارغة فتحها البرنامج مرة واحدة فأنشأ جداولها.\n`;
-  yield `BEGIN;\n`;
-
-  // العدّادات تُعاد فقط لجداول لها عمود `id`. الجداول ذات المفتاح الطبيعي —
-  // الإعدادات بمفتاحها النصّي، والأرصدة الافتتاحية برقم المريض — لا عدّاد لها،
-  // وتوليد جملة تشير إلى `id` فيها يُفشل ملف النسخة كله عند أول سطر استعادة.
-  const withSerialId: string[] = [];
-
+  const tables = tableRows.map(row => String(row.table_name));
+  const { rows: fkRows } = await client.query(
+    `SELECT child.relname AS child, parent.relname AS parent
+       FROM pg_constraint c JOIN pg_class child ON child.oid = c.conrelid
+       JOIN pg_class parent ON parent.oid = c.confrelid
+       JOIN pg_namespace n ON n.oid = child.relnamespace
+      WHERE c.contype = 'f' AND n.nspname = 'public'`,
+  );
+  const ordered = insertionOrder(tables.map(table => ({
+    table, dependsOn: fkRows.filter(row => row.child === table).map(row => String(row.parent)),
+  })));
+  yield `-- Aqlan database backup v2; ${new Date().toISOString()}\nBEGIN;\n`;
   for (const table of ordered) {
-    const { rows: columnRows } = (await pool.query(
-      `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = $1
-        ORDER BY ordinal_position`,
-      [table],
-    )) as { rows: { column_name: string }[] };
-    const columns = columnRows.map((row) => row.column_name);
-    if (columns.length === 0) continue;
-    if (columns.includes("id")) withSerialId.push(table);
-
-    const { rows } = await pool.query(`SELECT * FROM "${table}"`);
-    yield `\n-- ${table} (${rows.length})\n`;
-    for (const row of rows) yield `${insertStatement(table, columns, row)}\n`;
+    const { rows: columnRows } = await client.query(
+      "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position", [table],
+    );
+    const columns = columnRows.map(row => String(row.column_name));
+    const selection = columnRows.map(row => {
+      const name = quoteIdentifier(String(row.column_name));
+      return /timestamp|date|time/.test(String(row.data_type)) ? `${name}::text AS ${name}` : name;
+    }).join(', ');
+    await client.query(`DECLARE backup_rows NO SCROLL CURSOR FOR SELECT ${selection} FROM public.${quoteIdentifier(table)}`);
+    try {
+      while (true) {
+        const { rows } = await client.query("FETCH 500 FROM backup_rows");
+        if (!rows.length) break;
+        for (const row of rows) yield insertStatement(table, columns, row) + "\n";
+      }
+    } finally { await client.query("CLOSE backup_rows"); }
   }
-
-  yield `\n`;
-  for (const reset of sequenceResets(withSerialId)) yield `${reset}\n`;
-  yield `COMMIT;\n`;
+  // Include business-number sequences, not just SERIAL id columns. Sequence values
+  // can advance beyond the snapshot; preserving those gaps is safe and prevents reuse.
+  const { rows: sequences } = await client.query(
+    "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' ORDER BY sequencename",
+  );
+  for (const row of sequences) {
+    const name = String(row.sequencename);
+    const { rows: state } = await client.query(`SELECT last_value, is_called FROM public.${quoteIdentifier(name)}`);
+    yield `SELECT setval(${sqlValue('public.' + quoteIdentifier(name))}, ${String(state[0].last_value)}, ${state[0].is_called ? 'TRUE' : 'FALSE'});\n`;
+  }
+  yield "COMMIT;\n-- AQLAN_BACKUP_COMPLETE\n";
 }
 
 // ─── إعادة تقييم العملات الأجنبية ────────────────────────────────────────────
@@ -4113,12 +4180,16 @@ interface ClinicalRow {
 }
 
 interface ProcedureRow {
+  catalog_code: string | null;
+  plan_item_id: number | null;
   service_id: number; service_name: string; category: string | null;
   doctor_id: number | null; tooth_code: number | null; surfaces: string | null;
   quantity: number; unit_price_minor: string;
 }
 
 const toProcedureLine = (row: ProcedureRow): ProcedureLine => ({
+  planItemId: row.plan_item_id,
+  catalogCode: row.catalog_code,
   serviceId: row.service_id,
   serviceName: row.service_name,
   category: row.category,
@@ -4143,7 +4214,7 @@ export async function getClinicalVisit(visitId: number): Promise<ClinicalVisit |
   if (!rows[0]) return null;
 
   const { rows: procedureRows } = await pool.query<ProcedureRow>(
-    `SELECT p.service_id, s.name AS service_name, s.category, p.doctor_id,
+    `SELECT p.plan_item_id, p.service_id, s.name AS service_name, s.category, s.catalog_code, p.doctor_id,
             p.tooth_code, p.surfaces, p.quantity, p.unit_price_minor
        FROM visit_procedures p JOIN services s ON s.id = p.service_id
       WHERE p.visit_id = $1 ORDER BY p.id`,
@@ -4288,7 +4359,7 @@ async function visitPlanContext(
     matched: matchedIds.length,
     title: hit?.title ?? null,
     warning: onInstalments
-      ? "هذه الإجراءات ضمن خطة لها جدول أقساط — والتوقيع سيصدر فاتورة إضافية عليها. إن كان العمل داخل الاتفاق فحصّله بقسط لا بفاتورة."
+      ? "هذه الإجراءات ضمن خطة لها جدول أقساط — يُسجّل تنفيذها دون فاتورة جديدة، ويكون التحصيل من أقساط الخطة."
       : null,
   };
 }
@@ -4318,6 +4389,7 @@ export async function saveClinicalNotes(input: {
 export async function setVisitProcedures(input: {
   visitId: number;
   procedures: VisitProcedureInput[];
+  notes?: Omit<Parameters<typeof saveClinicalNotes>[0], 'visitId'>;
 }): Promise<boolean> {
   await ensureSchema();
   const client = await getPool().connect();
@@ -4330,15 +4402,26 @@ export async function setVisitProcedures(input: {
     );
     if (!rows[0]) { await client.query("ROLLBACK"); return false; }
 
+    const { validateProcedures } = await import('./treatmentWorkflow');
+    await validateProcedures(client, input.visitId, input.procedures);
+    if (input.notes) {
+      const n = input.notes;
+      if(n.doctorId!==null && !(await client.query("SELECT id FROM parties WHERE id=$1 AND kind='doctor' AND is_active",[n.doctorId])).rowCount) {
+        const {ClinicInputError}=await import('./treatmentWorkflow');throw new ClinicInputError('اختر طبيبًا مسجّلًا ونشطًا.');
+      }
+      await client.query(`UPDATE visits SET chief_complaint=$2, examination=$3, diagnosis=$4,
+        treatment_done=$5, next_plan=$6, doctor_id=$7 WHERE id=$1`,
+        [input.visitId,n.chiefComplaint,n.examination,n.diagnosis,n.treatmentDone,n.nextPlan,n.doctorId]);
+    }
     await client.query(`DELETE FROM visit_procedures WHERE visit_id = $1`, [input.visitId]);
     for (const procedure of input.procedures) {
       await client.query(
         `INSERT INTO visit_procedures
-           (visit_id, service_id, doctor_id, tooth_code, surfaces, quantity, unit_price_minor, note)
-         VALUES ($1, $2, $3::int, $4::int, $5::text, $6, $7, $8::text)`,
+           (visit_id, service_id, doctor_id, tooth_code, surfaces, quantity, unit_price_minor, note, plan_item_id)
+         VALUES ($1, $2, $3::int, $4::int, $5::text, $6, $7, $8::text, $9::int)`,
         [input.visitId, procedure.serviceId, procedure.doctorId, procedure.toothCode,
          normalizeSurfaces(procedure.surfaces), Math.max(1, Math.round(procedure.quantity)),
-         Math.max(0, Math.round(procedure.unitPriceMinor)), procedure.note],
+         Math.max(0, Math.round(procedure.unitPriceMinor)), procedure.note, procedure.planItemId ?? null],
       );
     }
     await client.query("COMMIT");
@@ -4387,6 +4470,7 @@ export async function signClinicalVisit(input: {
   if (!check.ok) return { visit: existing, invoiceId: null, chartUpdates: 0, planItemsDone: 0, reason: "empty" };
 
   const client = await getPool().connect();
+  let released = false;
   try {
     await client.query("BEGIN");
 
@@ -4411,20 +4495,34 @@ export async function signClinicalVisit(input: {
      * سقط الملف معه، فلا يبقى مريضٌ بلا زيارة.
      */
     const patientId = await resolveVisitPatient(client, locked[0]);
-
+    const { rows: freshNotes } = await client.query(`SELECT diagnosis,treatment_done FROM visits WHERE id=$1`,[input.visitId]);
+    const { rows: freshProcedures } = await client.query<ProcedureRow>(
+      `SELECT p.plan_item_id,p.service_id,s.name AS service_name,s.category,s.catalog_code,p.doctor_id,
+         p.tooth_code,p.surfaces,p.quantity,p.unit_price_minor
+       FROM visit_procedures p JOIN services s ON s.id=p.service_id WHERE p.visit_id=$1 ORDER BY p.id`,[input.visitId]);
+    existing.procedures=freshProcedures.map(toProcedureLine);
+    existing.totalMinor=visitTotal(existing.procedures);
+    if (!canSign({status:'open', procedures:existing.procedures,diagnosis:freshNotes[0].diagnosis,treatmentDone:freshNotes[0].treatment_done}).ok) {
+      await client.query('ROLLBACK');
+      return {visit:existing,invoiceId:null,chartUpdates:0,planItemsDone:0,reason:'empty'};
+    }
+    const { validateProcedures, resolveProcedureBilling } = await import('./treatmentWorkflow');
+    await validateProcedures(client,input.visitId,existing.procedures.map(p=>({...p,note:null})));
+    const billing = await resolveProcedureBilling(client,patientId,input.baseCurrency,existing.procedures);
+    const billedLines = billing.lines;
     let invoiceId: number | null = null;
-    if (existing.procedures.length > 0) {
+    if (billedLines.length > 0) {
       const { rows: invoiceRows } = await client.query<{ id: number }>(
         `INSERT INTO invoices (invoice_number, patient_id, base_currency, total_minor, discount_minor, note, created_by)
          VALUES ('INV-' || LPAD(nextval('invoice_number_seq')::text, 5, '0'),
                  $1, $2, $3, 0, $4::text, $5)
          RETURNING id`,
-        [patientId, input.baseCurrency, existing.totalMinor,
+        [patientId, input.baseCurrency, visitTotal(billedLines),
          `من الزيارة رقم ${existing.id}`, input.signedBy],
       );
       invoiceId = invoiceRows[0].id;
 
-      for (const line of existing.procedures) {
+      for (const line of billedLines) {
         await client.query(
           `INSERT INTO invoice_items
              (invoice_id, service_id, doctor_id, description, quantity, unit_price_minor, total_minor)
@@ -4440,7 +4538,7 @@ export async function signClinicalVisit(input: {
     let chartUpdates = 0;
     {
       for (const line of existing.procedures) {
-        const condition = conditionForCategory(line.category);
+        const condition = conditionForCategory(line.category, line.catalogCode);
         if (!condition || !line.toothCode) continue;
         await client.query(
           `INSERT INTO tooth_conditions
@@ -4464,44 +4562,10 @@ export async function signClinicalVisit(input: {
      * ولا يُشطب إلا من خطةٍ **موافَقٍ عليها**: المسوّدة ليست اتفاقًا بعد.
      */
     let planItemsDone = 0;
-    if (existing.procedures.length > 0) {
-      const { rows: openItems } = await client.query<{
-        id: number; service_id: number | null; tooth_code: number | null;
-        quantity: number; unit_price_minor: string; status: string;
-      }>(
-        `SELECT i.id, i.service_id, i.tooth_code, i.quantity, i.unit_price_minor, i.status
-           FROM plan_items i JOIN treatment_plans t ON t.id = i.plan_id
-          WHERE t.patient_id = $1 AND t.status = 'active' AND t.consent_at IS NOT NULL
-            AND i.status = 'planned'
-          ORDER BY i.id
-            FOR UPDATE OF i`,
-        [patientId],
-      );
-
-      const matched = matchPlanItems(
-        openItems.map((row) => ({
-          id: row.id,
-          serviceId: row.service_id,
-          toothCode: row.tooth_code,
-          quantity: row.quantity,
-          unitPriceMinor: toMinor(row.unit_price_minor),
-          status: row.status as PlanItemStatus,
-        })),
-        existing.procedures.map((line) => ({
-          serviceId: line.serviceId, toothCode: line.toothCode, quantity: line.quantity,
-        })),
-      );
-
-      if (matched.length > 0) {
-        const { rowCount } = await client.query(
-          `UPDATE plan_items SET status = 'done', visit_id = $2, done_at = NOW()
-            WHERE id = ANY($1::int[]) AND status = 'planned'`,
-          [matched, input.visitId],
-        );
-        planItemsDone = rowCount ?? 0;
-      }
+    if (billing.itemIds.length) {
+      const result=await client.query(`UPDATE plan_items SET status='done',visit_id=$2,done_at=NOW() WHERE id=ANY($1::int[]) AND status='planned'`,[billing.itemIds,input.visitId]);
+      planItemsDone=result.rowCount ?? 0;
     }
-
     await client.query(
       `UPDATE visits SET signed_at = NOW(), signed_by = $2, invoice_id = $3::int,
               status = 'done', finished_at = COALESCE(finished_at, NOW())
@@ -4510,15 +4574,16 @@ export async function signClinicalVisit(input: {
     );
 
     await client.query("COMMIT");
+    client.release(); released = true;
     return {
       visit: await getClinicalVisit(input.visitId),
       invoiceId, chartUpdates, planItemsDone, reason: null,
     };
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!released) await client.query("ROLLBACK").catch(() => {});
     throw error;
   } finally {
-    client.release();
+    if (!released) client.release();
   }
 }
 
@@ -5062,6 +5127,7 @@ export async function addPlanItem(input: {
 
     const allowed = canEditItems({ status: plan.status, consentAt: plan.consentAt?.toISOString() ?? null });
     if (!allowed.ok) { await client.query("ROLLBACK"); return allowed; }
+    if((await client.query('SELECT id FROM plan_installments WHERE plan_id=$1 LIMIT 1',[plan.id])).rowCount){await client.query('ROLLBACK');return {ok:false,message:'للخطة أقساط قائمة؛ لا تغيّر بنود اتفاقها المالي.'};}
 
     if (input.toothCode !== null && !isValidTooth(input.toothCode)) {
       await client.query("ROLLBACK");
@@ -5109,6 +5175,7 @@ export async function removePlanItem(planId: number, itemId: number): Promise<Pl
 
     const allowed = canEditItems({ status: plan.status, consentAt: plan.consentAt?.toISOString() ?? null });
     if (!allowed.ok) { await client.query("ROLLBACK"); return allowed; }
+    if((await client.query('SELECT id FROM plan_installments WHERE plan_id=$1 LIMIT 1',[plan.id])).rowCount){await client.query('ROLLBACK');return {ok:false,message:'للخطة أقساط قائمة؛ لا تغيّر بنود اتفاقها المالي.'};}
 
     const { rowCount } = await client.query(
       `DELETE FROM plan_items WHERE id = $1 AND plan_id = $2`, [itemId, planId],
@@ -5137,6 +5204,7 @@ export async function recordPlanConsent(input: {
   planId: number;
   actor: string;
   note: string | null;
+  schedule?: {count:number;everyDays:number;firstDueDate:string};
 }): Promise<PlanGuard & { itemCount?: number; totalMinor?: number }> {
   await ensureSchema();
   const client = await getPool().connect();
@@ -5146,11 +5214,11 @@ export async function recordPlanConsent(input: {
     if (!plan) { await client.query("ROLLBACK"); return { ok: false, message: "الخطة غير موجودة." }; }
 
     const { rows: itemRows } = await client.query<{
-      id: number; category: string | null; tooth_code: number | null;
+      id: number; category: string | null; catalog_code: string | null; tooth_code: number | null;
       surfaces: string | null; quantity: number; unit_price_minor: string; status: string;
     }>(
-      `SELECT id, category, tooth_code, surfaces, quantity, unit_price_minor, status
-         FROM plan_items WHERE plan_id = $1 ORDER BY sort_order, id`,
+      `SELECT i.id,i.category,s.catalog_code,i.tooth_code,i.surfaces,i.quantity,i.unit_price_minor,i.status
+         FROM plan_items i LEFT JOIN services s ON s.id=i.service_id WHERE i.plan_id=$1 ORDER BY i.sort_order,i.id`,
       [input.planId],
     );
 
@@ -5166,6 +5234,16 @@ export async function recordPlanConsent(input: {
     if (!guard.ok) { await client.query("ROLLBACK"); return guard; }
 
     const totalMinor = await recomputePlanTotal(client, input.planId);
+    if(input.schedule) {
+      const {count,everyDays,firstDueDate}=input.schedule;
+      if(!Number.isSafeInteger(count)||count<1||count>60||!Number.isSafeInteger(everyDays)||everyDays<1||everyDays>365||totalMinor<=0) {
+        await client.query('ROLLBACK');return {ok:false,message:'راجع عدد الأقساط ومدتها وإجمالي الخطة.'};
+      }
+      if((await client.query('SELECT id FROM plan_installments WHERE plan_id=$1 LIMIT 1',[input.planId])).rowCount){await client.query('ROLLBACK');return {ok:false,message:'للخطة جدول أقساط قائم.'};}
+      for(const item of splitInstallments(totalMinor,count,firstDueDate,everyDays)) {
+        await client.query('INSERT INTO plan_installments(plan_id,number,due_date,amount_minor) VALUES($1,$2,$3::date,$4)',[input.planId,item.number,item.dueDate,item.amountMinor]);
+      }
+    }
     await client.query(
       `UPDATE treatment_plans SET consent_at = NOW(), consent_by = $2, consent_note = $3::text
          WHERE id = $1`,
@@ -5175,7 +5253,7 @@ export async function recordPlanConsent(input: {
     // البنود على المخطط: حالاتٌ مخطَّطة لا منجَزة — والفرق بينهما نصف قيمة المخطط.
     let charted = 0;
     for (const row of itemRows) {
-      const condition = conditionForCategory(row.category);
+      const condition = conditionForCategory(row.category, row.catalog_code);
       if (!condition || row.tooth_code === null) continue;
       await client.query(
         `INSERT INTO tooth_conditions
@@ -5239,6 +5317,9 @@ export async function schedulePlanInstallments(input: {
       return { ok: false, message: "للخطة جدول أقساط سلفًا." };
     }
 
+    const billed=await client.query(`SELECT 1 FROM plan_items i JOIN visits v ON v.id=i.visit_id
+      WHERE i.plan_id=$1 AND v.invoice_id IS NOT NULL LIMIT 1`,[input.planId]);
+    if (billed.rowCount) {await client.query('ROLLBACK');return {ok:false,message:'نُفّذت وفُوترت بنود من الخطة. لا يمكن تحويلها إلى أقساط تُصدر فواتير مكررة؛ حصّل دفعاتها من حساب المريض.'};}
     const { rows: totals } = await client.query<{ total_minor: string }>(
       `SELECT total_minor FROM treatment_plans WHERE id = $1`, [input.planId],
     );
@@ -5288,7 +5369,7 @@ export async function recordPlanInstallment(input: {
   method: string;
   note: string | null;
   createdBy: string;
-}): Promise<{ invoiceId: number; paymentId: number } | { reason: "no_shift" }> {
+}): Promise<{ invoiceId: number; paymentId: number } | { reason: "no_shift" | "invalid_plan" | "exceeds_balance" }> {
   await ensureSchema();
   const baseAmount = toBaseAmount(
     input.amountMinor, input.currency, input.baseCurrency, input.exchangeRate,
@@ -5303,7 +5384,16 @@ export async function recordPlanInstallment(input: {
     );
     if (!shifts[0]) { await client.query("ROLLBACK"); return { reason: "no_shift" }; }
 
-    const description = `${input.planTitle} — قسط ${input.installmentNumber}`;
+    const agreement=(await client.query(`SELECT * FROM treatment_plans WHERE id=$1 FOR UPDATE`,[input.planId])).rows[0];
+    const schedule=(await client.query(`SELECT amount_minor FROM plan_installments WHERE plan_id=$1 ORDER BY number`,[input.planId])).rows;
+    if(!agreement||agreement.patient_id!==input.patientId||agreement.status!=='active'||agreement.base_currency!==input.baseCurrency||!schedule.length||!Number.isSafeInteger(baseAmount)||baseAmount<=0) {
+      await client.query('ROLLBACK');return {reason:'invalid_plan'};
+    }
+    const paid=Number((await client.query(`SELECT COALESCE(SUM(CASE WHEN kind='refund' THEN -base_amount_minor ELSE base_amount_minor END),0) paid FROM payments WHERE plan_id=$1`,[input.planId])).rows[0].paid);
+    if(baseAmount>Number(agreement.total_minor)-paid){await client.query('ROLLBACK');return {reason:'exceeds_balance'};}
+    let cumulative=0,installmentNumber=schedule.length;
+    for(const [index,entry] of schedule.entries()){cumulative+=Number(entry.amount_minor);if(paid<cumulative){installmentNumber=index+1;break;}}
+    const description = `${agreement.title} — قسط ${installmentNumber}`;
     const { rows: invoices } = await client.query<{ id: number }>(
       `INSERT INTO invoices (invoice_number, patient_id, total_minor, discount_minor, base_currency, note, created_by, plan_id)
        VALUES (

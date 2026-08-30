@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import {
   addVisitAddendum, getClinicalVisit, getSettings, recordAudit,
-  saveClinicalNotes, setVisitProcedures, signClinicalVisit,
+  setVisitProcedures, signClinicalVisit,
 } from "@/lib/db";
+import { ClinicInputError } from "@/lib/treatmentWorkflow";
 import { isCurrency } from "@/lib/money";
 import { requireSession } from "@/lib/session";
 
@@ -106,43 +107,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return NextResponse.json(result.visit);
     }
 
-    // حفظ التوثيق والإجراءات معًا: الطبيب يكتب ويختار في شاشة واحدة.
-    const saved = await saveClinicalNotes({
-      visitId,
-      chiefComplaint: text(source.chiefComplaint, 500),
-      examination: text(source.examination),
-      diagnosis: text(source.diagnosis),
-      treatmentDone: text(source.treatmentDone),
-      nextPlan: text(source.nextPlan, 500),
-      doctorId: Number(source.doctorId) || null,
-    });
-    if (!saved) {
-      return NextResponse.json(
-        { message: "الزيارة موقَّعة — لا تُعدَّل. أضف ملحقًا." }, { status: 409 },
-      );
+    if (action !== 'save' || !Array.isArray(source.procedures) || source.procedures.length>80) {
+      return NextResponse.json({message:'طلب حفظ غير صالح؛ أرسل قائمة الإجراءات كاملة.'},{status:400});
     }
-
-    if (Array.isArray(source.procedures)) {
-      const procedures = source.procedures
-        .map((row) => row as Record<string, unknown>)
-        .filter((row) => Number(row.serviceId) > 0)
-        .map((row) => ({
-          serviceId: Number(row.serviceId),
-          toothCode: Number(row.toothCode) || null,
-          surfaces: typeof row.surfaces === "string" ? row.surfaces : null,
-          quantity: Math.max(1, Math.round(Number(row.quantity) || 1)),
-          unitPriceMinor: Math.max(0, Math.round(Number(row.unitPriceMinor) || 0)),
-          doctorId: Number(row.doctorId) || null,
-          note: text(row.note, 300),
-        }));
-      const ok = await setVisitProcedures({ visitId, procedures });
-      if (!ok) {
-        return NextResponse.json({ message: "الزيارة موقَّعة — لا تُعدَّل إجراءاتها." }, { status: 409 });
-      }
-    }
-
+    const nullableNumber=(value:unknown)=>value===null||value===undefined||value===''?null:Number(value);
+    const procedures=source.procedures.map((row:Record<string,unknown>)=>({
+      serviceId:Number(row?.serviceId),toothCode:nullableNumber(row?.toothCode),planItemId:nullableNumber(row?.planItemId),
+      surfaces:typeof row?.surfaces==='string'?row.surfaces:null,quantity:Number(row?.quantity??1),
+      unitPriceMinor:Number(row?.unitPriceMinor??NaN),doctorId:nullableNumber(row?.doctorId),note:text(row?.note,300),
+    }));
+    const saved=await setVisitProcedures({visitId,procedures,notes:{
+      chiefComplaint:text(source.chiefComplaint,500),examination:text(source.examination),diagnosis:text(source.diagnosis),
+      treatmentDone:text(source.treatmentDone),nextPlan:text(source.nextPlan,500),doctorId:nullableNumber(source.doctorId),
+    }});
+    if(!saved)return NextResponse.json({message:'الزيارة موقّعة أو غير موجودة؛ لا يمكن تعديلها.'},{status:409});
     return NextResponse.json(await getClinicalVisit(visitId));
-  } catch {
-    return NextResponse.json({ message: "تعذّر حفظ الزيارة." }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ message: error instanceof ClinicInputError ? error.message : "تعذّر حفظ الزيارة." }, { status: error instanceof ClinicInputError ? 409 : 500 });
   }
 }

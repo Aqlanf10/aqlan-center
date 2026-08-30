@@ -47,6 +47,7 @@ export interface SessionPayload {
   username: string;
   role: string;
   expiresAt: number;
+  sessionVersion: number;
 }
 
 function secret(): string {
@@ -72,7 +73,7 @@ export function createSessionToken(payload: SessionPayload): string {
 export function readSessionToken(token: string | undefined): SessionPayload | null {
   if (!token) return null;
   const [body, signature] = token.split(".");
-  if (!body || !signature) return null;
+  if (!body || !signature || token.split(".").length !== 2) return null;
 
   const expected = sign(body);
   const given = Buffer.from(signature);
@@ -82,8 +83,9 @@ export function readSessionToken(token: string | undefined): SessionPayload | nu
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as SessionPayload;
     // التوقيع يمنع التزوير، والانتهاء يمنع بقاء جلسة مسروقة صالحة إلى الأبد.
-    if (typeof payload.expiresAt !== "number" || payload.expiresAt < Date.now()) return null;
-    if (typeof payload.userId !== "number") return null;
+    if (typeof payload.expiresAt !== "number" || payload.expiresAt <= Date.now()) return null;
+    if (!Number.isSafeInteger(payload.userId) || payload.userId <= 0) return null;
+    if (!Number.isSafeInteger(payload.sessionVersion) || payload.sessionVersion < 1) return null;
     return payload;
   } catch {
     return null;

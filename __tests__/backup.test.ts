@@ -53,7 +53,7 @@ describe("النسخة الاحتياطية", () => {
 
   it("يبني جملة إدراج بأعمدة مقتبسة", () => {
     expect(insertStatement("patients", ["id", "full_name"], { id: 3, full_name: "سعيد" }))
-      .toBe(`INSERT INTO patients ("id", "full_name") VALUES (3, 'سعيد');`);
+      .toBe(`INSERT INTO "patients" ("id", "full_name") VALUES (3, 'سعيد');`);
   });
 
   it("يعيد ضبط العدّادات — وإلا اصطدمت أول فاتورة جديدة برقم موجود", () => {

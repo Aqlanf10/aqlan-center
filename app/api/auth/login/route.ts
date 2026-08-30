@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { findUserByUsername } from "@/lib/db";
+import { consumeLoginAttempt } from "@/lib/loginLimit";
 import {
   SESSION_COOKIE,
   SESSION_DURATION_MS,
@@ -20,11 +21,16 @@ export async function POST(request: Request) {
   const source = (body ?? {}) as Record<string, unknown>;
   const username = typeof source.username === "string" ? source.username.trim() : "";
   const password = typeof source.password === "string" ? source.password : "";
-  if (!username || !password) {
+  if (!username || !password || username.length > 80 || password.length > 1024) {
     return NextResponse.json({ message: "اسم المستخدم وكلمة المرور مطلوبان." }, { status: 400 });
   }
 
   try {
+    const limit = await consumeLoginAttempt(username, request.headers);
+    if (!limit.allowed) {
+      return NextResponse.json({ message: "محاولات دخول كثيرة. انتظر قليلًا ثم حاول مجددًا." },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfter) } });
+    }
     const user = await findUserByUsername(username);
     // رسالة واحدة لحالتي «المستخدم غير موجود» و«كلمة المرور خاطئة»: التفريق بينهما
     // يخبر المحاوِل أيّ أسماء الدخول صحيحة، فيحوّل التخمين من اثنين إلى واحد.
@@ -46,6 +52,7 @@ export async function POST(request: Request) {
       username: user.username,
       role: user.role,
       expiresAt,
+      sessionVersion: user.sessionVersion,
     });
 
     const response = NextResponse.json({

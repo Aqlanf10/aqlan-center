@@ -24,6 +24,7 @@ export type AuditAction =
   | "opening_balance.set" | "opening_balance.clear"
   | "fx.revalue"
   | "journal.manual"
+  | "service.catalog_import" | "service.prices"
   | "settings.update"
   | "user.create" | "user.update" | "user.disable"
   | "backup.download" | "export.download"
@@ -49,6 +50,8 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "opening_balance.clear": "حذف رصيد افتتاحي",
   "fx.revalue": "إعادة تقييم عملة",
   "journal.manual": "قيد يدوي",
+  "service.catalog_import": "إضافة دليل أعمال العيادة",
+  "service.prices": "تعديل أسعار الخدمات",
   "settings.update": "تغيير إعداد",
   "user.create": "إنشاء مستخدم",
   "user.update": "تعديل مستخدم",

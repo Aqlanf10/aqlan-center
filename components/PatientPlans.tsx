@@ -9,6 +9,9 @@ import {
   type Currency,
 } from "@/lib/money";
 import { PLAN_STATUS_LABEL, splitInstallments, type PlanItemStatus, type PlanStatus } from "@/lib/plans";
+import { QuickTreatmentPlan } from './QuickTreatmentPlan';
+import { ServicePicker, ToothSelect } from './ClinicSelectors';
+import { useSession } from './SessionProvider';
 import { useSetting } from "./SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
@@ -45,6 +48,7 @@ interface Plan {
 }
 
 export function PatientPlans({ patientId }: { patientId: number }) {
+  const session=useSession();
   const baseSetting = useSetting("finance.base_currency");
   const fallback: Currency = isCurrency(baseSetting) ? baseSetting : "YER";
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -129,13 +133,13 @@ export function PatientPlans({ patientId }: { patientId: number }) {
           className="flex-[2] rounded-2xl bg-navy-800 py-2.5 text-sm font-extrabold text-white">
           {adding === "clinical" ? "إغلاق" : "+ خطة سريرية ببنودها"}
         </button>
-        <button onClick={() => { setAdding((open) => (open === "financial" ? null : "financial")); }}
+        <button disabled={session?.role==='doctor'} onClick={() => { setAdding((open) => (open === "financial" ? null : "financial")); }}
           className="flex-1 rounded-2xl border border-navy-800 bg-white py-2.5 text-sm font-bold text-navy-800">
           {adding === "financial" ? "إغلاق" : "بمبلغ متفق عليه"}
         </button>
       </div>
 
-      {adding ? (
+      {adding === "clinical" ? <QuickTreatmentPlan patientId={patientId} base={base} onSaved={()=>{setAdding(null);void load();}} onError={setError}/> : adding ? (
         <NewPlanForm
           patientId={patientId} base={base} busy={busy} mode={adding}
           onSaved={() => { setAdding(null); void load(); }}
@@ -235,7 +239,7 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                 * أن يفتح لها البرنامج بابًا من هنا. والمسوّدة أولى بالمنع: ما لم
                 * يوافق المريض بعد ليس اتفاقًا يُقبض عليه.
                 */}
-              {plan.status === "active" && plan.installments.length > 0 ? (
+              {session?.role!=='doctor' && plan.status === "active" && plan.installments.length > 0 ? (
                 payFor === plan.id ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                     <div className="mb-2 flex flex-wrap gap-2">
@@ -464,7 +468,7 @@ function PlanItems({ plan, base, onChanged, onError }: {
   useEffect(() => {
     if (locked) return;
     void (async () => {
-      const response = await fetch("/api/services", { cache: "no-store" });
+      const response = await fetch("/api/clinical/catalog", { cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json();
       const list = (payload.services ?? payload) as Service[];
@@ -560,21 +564,12 @@ function PlanItems({ plan, base, onChanged, onError }: {
         <div className="flex flex-wrap items-end gap-2">
           <label className="min-w-[10rem] flex-1">
             <span className="mb-1 block text-[10px] font-bold text-slate-500">الخدمة</span>
-            <select value={serviceId ?? ""} onChange={(event) => setServiceId(Number(event.target.value))}
-              aria-label="خدمة الخطة"
-              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs">
-              {services.map((service) => (
-                <option key={service.id} value={service.id}>
-                  {service.name} · {formatMoney(service.priceMinor, base)}
-                </option>
-              ))}
-            </select>
+            <ServicePicker services={services} base={base} onSelect={service=>setServiceId(service.id)} />
+            {chosen&&<span className="text-xs font-bold">المختار: {chosen.name}</span>}
           </label>
           <label className="w-20">
             <span className="mb-1 block text-[10px] font-bold text-slate-500">السن</span>
-            <input value={tooth} onChange={(event) => setTooth(event.target.value)}
-              aria-label="سن البند" inputMode="numeric" dir="ltr" placeholder="16"
-              className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs" />
+            <ToothSelect value={tooth} onChange={setTooth}/>
           </label>
           <label className="w-20">
             <span className="mb-1 block text-[10px] font-bold text-slate-500">الأسطح</span>
@@ -606,6 +601,7 @@ function PlanItems({ plan, base, onChanged, onError }: {
 function ConsentForm({ plan, base, onDone, onError }: {
   plan: Plan; base: Currency; onDone: () => void; onError: (message: string | null) => void;
 }) {
+  const session=useSession();
   const today = clinicDateString(new Date(), "Asia/Aden");
   const [note, setNote] = useState("توقيع ورقي محفوظ بالملف");
   const [split, setSplit] = useState(false);
@@ -647,7 +643,7 @@ function ConsentForm({ plan, base, onDone, onError }: {
         className="mb-2 w-full rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs" />
 
       <label className="mb-2 flex items-center gap-2 text-xs font-bold text-emerald-900">
-        <input type="checkbox" checked={split} onChange={(event) => setSplit(event.target.checked)} />
+        <input type="checkbox" disabled={session?.role==='doctor'} checked={split} onChange={(event) => setSplit(event.target.checked)} />
         قسّطها
       </label>
 

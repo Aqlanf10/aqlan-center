@@ -83,6 +83,8 @@ export function PatientLedger({ patientId }: { patientId: number }) {
   }, [patientId]);
 
   useEffect(() => { void load(); }, [load]);
+  const [initialInvoiceId,setInitialInvoiceId]=useState('');
+  useEffect(()=>{const id=new URLSearchParams(window.location.search).get('invoiceId');if(id&&Number(id)>0){setInitialInvoiceId(id);setMode('payment');}},[]);
 
   const send = useCallback(async (run: () => Promise<Response>) => {
     if (busy) return null;
@@ -175,7 +177,7 @@ export function PatientLedger({ patientId }: { patientId: number }) {
 
       {mode === "payment" ? (
         <PaymentForm
-          base={base} busy={busy} invoices={ledger?.invoices ?? []}
+          base={base} busy={busy} invoices={ledger?.invoices ?? []} payments={ledger?.payments ?? []} initialInvoiceId={initialInvoiceId}
           onSubmit={async (body) => {
             const created = await send(() => fetch("/api/payments", {
               method: "POST", headers: { "Content-Type": "application/json" },
@@ -408,7 +410,8 @@ function InvoiceForm({ base, services, busy, onSubmit }: {
   );
 }
 
-function PaymentForm({ base, busy, invoices, onSubmit }: {
+function PaymentForm({ base, busy, invoices, payments, initialInvoiceId, onSubmit }: {
+  payments: Payment[]; initialInvoiceId: string;
   base: Currency;
   busy: boolean;
   invoices: Invoice[];
@@ -416,11 +419,13 @@ function PaymentForm({ base, busy, invoices, onSubmit }: {
 }) {
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState<Currency>(base);
-  const [invoiceId, setInvoiceId] = useState("");
+  const [invoiceId, setInvoiceId] = useState(initialInvoiceId);
   const [kind, setKind] = useState<"payment" | "refund">("payment");
   const [method, setMethod] = useState("cash");
 
-  const openInvoices = invoices.filter((invoice) => invoice.status === "open");
+  const openInvoices = invoices.filter((invoice) => invoice.status === "open" || (kind==='refund' && invoice.status==='paid'));
+  const remaining=(invoice:Invoice)=>Math.max(0,invoice.totalMinor-invoice.discountMinor-payments.filter(p=>p.invoiceId===invoice.id).reduce((sum,p)=>sum+(p.kind==='refund'?-p.baseAmountMinor:p.baseAmountMinor),0));
+  const chosen=openInvoices.find(i=>String(i.id)===invoiceId);
 
   return (
     <section className="mb-4 rounded-2xl border border-brand-orange bg-white p-4" aria-label="قبض دفعة">
@@ -447,13 +452,14 @@ function PaymentForm({ base, busy, invoices, onSubmit }: {
             <option value="">— دفعة على الحساب —</option>
             {openInvoices.map((invoice) => (
               <option key={invoice.id} value={invoice.id}>
-                {invoice.invoiceNumber} · {formatAmount(Math.max(0, invoice.totalMinor - invoice.discountMinor), base)}
+                {invoice.invoiceNumber} · المتبقي {formatAmount(remaining(invoice), base)}
               </option>
             ))}
           </select>
         </label>
       ) : null}
 
+      {chosen&&kind==='payment'&&<button type="button" onClick={()=>{setCurrency(base);setAmount(formatAmount(remaining(chosen),base));}} className="mb-3 rounded-xl border px-3 py-2 text-xs">تحصيل المتبقي: {formatMoney(remaining(chosen),base)}</button>}
       <div className="mb-3 flex flex-wrap gap-2">
         <div className="flex flex-1 gap-1.5">
           {(["cash", "transfer"] as const).map((option) => (
@@ -474,7 +480,7 @@ function PaymentForm({ base, busy, invoices, onSubmit }: {
       </div>
 
       <button
-        onClick={() => onSubmit({ amount, currency, invoiceId: invoiceId || undefined, kind, method })}
+        onClick={() => onSubmit({ amount, currency, invoiceId: chosen ? invoiceId : undefined, kind, method })}
         disabled={busy || !amount.trim()}
         className="w-full rounded-xl bg-brand-orange py-2.5 text-sm font-extrabold text-white disabled:opacity-50"
       >

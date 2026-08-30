@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, readSessionToken, type SessionPayload } from "./auth";
+import { SESSION_COOKIE, type SessionPayload } from "./auth";
+import { validateSessionToken } from "./sessionValidation";
 
 /**
  * الجلسة الموثوقة — بعد التحقق من التوقيع.
@@ -10,5 +11,5 @@ import { SESSION_COOKIE, readSessionToken, type SessionPayload } from "./auth";
  */
 export async function requireSession(): Promise<SessionPayload | null> {
   const store = await cookies();
-  return readSessionToken(store.get(SESSION_COOKIE)?.value);
+  return validateSessionToken(store.get(SESSION_COOKIE)?.value);
 }

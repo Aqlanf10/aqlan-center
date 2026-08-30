@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pgConnection } from "../lib/pgConnection.ts";
 import "./load-env.mjs";
 import { Client } from "pg";
 
@@ -13,19 +14,14 @@ import { Client } from "pg";
 const source = process.env.SOURCE_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
 if (!source.trim()) { console.error("خطأ: SOURCE_DATABASE_URL غير مضبوط."); process.exit(1); }
 
-const sslFor = (url) => {
-  const l = url.toLowerCase();
-  if (l.includes("sslmode=disable")) return false;
-  if (/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(l)) return false;
-  return { rejectUnauthorized: false };
-};
+
 const withDatabase = (url, name) => {
   const parsed = new URL(url); parsed.pathname = `/${name}`; return parsed.toString();
 };
 
 const temporary = `clinical_check_${Date.now()}`;
 process.env.DATABASE_URL = withDatabase(source, temporary);
-const admin = new Client({ connectionString: source, ssl: sslFor(source) });
+const admin = new Client(pgConnection(source));
 let failed = false;
 const check = (label, ok, extra = "") => {
   console.log(`  ${ok ? "✓" : "✗"} ${label}${extra ? ` — ${extra}` : ""}`);

@@ -51,6 +51,8 @@ export function insertionOrder(dependencies: TableDependency[]): string[] {
   return ordered;
 }
 
+export const quoteIdentifier = (value: string): string => `"${value.replace(/"/g, '""')}"`;
+
 /** قيمة واحدة كما تُكتب في SQL. */
 export function sqlValue(value: unknown): string {
   if (value === null || value === undefined) return "NULL";
@@ -66,7 +68,7 @@ export function sqlValue(value: unknown): string {
 
 export function insertStatement(table: string, columns: string[], row: Record<string, unknown>): string {
   const values = columns.map((column) => sqlValue(row[column])).join(", ");
-  return `INSERT INTO ${table} (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${values});`;
+  return `INSERT INTO ${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${values});`;
 }
 
 /**

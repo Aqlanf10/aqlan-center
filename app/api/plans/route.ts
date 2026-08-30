@@ -22,8 +22,8 @@ const denied = () =>
 export async function GET(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
-  if (!canHandleMoney(session.role)) {
-    return NextResponse.json({ message: "خطط العلاج للإدارة والاستقبال." }, { status: 403 });
+  if (session.role==='doctor' && !(Number(new URL(request.url).searchParams.get('patientId'))>0)) {
+    return NextResponse.json({message:'اختر ملف المريض لعرض خطته.'},{status:403});
   }
 
   const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
