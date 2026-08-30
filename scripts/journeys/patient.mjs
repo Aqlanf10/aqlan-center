@@ -6,7 +6,7 @@
  * الاستقبال: تنظر في المرشّحين ثم تقرّر. وسكوتُ الرحلة عنه كان سيجعل ميزةً سليمة
  * تبدو عطلًا.
  */
-export async function createPatient(page, { name, phone, base }) {
+export async function createPatient(page, { name, phone, base, gender }) {
   const type = async (locator, text) => {
     await locator.click();
     await locator.pressSequentially(text, { delay: 16 });
@@ -18,6 +18,11 @@ export async function createPatient(page, { name, phone, base }) {
   await page.waitForTimeout(1200);
   await type(page.getByLabel("الاسم الكامل"), name);
   if (phone) await type(page.getByLabel("رقم الجوال"), phone);
+  // الجنس يدخل اختيار المعيار السيفالومتري — فمن احتاجه في رحلته يمرّره.
+  if (gender) {
+    await page.getByRole("button", { name: gender, exact: true }).click();
+    await page.waitForTimeout(400);
+  }
 
   await page.waitForFunction(() => {
     const button = [...document.querySelectorAll("button")]

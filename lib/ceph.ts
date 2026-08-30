@@ -57,7 +57,9 @@ export type LandmarkCode =
   | "ANS" | "PNS" | "A"
   | "B" | "Pog" | "Gn" | "Me" | "Go" | "D" | "Pm"
   | "U1T" | "U1A" | "L1T" | "L1A"
-  | "Pn" | "Cm" | "LS" | "LI";
+  | "Pn" | "Cm" | "LS" | "LI"
+  // من الأدبيات المنشورة لا من الدليل الموقَّع — بإذن المالك.
+  | "Ba" | "U6" | "L6" | "PogS";
 
 export type LandmarkGroup = "cranial" | "maxilla" | "mandible" | "teeth" | "soft";
 
@@ -73,11 +75,22 @@ export interface LandmarkDefinition {
   code: LandmarkCode;
   group: LandmarkGroup;
   name: { ar: string; en: string };
-  /** التعريف التشريحي كما في الدليل المعتمد. */
+  /** التعريف التشريحي كما في مصدره. */
   hint: { ar: string; en: string };
   /** مطلوبة لأبسط تحليل — وما عداها يُعلَّم فتُحسب قياساته. */
   required: boolean;
+  /**
+   * مصدر التعريف — والتمييز هنا مقصود.
+   *
+   * أربعٌ وعشرون نقطةً من دليل المالك الموقَّع، وما بعدها من الأدبيات المنشورة
+   * بإذنه. وخلطُهما كان سيجعل الشاشة تقول «منقولةٌ من الدليل المعتمد» عن نقطةٍ لم
+   * يوقّعها أحد — فيصير الادّعاء أكبر من الحقيقة، وهو أخطر من النقص.
+   */
+  source?: string;
 }
+
+/** الدليل السريري الموقَّع — وما لا يحمل مصدرًا آخر فهو منه. */
+export const MANUAL_SOURCE = LANDMARK_MANUAL;
 
 export const LANDMARKS: LandmarkDefinition[] = [
   { code: "S", group: "cranial", required: true,
@@ -180,6 +193,34 @@ export const LANDMARKS: LandmarkDefinition[] = [
     name: { ar: "لابيالي إنفيريوس", en: "Labiale Inferius" },
     hint: { ar: "أكثر نقطة أمامية على حد الشفة السفلى",
             en: "Most anterior point of the lower lip vermilion" } },
+
+  /*
+   * ما بعد هذا من الأدبيات المنشورة لا من الدليل الموقَّع — بإذن المالك.
+   * وكلٌّ يحمل مرجعه، ويُعرض في الشاشة موسومًا حتى لا يختلط بما اعتُمد ووُقّع.
+   */
+  { code: "Ba", group: "cranial", required: false,
+    source: "Ricketts 1960 — قاعدة الجمجمة",
+    name: { ar: "بازيون", en: "Basion" },
+    hint: { ar: "أدنى وأخلف نقطة على الحافة الأمامية للثقبة العظمى، في المستوى المتوسط",
+            en: "Most inferior-posterior point on the anterior margin of foramen magnum, in the midsagittal plane" } },
+
+  { code: "U6", group: "teeth", required: false,
+    source: "Jacobson 1975 — مستوى الإطباق الوظيفي",
+    name: { ar: "إنسي الرحى العلوية", en: "Upper first molar cusp" },
+    hint: { ar: "قمة الحدبة الإنسية الدهليزية للرحى الأولى العلوية — لبناء مستوى الإطباق",
+            en: "Mesiobuccal cusp tip of the upper first molar — builds the occlusal plane" } },
+  { code: "L6", group: "teeth", required: false,
+    source: "Jacobson 1975 — مستوى الإطباق الوظيفي",
+    name: { ar: "إنسي الرحى السفلية", en: "Lower first molar cusp" },
+    hint: { ar: "قمة الحدبة الإنسية الدهليزية للرحى الأولى السفلية — ومنتصف ما بينهما مع العلوية نقطةُ المستوى الخلفية",
+            en: "Mesiobuccal cusp tip of the lower first molar — its midpoint with the upper one is the posterior occlusal point" } },
+
+  { code: "PogS", group: "soft", required: false,
+    source: "Ricketts 1968 — الخط الجمالي E-line",
+    name: { ar: "بوجونيون النسيج الرخو", en: "Soft tissue Pogonion" },
+    hint: { ar: "أكثر نقطة أمامية على ظلّ الذقن الرخو — لا على العظم",
+            en: "Most anterior point on the soft tissue chin outline — not on bone" } },
+
 ];
 
 export const LANDMARK_BY_CODE = new Map(LANDMARKS.map((item) => [item.code, item]));
@@ -265,6 +306,73 @@ export function distanceBetween(a: TracedPoint, b: TracedPoint, aspect = 1): num
   return norm(subtract(toAnalysis(a, aspect), toAnalysis(b, aspect)));
 }
 
+/**
+ * بُعد نقطةٍ عن خطّ، بإشارةٍ تقول أيّ جهةٍ هي منه.
+ *
+ * والإشارة هنا هي القياس كلّه: `U1-NA = 4mm` تعني أن القاطع **أمام** خط NA بأربعة،
+ * و`-4` تعني أنه خلفه بأربعة — وبينهما علاجان مختلفان تمامًا. فالقيمة المطلقة
+ * تمحو التشخيص لا تُبسّطه.
+ *
+ * ولا تُؤخذ الجهة من محور الصورة: الأشعة الجانبية تُصوَّر ووجهها إلى اليمين أحيانًا
+ * وإلى اليسار أحيانًا، فربطُ «الأمام» بـ`+x` يقلب كل إشارةٍ على نصف الصور. فتُؤخذ
+ * الجهة من التشريح نفسه: تُمرَّر نقطةٌ **معلومة الخلفية** (السرج S خلف كل شيء)،
+ * ويكون الموجب هو الجهة المقابلة لها. فتصحّ الإشارة على الصورتين بلا إعداد.
+ */
+/**
+ * الفجوة بين نقطتين **مقيسةً على اتجاه خط** — أساس Wits.
+ *
+ * ولا تُقاس على المسافة المباشرة بينهما: تقييم Wits يُسقط A وB عمودًا على مستوى
+ * الإطباق ثم يقيس ما بين مسقطيهما **على المستوى نفسه**. والفرق بين القياسين هو
+ * الفرق بين «كم يتقدّم الفك العلوي على السفلي في مستوى العضّة» و«كم يبعدان».
+ *
+ * واتجاه المستوى يُوجَّه تشريحيًّا: من الخلف إلى الأمام، فتخرج الإشارة موجبةً حين
+ * يتقدّم A — وهو الصنف الثاني — وسالبةً في الثالث، على الصورتين معًا.
+ */
+export function projectedGap(
+  ahead: TracedPoint, behind: TracedPoint,
+  lineFrom: TracedPoint, lineTo: TracedPoint,
+  aspect = 1,
+): number {
+  const a = toAnalysis(lineFrom, aspect), b = toAnalysis(lineTo, aspect);
+  const direction = subtract(b, a);
+  const length = norm(direction);
+  if (length === 0) return Number.NaN;
+  const unit = { x: direction.x / length, y: direction.y / length };
+  const gap = subtract(toAnalysis(ahead, aspect), toAnalysis(behind, aspect));
+  return gap.x * unit.x + gap.y * unit.y;
+}
+
+/** أيّ الطرفين أمام؟ — يُوجَّه به خطٌّ بلا اعتمادٍ على محور الصورة. */
+export function orientedForward(
+  from: TracedPoint, to: TracedPoint,
+  frontHint: TracedPoint, backHint: TracedPoint,
+  aspect = 1,
+): { from: TracedPoint; to: TracedPoint } {
+  return projectedGap(frontHint, backHint, from, to, aspect) >= 0
+    ? { from, to } : { from: to, to: from };
+}
+
+export function offsetFromLine(
+  point: TracedPoint,
+  from: TracedPoint, to: TracedPoint,
+  behind: TracedPoint,
+  aspect = 1,
+): number {
+  const a = toAnalysis(from, aspect), b = toAnalysis(to, aspect);
+  const direction = subtract(b, a);
+  const length = norm(direction);
+  if (length === 0) return Number.NaN;
+  // العمودي على الخط، ثم إسقاط الفرق عليه: حاصل الضرب المتّجه في المستوي.
+  const side = (p: Vector) => {
+    const d = subtract(p, a);
+    return (direction.x * d.y - direction.y * d.x) / length;
+  };
+  const behindSide = side(toAnalysis(behind, aspect));
+  if (behindSide === 0) return Number.NaN;
+  // الموجب هو الجهة المقابلة للنقطة الخلفية.
+  return side(toAnalysis(point, aspect)) * (behindSide < 0 ? 1 : -1);
+}
+
 /* ─────────────────────────── المعايرة ─────────────────────────── */
 
 /**
@@ -313,17 +421,28 @@ export type Lang = "ar" | "en";
 
 export const say = (text: Bilingual, lang: Lang): string => text[lang];
 
+export type Unit = "deg" | "mm" | "ratio";
+
 export interface Measurement {
   key: string;
   name: string;
   /** ما يعنيه القياس سريريًّا — لا تعريفه الهندسي. */
   meaning: Bilingual;
-  unit: "deg" | "mm";
+  unit: Unit;
   value: number;
-  norm: Norm;
-  verdict: Verdict;
+  /**
+   * المعيار — وقد لا يكون له معيار.
+   *
+   * ارتفاعُ الوجه الأمامي يختلف بالعمر والجنس اختلافًا كبيرًا، فمعيارٌ واحد له
+   * لكل المرضى رقمٌ مخترع. فيُعرض الطول بلا حكم: قيمةٌ تُقرأ ولا تُصنَّف — وهذا
+   * أصدق من «ضمن المعيار» مبنيّةٍ على معيارٍ لا يخصّ هذا المريض.
+   */
+  norm: Norm | null;
+  verdict: Verdict | null;
   /** النقاط التي بُني عليها — فيُعرف أيّها يُراجَع إن بدا الرقم غريبًا. */
   from: LandmarkCode[];
+  /** التحليل الذي ينتمي إليه — فتُقرأ القياسات مجموعةً كما تُقرأ في المراجع. */
+  analysis?: string;
 }
 
 export function verdictFor(value: number, norm: Norm): Verdict {
@@ -332,7 +451,15 @@ export function verdictFor(value: number, norm: Norm): Verdict {
   return "normal";
 }
 
-export const NORMS: Record<string, Norm> = {
+/**
+ * المعايير الافتراضية — الكلاسيكية المنشورة، كلٌّ بمرجعه.
+ *
+ * وهي **بذرةٌ لا حكم**: تُزرع بها المجموعة المرجعية الافتراضية في القاعدة عند أول
+ * تشغيل، ثم تُقرأ المعايير من هناك — فللمدير أن يعدّلها أو يضيف مجموعةً محلّية
+ * لمرضى المركز. وبقاؤها هنا لأن للنظام أن يعمل قبل أن تُزرع القاعدة، ولأن الافتراض
+ * يجب أن يكون مكتوبًا في مكانٍ واحد يُقرأ ويُراجَع.
+ */
+export const DEFAULT_NORMS: Record<string, Norm> = {
   // المعايير القوقازية لستاينر، وهي الأوسع استعمالًا في التقويم السريري.
   // وليست مطلقة: تختلف بالعرق والجنس والعمر — ولذلك يُذكر المرجع ويُقرأ الرقم
   // مع الوجه لا وحده.
@@ -347,6 +474,21 @@ export const NORMS: Record<string, Norm> = {
   L1_NB: { mean: 25, tolerance: 4, source: "Steiner" },
   INTERINCISAL: { mean: 131, tolerance: 9, source: "Downs" },
   Y_AXIS: { mean: 59, tolerance: 4, source: "Downs" },
+  // القياسات الطولية بالمليمتر — ولا تُحسب إلا بعد المعايرة.
+  U1_NA_MM: { mean: 4, tolerance: 2, source: "Steiner" },
+  L1_NB_MM: { mean: 4, tolerance: 2, source: "Steiner" },
+  POG_NB_MM: { mean: 4, tolerance: 2, source: "Steiner" },
+  // نسبةٌ لا طول: تُقسم فيها المسافتان فيسقط المقياس — فتُحسب بلا معايرة أصلًا.
+  JARABAK: { mean: 63.5, tolerance: 1.5, source: "Jarabak" },
+  // من الأدبيات المنشورة — بإذن المالك، وكلٌّ بمرجعه.
+  FMIA: { mean: 65, tolerance: 5, source: "Tweed 1954" },
+  WITS: { mean: 1, tolerance: 2, source: "Jacobson 1975 · \u2642 1\u00b12 \u00b7 \u2640 0\u00b12" },
+  OCC_SN: { mean: 14, tolerance: 3, source: "Steiner" },
+  FACIAL_ANGLE: { mean: 87.8, tolerance: 3.6, source: "Downs 1948" },
+  CONVEXITY: { mean: 0, tolerance: 5.1, source: "Downs 1948" },
+  AB_PLANE: { mean: -4.6, tolerance: 3.7, source: "Downs 1948" },
+  E_LINE_UPPER: { mean: -4, tolerance: 2, source: "Ricketts 1968" },
+  E_LINE_LOWER: { mean: -2, tolerance: 2, source: "Ricketts 1968" },
 };
 
 /**
@@ -387,8 +529,11 @@ export function analyse(input: {
   tracing: Tracing;
   aspect?: number;
   calibration?: Calibration | null;
+  /** المعايير المعتمدة — من المجموعة المرجعية. وبلا تمريرها تُستعمل الافتراضية. */
+  norms?: Record<string, Norm>;
 }): Analysis {
   const { tracing } = input;
+  const NORMS = { ...DEFAULT_NORMS, ...(input.norms ?? {}) };
   const aspect = input.aspect && input.aspect > 0 ? input.aspect : 1;
   const missing = LANDMARKS.filter((item) => item.required && !tracing[item.code])
     .map((item) => item.code);
@@ -436,16 +581,17 @@ export function analyse(input: {
    */
   const plane = (input: {
     key: string; name: string; meaning: Bilingual; norm: Norm;
-    from: LandmarkCode[]; value: number;
+    from: LandmarkCode[]; value: number; analysis?: string;
   }) => {
     measurements.push({
       key: input.key, name: input.name, unit: "deg", value: input.value,
       meaning: input.meaning, norm: input.norm,
       verdict: verdictFor(input.value, input.norm), from: input.from,
+      analysis: input.analysis,
     });
   };
 
-  const { Po, Or, Go, Me, Gn, U1T, U1A, L1T, L1A } = tracing;
+  const { Po, Or, Go, Me, Gn, Pog, ANS, U1T, U1A, L1T, L1A, U6, L6, Pn, PogS, LS, LI } = tracing;
 
   // نمط النمو: كم ينحدر الفك السفلي عن قاعدة الجمجمة. المرتفع وجهٌ طويل مفتوح
   // العضّة، والمنخفض وجهٌ قصير عميق العضّة — ولكلٍّ علاجٌ مختلف.
@@ -521,17 +667,277 @@ export function analyse(input: {
     });
   }
 
+  /*
+   * تحليل تويد — والمثلث يُغلق أو لا يكون.
+   *
+   * FMA وFMIA وIMPA زوايا مثلثٍ داخلية: مجموعها ١٨٠ بالضرورة الهندسية. وحسابُ
+   * الثالثة طرحًا من ١٨٠ يجعل «التحقق» تحصيلَ حاصل — فتُحسب من نقاطها مستقلّةً،
+   * ويُشترط في الفحص أن يخرج المجموع ١٨٠. فإن اختلّ فالخلل في اصطلاحٍ لا في تقريب.
+   */
+  if (Po && Or && L1A && L1T) {
+    plane({
+      key: "FMIA", name: "FMIA", norm: NORMS.FMIA, from: ["Po", "Or", "L1A", "L1T"],
+      analysis: "Tweed",
+      meaning: { ar: "زاوية القاطع السفلي مع مستوى فرانكفورت — ضلع مثلث تويد الثالث", en: "Lower incisor to Frankfort — the third side of the Tweed triangle" },
+      value: lineAngle(Or, Po, L1T, L1A, aspect),
+    });
+  }
+
+  /*
+   * تحليل داونز — الوجه من فرانكفورت.
+   */
+  if (Po && Or && N && Pog) {
+    plane({
+      key: "Facial", name: "Facial angle", norm: NORMS.FACIAL_ANGLE, from: ["Po", "Or", "N", "Pog"],
+      analysis: "Downs",
+      meaning: { ar: "تقدّم الذقن — المرتفع وجهٌ مستقيم والمنخفض ذقنٌ متراجع", en: "Chin prominence — higher is straighter, lower is a retruded chin" },
+      value: lineAngle(Po, Or, Pog, N, aspect),
+    });
+  }
+
+  // تحدّب الوجه: موجبٌ حين يتراجع الذقن عن امتداد N-A، وسالبٌ حين يتقدّم عليه.
+  if (N && A && Pog && S) {
+    const magnitude = 180 - angleAt(A, N, Pog, aspect);
+    const chinAhead = offsetFromLine(Pog, N, A, S, aspect) > 0;
+    plane({
+      key: "Convexity", name: "Convexity", norm: NORMS.CONVEXITY, from: ["N", "A", "Pog"],
+      analysis: "Downs",
+      meaning: { ar: "تحدّب الوجه الهيكلي — موجبٌ إن تراجع الذقن، سالبٌ إن تقدّم", en: "Skeletal convexity — positive when the chin is behind, negative when ahead" },
+      value: chinAhead ? -magnitude : magnitude,
+    });
+  }
+
+  // مستوى A-B مع المستوى الوجهي: سالبٌ في السويّ لأن B خلف الخط.
+  if (N && Pog && A && B && S) {
+    const magnitude = lineAngle(N, Pog, A, B, aspect);
+    const bAhead = offsetFromLine(B, N, Pog, S, aspect) > 0;
+    plane({
+      key: "AB-plane", name: "A-B plane", norm: NORMS.AB_PLANE, from: ["N", "Pog", "A", "B"],
+      analysis: "Downs",
+      meaning: { ar: "علاقة القاعدتين بالمستوى الوجهي — سالبةٌ في السويّ", en: "Apical bases against the facial plane — negative in the normal face" },
+      value: bAhead ? magnitude : -magnitude,
+    });
+  }
+
+  /*
+   * مستوى الإطباق الوظيفي — ومنه Wits.
+   *
+   * ولا يُؤخذ من حوافّ القواطع وحدها: مستوى Jacobson الوظيفي يمرّ بمنتصف تراكب
+   * القواطع ومنتصف تراكب الأرحاء، فيتبع العضّة كما هي لا كما تبدو من الأمام.
+   */
+  const midOf = (first: TracedPoint, second: TracedPoint) =>
+    ({ x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 });
+  const occlusal = U1T && L1T && U6 && L6
+    ? { front: midOf(U1T, L1T), back: midOf(U6, L6) } : null;
+
+  if (occlusal && S && N) {
+    plane({
+      key: "OccP-SN", name: "OccP-SN", norm: NORMS.OCC_SN, from: ["S", "N", "U1T", "L1T", "U6", "L6"],
+      analysis: "Steiner",
+      meaning: { ar: "ميل مستوى الإطباق عن قاعدة الجمجمة", en: "Occlusal plane inclination to the cranial base" },
+      value: lineAngle(S, N, occlusal.back, occlusal.front, aspect),
+    });
+  }
+
+  /*
+   * النسب — تُحسب بلا معايرة.
+   *
+   * المقياس يسقط بالقسمة: نسبةُ ارتفاعٍ إلى ارتفاع هي هي، صُوّرت الأشعة بتكبير
+   * عشرة في المئة أو عشرين. فالنسبة تصحّ حيث يمتنع الطول — وهذا ليس تحايلًا على
+   * المعايرة بل خاصّةٌ في النسبة نفسها.
+   */
+  if (S && Go && N && Me) {
+    const posterior = distanceBetween(S, Go, aspect);
+    const anterior = distanceBetween(N, Me, aspect);
+    if (anterior > 0) {
+      const value = (posterior / anterior) * 100;
+      measurements.push({
+        key: "Jarabak", name: "Jarabak %", unit: "ratio", value,
+        meaning: {
+          ar: "نسبة الارتفاع الخلفي إلى الأمامي — نمط النمو: أقلّ من ٦٢ رأسيّ، وأكثر من ٦٥ أفقيّ",
+          en: "Posterior-to-anterior facial height — growth pattern: below 62 vertical, above 65 horizontal",
+        },
+        norm: NORMS.JARABAK, verdict: verdictFor(value, NORMS.JARABAK),
+        from: ["S", "Go", "N", "Me"],
+      });
+    }
+  }
+
+  /*
+   * القياسات الطولية — ولا واحد منها بلا معايرة.
+   *
+   * لا يُعرض الطول بالبكسل ولا بأيّ وحدةٍ أخرى حين تغيب المعايرة: رقمٌ بلا وحدة
+   * يُقرأ كأنه مليمترات ويُبنى عليه قرار. فإمّا مليمترٌ صحيح أو لا شيء.
+   */
+  const scale = input.calibration ? millimetresPerUnit(input.calibration, aspect) : null;
+
+  if (scale) {
+    const mm = (input: {
+      key: string; name: string; meaning: Bilingual; norm: Norm | null;
+      from: LandmarkCode[]; value: number; analysis?: string;
+    }) => {
+      const value = input.value * scale;
+      measurements.push({
+        key: input.key, name: input.name, unit: "mm", value,
+        meaning: input.meaning, norm: input.norm,
+        verdict: input.norm ? verdictFor(value, input.norm) : null,
+        from: input.from,
+        analysis: input.analysis,
+      });
+    };
+
+    // بروز القاطع العلوي عن خط NA — موجبٌ أمامه، سالبٌ خلفه، والجهة من S لا من الصورة.
+    if (N && A && U1T && S) {
+      mm({
+        key: "U1-NA-mm", name: "U1-NA (mm)", norm: NORMS.U1_NA_MM, from: ["N", "A", "U1T"],
+        meaning: { ar: "بروز حافة القاطع العلوي أمام خط NA", en: "Upper incisor edge ahead of the NA line" },
+        value: offsetFromLine(U1T, N, A, S, aspect),
+      });
+    }
+
+    if (N && B && L1T && S) {
+      mm({
+        key: "L1-NB-mm", name: "L1-NB (mm)", norm: NORMS.L1_NB_MM, from: ["N", "B", "L1T"],
+        meaning: { ar: "بروز حافة القاطع السفلي أمام خط NB", en: "Lower incisor edge ahead of the NB line" },
+        value: offsetFromLine(L1T, N, B, S, aspect),
+      });
+    }
+
+    // بروز الذقن: يُقرأ مع L1-NB — تقاربهما هو توازن الوجه السفلي.
+    if (N && B && Pog && S) {
+      mm({
+        key: "Pog-NB-mm", name: "Pog-NB (mm)", norm: NORMS.POG_NB_MM, from: ["N", "B", "Pog"],
+        meaning: { ar: "بروز الذقن أمام خط NB — يُقرأ مع بروز القاطع السفلي", en: "Chin prominence ahead of the NB line — read with the lower incisor" },
+        value: offsetFromLine(Pog, N, B, S, aspect),
+      });
+    }
+
+    /*
+     * تقييم Wits — تقدّم القاعدتين مقيسًا على مستوى الإطباق لا على قاعدة الجمجمة.
+     *
+     * وهو يُقرأ حيث تكذب ANB: زاويةٌ رأسها عند الناسيون تتأثّر بارتفاع الناسيون
+     * نفسه وبدوران الفكّين معًا، فيخرج الصنف الثاني «سويًّا» على الورق. وWits
+     * يتجاوز الناسيون كلّه: يُسقط A وB على مستوى العضّة ويقيس ما بينهما عليه.
+     *
+     * والاتجاه من التشريح: مقدّم المستوى حيث القواطع، ومؤخّره حيث الأرحاء —
+     * فتخرج الإشارة موجبةً في الصنف الثاني وسالبةً في الثالث، على الصورتين معًا.
+     */
+    if (occlusal && A && B) {
+      const line = orientedForward(occlusal.back, occlusal.front, occlusal.front, occlusal.back, aspect);
+      mm({
+        key: "Wits", name: "Wits", norm: NORMS.WITS, from: ["A", "B", "U1T", "L1T", "U6", "L6"],
+        analysis: "Wits",
+        meaning: { ar: "تقدّم قاعدة الفك العلوي على السفلي على مستوى الإطباق — يُقرأ حيث تُضلّل ANB", en: "Maxillary over mandibular base along the occlusal plane — read where ANB misleads" },
+        value: projectedGap(A, B, line.from, line.to, aspect),
+      });
+    }
+
+    /*
+     * الخط الجمالي — بروز الشفتين عن خط الأنف والذقن.
+     *
+     * والسالب هو السويّ: الشفتان **خلف** الخط بمليمترات. وهذا ممّا لا يُقرأ من
+     * الهيكل: مريضٌ سويّ الزوايا قد يكون بروفايله متحدّبًا، وهو ما يراه المريض في
+     * المرآة ويأتي من أجله.
+     */
+    if (Pn && PogS && S) {
+      if (LS) {
+        mm({
+          key: "E-LS", name: "E-line · LS", norm: NORMS.E_LINE_UPPER, from: ["Pn", "PogS", "LS"],
+          analysis: "Ricketts",
+          meaning: { ar: "الشفة العليا عن الخط الجمالي — السالب خلفه وهو السويّ", en: "Upper lip to the aesthetic line — negative is behind it, and normal" },
+          value: offsetFromLine(LS, Pn, PogS, S, aspect),
+        });
+      }
+      if (LI) {
+        mm({
+          key: "E-LI", name: "E-line · LI", norm: NORMS.E_LINE_LOWER, from: ["Pn", "PogS", "LI"],
+          analysis: "Ricketts",
+          meaning: { ar: "الشفة السفلى عن الخط الجمالي", en: "Lower lip to the aesthetic line" },
+          value: offsetFromLine(LI, Pn, PogS, S, aspect),
+        });
+      }
+    }
+
+    // الارتفاعات: تُعرض بلا حكم — معيارها يختلف بالعمر والجنس، ولا معيار واحد لها.
+    if (N && Me) {
+      mm({
+        key: "N-Me", name: "N-Me", norm: null, from: ["N", "Me"],
+        meaning: { ar: "ارتفاع الوجه الأمامي الكلّي — يختلف بالعمر والجنس، فيُقرأ ولا يُصنَّف", en: "Total anterior facial height — varies with age and sex, so read not graded" },
+        value: distanceBetween(N, Me, aspect),
+      });
+    }
+
+    if (ANS && Me) {
+      mm({
+        key: "ANS-Me", name: "ANS-Me", norm: null, from: ["ANS", "Me"],
+        meaning: { ar: "ارتفاع الوجه الأمامي السفلي", en: "Lower anterior facial height" },
+        value: distanceBetween(ANS, Me, aspect),
+      });
+    }
+
+    if (S && Go) {
+      mm({
+        key: "S-Go", name: "S-Go", norm: null, from: ["S", "Go"],
+        meaning: { ar: "ارتفاع الوجه الخلفي", en: "Posterior facial height" },
+        value: distanceBetween(S, Go, aspect),
+      });
+    }
+  }
+
   return {
     measurements,
     skeletal: anb === null ? null : { anb, klass: skeletalClass(anb) },
     missing,
-    calibrated: Boolean(input.calibration && millimetresPerUnit(input.calibration, aspect)),
+    calibrated: Boolean(scale),
   };
 }
 
-/** صياغة الرقم للعرض — درجةٌ بمنزلة عشرية واحدة، والمليمتر كذلك. */
-export function formatMeasurement(value: number, unit: "deg" | "mm"): string {
+/**
+ * صياغة الرقم للعرض — بمنزلة عشرية واحدة، ووحدةٍ تتبع لغة الشاشة.
+ *
+ * وكانت «مم» مكتوبةً في الكود بالعربية وحدها، فتظهر عربيةً في الشاشة الإنجليزية.
+ */
+export function formatMeasurement(value: number, unit: Unit, lang: Lang = "ar"): string {
   if (!Number.isFinite(value)) return "—";
   const rounded = value.toFixed(1);
-  return unit === "deg" ? `${rounded}°` : `${rounded} مم`;
+  if (unit === "deg") return `${rounded}°`;
+  if (unit === "ratio") return `${rounded}%`;
+  return `${rounded} ${lang === "ar" ? "مم" : "mm"}`;
 }
+
+
+/** الاسم القديم مُبقًى: الافتراضُ هو المعيار حين لا تُمرَّر مجموعة. */
+export const NORMS = DEFAULT_NORMS;
+
+
+/**
+ * أسماء المعايير للعرض في شاشة الإدارة.
+ *
+ * ومفتاحُ المعيار غير اسم القياس: `SN_GoGn` مفتاحٌ في القاعدة، و`SN-GoGn` اسمٌ
+ * على الشاشة. وجمعُهما هنا يمنع أن يُكتب الاسم مرّتين فيختلفا.
+ */
+export const NORM_LABEL: Record<string, { name: string; unit: Unit; meaning: Bilingual }> = {
+  SNA: { name: "SNA", unit: "deg", meaning: { ar: "موضع الفك العلوي", en: "Maxillary position" } },
+  SNB: { name: "SNB", unit: "deg", meaning: { ar: "موضع الفك السفلي", en: "Mandibular position" } },
+  ANB: { name: "ANB", unit: "deg", meaning: { ar: "العلاقة بين الفكّين", en: "Inter-jaw relation" } },
+  SN_GoGn: { name: "SN-GoGn", unit: "deg", meaning: { ar: "انحدار الفك السفلي", en: "Mandibular plane angle" } },
+  FMA: { name: "FMA", unit: "deg", meaning: { ar: "انحدار الفك عن فرانكفورت", en: "Mandibular plane to Frankfort" } },
+  IMPA: { name: "IMPA", unit: "deg", meaning: { ar: "ميل القاطع السفلي", en: "Lower incisor inclination" } },
+  U1_SN: { name: "U1-SN", unit: "deg", meaning: { ar: "ميل القاطع العلوي عن SN", en: "Upper incisor to SN" } },
+  U1_NA: { name: "U1-NA", unit: "deg", meaning: { ar: "ميل القاطع العلوي عن NA", en: "Upper incisor to NA" } },
+  L1_NB: { name: "L1-NB", unit: "deg", meaning: { ar: "ميل القاطع السفلي عن NB", en: "Lower incisor to NB" } },
+  INTERINCISAL: { name: "U1-L1", unit: "deg", meaning: { ar: "الزاوية بين القاطعين", en: "Interincisal angle" } },
+  Y_AXIS: { name: "Y-Axis", unit: "deg", meaning: { ar: "اتجاه النمو", en: "Growth direction" } },
+  U1_NA_MM: { name: "U1-NA (mm)", unit: "mm", meaning: { ar: "بروز القاطع العلوي", en: "Upper incisor prominence" } },
+  L1_NB_MM: { name: "L1-NB (mm)", unit: "mm", meaning: { ar: "بروز القاطع السفلي", en: "Lower incisor prominence" } },
+  POG_NB_MM: { name: "Pog-NB (mm)", unit: "mm", meaning: { ar: "بروز الذقن", en: "Chin prominence" } },
+  JARABAK: { name: "Jarabak %", unit: "ratio", meaning: { ar: "نمط النمو", en: "Growth pattern" } },
+  FMIA: { name: "FMIA", unit: "deg", meaning: { ar: "القاطع السفلي مع فرانكفورت", en: "Lower incisor to Frankfort" } },
+  WITS: { name: "Wits", unit: "mm", meaning: { ar: "تقدّم القاعدتين على مستوى الإطباق", en: "Apical bases on the occlusal plane" } },
+  OCC_SN: { name: "OccP-SN", unit: "deg", meaning: { ar: "ميل مستوى الإطباق", en: "Occlusal plane inclination" } },
+  FACIAL_ANGLE: { name: "Facial angle", unit: "deg", meaning: { ar: "تقدّم الذقن", en: "Chin prominence" } },
+  CONVEXITY: { name: "Convexity", unit: "deg", meaning: { ar: "تحدّب الوجه", en: "Facial convexity" } },
+  AB_PLANE: { name: "A-B plane", unit: "deg", meaning: { ar: "القاعدتان مع المستوى الوجهي", en: "Apical bases to the facial plane" } },
+  E_LINE_UPPER: { name: "E-line · LS", unit: "mm", meaning: { ar: "الشفة العليا عن الخط الجمالي", en: "Upper lip to the aesthetic line" } },
+  E_LINE_LOWER: { name: "E-line · LI", unit: "mm", meaning: { ar: "الشفة السفلى عن الخط الجمالي", en: "Lower lip to the aesthetic line" } },
+};

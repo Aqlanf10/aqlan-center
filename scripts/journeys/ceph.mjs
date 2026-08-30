@@ -31,7 +31,37 @@ const NORMAL = {
   N: { x: 0.62, y: 0.26 },
   A: { x: 0.5588, y: 0.5230 },
   B: { x: 0.5158, y: 0.6462 },
+  // فرانكفورت — لأجل FMA وFMIA وزاوية داونز الوجهية
+  Po: { x: 0.275, y: 0.320 }, Or: { x: 0.600, y: 0.305 },
+  Go: { x: 0.30, y: 0.576 }, Me: { x: 0.60, y: 0.80 },
+  // Pog أمام B لا خلفه — ذقنٌ خلف النقطة B ليس ذقنًا، وزاوية داونز تكشفه
+  Pog: { x: 0.528, y: 0.735 },
+  U1A: { x: 0.555, y: 0.545 }, U1T: { x: 0.545, y: 0.615 },
+  L1A: { x: 0.520, y: 0.680 }, L1T: { x: 0.538, y: 0.622 },
+  // مستوى الإطباق الوظيفي — لأجل Wits (Jacobson)
+  U6: { x: 0.395, y: 0.585 }, L6: { x: 0.395, y: 0.598 },
+  // الأنسجة الرخوة — الشفتان خلف الخط الجمالي كما في السويّ
+  Pn: { x: 0.645, y: 0.500 }, PogS: { x: 0.592, y: 0.745 },
+  LS: { x: 0.612, y: 0.585 }, LI: { x: 0.606, y: 0.640 },
 };
+
+/*
+ * ولا تُفحص المعايير هنا.
+ *
+ * هذا الوجه بُني ليخرج SNA وSNB وANB صحيحةً على صورةٍ مربّعة، لا ليكون وجهًا سويًّا
+ * في كل زاوية — ومطابقةُ المعايير مفحوصةٌ في اختبارات الوحدة على وجهٍ مبنيّ في إطار
+ * فرانكفورت لذلك. فما تفحصه الرحلة هنا ثلاثة: أن تظهر التحاليل بأسمائها على الشاشة،
+ * وأن تصحّ **الإشارات**، وأن يُغلق مثلث تويد — وهو متطابقةٌ هندسية تصحّ على أيّ وجه،
+ * فلا تحتاج وجهًا مضبوطًا لتُفحص.
+ */
+
+// خط معايرة أفقي طوله نصف عرض الصورة، وطولُه الحقيقي ١٠٠ مم — فالمقياس ٢٠٠
+// مليمترًا للوحدة النسبية، وكل مسافةٍ متوقَّعة تُحسب باليد لا تُقرأ من الشاشة.
+const CAL = { from: { x: 0.20, y: 0.90 }, to: { x: 0.70, y: 0.90 }, mm: 100 };
+const SCALE = CAL.mm / (CAL.to.x - CAL.from.x);
+const span = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) * SCALE;
+const EXPECT_N_ME = span(NORMAL.N, NORMAL.Me);
+const EXPECT_S_GO = span(NORMAL.S, NORMAL.Go);
 
 const b = await chromium.launch({ executablePath });
 const page = await (await b.newContext({ viewport: { width: 1400, height: 1000 }, locale: "ar" })).newPage();
@@ -41,8 +71,8 @@ const type = async (l, t) => { await l.click(); await l.pressSequentially(t, { d
 await login(page, { base: BASE, user: USER, pass: PASS });
 await page.waitForTimeout(4000);
 
-const name = "مريض السيفالو " + Date.now().toString().slice(-5);
-await createPatient(page, { name, phone: null, base: BASE });
+const name = "مريضة السيفالو " + Date.now().toString().slice(-5);
+const patientUrl = await createPatient(page, { name, phone: null, base: BASE, gender: "أنثى" });
 console.log("1) أُنشئ ملف المريض");
 
 await page.getByRole("button", { name: "الأشعة" }).click();
@@ -68,13 +98,25 @@ console.log("   ويذكر الدليل المعتمد:", /ADP-LM-LAT/.test(open
 const tracer = page.getByRole("dialog");
 const image = tracer.locator("img").first();
 const box = await image.boundingBox();
-for (const code of ["S", "N", "A", "B"]) {
+for (const code of Object.keys(NORMAL)) {
   await tracer.getByRole("button", { name: code, exact: true }).click();
   const p = NORMAL[code];
   await page.mouse.click(box.x + p.x * box.width, box.y + p.y * box.height);
   await page.waitForTimeout(400);
 }
-console.log("4) نُقرت النقاط الأربع");
+{
+  const header = await tracer.innerText();
+  const placedText = /(\d+) من (\d+) نقطة/.exec(header);
+  // الرمز الموضوع يُلوَّن أخضر في شريط الرموز — فيُقرأ الناقص من الشاشة لا يُخمَّن.
+  const missing = await page.evaluate((codes) => codes.filter((code) => {
+    const chip = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === code);
+    return !chip || !chip.className.includes("emerald");
+  }), Object.keys(NORMAL));
+  console.log(`4) نُقرت ${Object.keys(NORMAL).length} نقطة — الشاشة تقول ${placedText ? placedText[1] : "؟"}`);
+  if (placedText && Number(placedText[1]) !== Object.keys(NORMAL).length) {
+    console.log("   [تشخيص] لم تُوضع:", missing.join(" ") || "(غير معروف)");
+  }
+}
 
 await page.waitForTimeout(1200);
 const traced = await page.locator("body").innerText();
@@ -90,6 +132,150 @@ console.log("6) مطابقة للحساب المجرّد:",
 console.log("   والتصنيف:", /الصنف الأول/.test(traced) ? "الأول ✓" : "غير متوقّع");
 await page.screenshot({ path: OUT + "/ceph-1-traced.png", fullPage: false });
 
+/*
+ * ٥أ) مساحة العمل — سحبٌ وأسهمٌ وتراجع.
+ *
+ * ووضعُ النقطة بالنقر وحده كان يعني أن تصحيحها يمرّ باختيار معلمها من القائمة ثم
+ * النقر من جديد؛ وهو في وجهٍ فيه أربعٌ وعشرون نقطة عملٌ يُنفَّر منه، فتُترك النقطة
+ * قريبةً «كفاية» — والقربُ كفايةً في السيفالو مليمترٌ يزيح زاويةً درجة.
+ */
+const snaOf = async () => {
+  const text = await tracer.innerText();
+  const found = /SNA[^\n]*\n?\s*(\d+(?:\.\d+)?)°/.exec(text);
+  return found ? Number(found[1]) : null;
+};
+
+const beforeDrag = await snaOf();
+// تُختار النقطة أولًا — فتنتقل الشاشة من وضع التعليم إلى وضع التصحيح.
+await tracer.getByRole("button", { name: "A", exact: true }).click();
+await page.waitForTimeout(400);
+// ثم تُسحب بالمؤشّر — لا تُنقر من جديد في موضعها الجديد.
+const aPoint = { x: box.x + NORMAL.A.x * box.width, y: box.y + NORMAL.A.y * box.height };
+await page.mouse.move(aPoint.x, aPoint.y);
+await page.mouse.down();
+await page.mouse.move(aPoint.x + 18, aPoint.y, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(700);
+const afterDrag = await snaOf();
+console.log("5أ) النقطة تُسحب فيتغيّر القياس:",
+  beforeDrag !== null && afterDrag !== null && Math.abs(afterDrag - beforeDrag) > 0.3
+    ? `${beforeDrag}° ← ${afterDrag}° ✓` : "لم تتحرّك ✗");
+
+// وتراجعٌ واحد يعيدها — والسحبة كلّها خطوةٌ واحدة لا خطوةٌ لكل بكسل.
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(600);
+const undone = await snaOf();
+console.log("    وتراجعٌ واحد يعيدها:",
+  undone !== null && Math.abs(undone - beforeDrag) < 0.15 ? `${undone}° ✓` : `${undone}° ✗`);
+
+await page.keyboard.press("Control+y");
+await page.waitForTimeout(600);
+const redone = await snaOf();
+console.log("    والإعادة تُرجع السحب:",
+  redone !== null && Math.abs(redone - afterDrag) < 0.15 ? "✓" : `${redone}° ✗`);
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(600);
+
+// والأسهم تُزيح النقطة النشطة إزاحةً لا تبلغها اليد.
+await tracer.getByRole("button", { name: "A", exact: true }).click();
+await page.waitForTimeout(400);
+const beforeKeys = await snaOf();
+for (let i = 0; i < 5; i += 1) { await page.keyboard.press("ArrowRight"); await page.waitForTimeout(120); }
+const afterKeys = await snaOf();
+console.log("    والأسهم تُزيحها بدقّة:",
+  beforeKeys !== null && afterKeys !== null && afterKeys !== beforeKeys
+    && Math.abs(afterKeys - beforeKeys) < 2
+    ? `${beforeKeys}° ← ${afterKeys}° ✓` : "لم تُزح أو قفزت ✗");
+for (let i = 0; i < 5; i += 1) { await page.keyboard.press("Control+z"); await page.waitForTimeout(120); }
+const restored = await snaOf();
+console.log("    وتعود بالتراجع:",
+  restored !== null && Math.abs(restored - beforeKeys) < 0.15 ? "✓" : `${restored}° ✗`);
+
+/*
+ * ٦أ) النسبة تُحسب بلا معايرة، والمسافة لا تُعرض بلا معايرة.
+ *
+ * وهذا حدّان لا واحد: أن تظهر النسبة يُثبت أن غياب المعايرة لا يُعطّل ما لا يحتاجها،
+ * وأن تغيب المسافة يُثبت أنه لا رقمَ بلا وحدةٍ صحيحة يُعرض ليُقرأ كأنه مليمترات.
+ */
+const before = await tracer.innerText();
+console.log("6أ) نسبة ياراباك بلا معايرة:", /Jarabak/.test(before) ? "ظاهرة ✓" : "غائبة ✗");
+console.log("    ولا مسافة بالمليمتر قبلها:", /\d\s*مم/.test(before) ? "ظهرت ✗" : "✓");
+console.log("    والحالة معلنة:", /غير معايَرة/.test(before) ? "«غير معايَرة» ✓" : "صامتة ✗");
+
+// ٦ب) تُعايَر الصورة من الشاشة نفسها — طرفان يُنقران وطولٌ يُكتب
+await tracer.getByRole("button", { name: "عايِر الصورة" }).click();
+await page.waitForTimeout(600);
+for (const end of [CAL.from, CAL.to]) {
+  await page.mouse.click(box.x + end.x * box.width, box.y + end.y * box.height);
+  await page.waitForTimeout(300);
+}
+const mmField = tracer.getByLabel("الطول الحقيقي (مم)");
+await mmField.click();
+await mmField.pressSequentially(String(CAL.mm), { delay: 20 });
+await tracer.getByRole("button", { name: "اعتمد المعايرة" }).click();
+await page.waitForTimeout(1200);
+
+const after = await tracer.innerText();
+const mm = (label) => {
+  const found = new RegExp(label + "[^\\n]*\\n?\\s*(-?\\d+(?:\\.\\d+)?)\\s*مم").exec(after);
+  return found ? Number(found[1]) : null;
+};
+const nMe = mm("N-Me"), sGo = mm("S-Go");
+console.log("6ب) بعد المعايرة — الحالة:", /معايَرة/.test(after) && !/غير معايَرة/.test(after) ? "✓" : "لم تُعتمد ✗");
+console.log("    N-Me:", nMe === null ? "غائب ✗" : `${nMe} مم (المتوقَّع ${EXPECT_N_ME.toFixed(1)})`);
+console.log("    S-Go:", sGo === null ? "غائب ✗" : `${sGo} مم (المتوقَّع ${EXPECT_S_GO.toFixed(1)})`);
+console.log("    مطابقة للحساب:",
+  nMe !== null && sGo !== null
+    && Math.abs(nMe - EXPECT_N_ME) <= 1.5 && Math.abs(sGo - EXPECT_S_GO) <= 1.5
+    ? "✓ (ضمن مليمتر ونصف)" : "✗ خارج التسامح");
+await page.screenshot({ path: OUT + "/ceph-4-calibrated.png", fullPage: false });
+
+/*
+ * ٦ج) التحاليل المسمّاة — وإشاراتها.
+ *
+ * والفحص على الإشارة قبل المقدار: مستوى A-B سالبٌ في السويّ، والشفتان خلف الخط
+ * الجمالي فقيمتاهما سالبتان. واصطلاحٌ مقلوب يوافق المقدار ولا يوافق الإشارة.
+ */
+const named = await tracer.innerText();
+const value = (label) => {
+  const found = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[^\\n]*\\n?\\s*(-?\\d+(?:\\.\\d+)?)\\s*(?:°|مم)").exec(named);
+  return found ? Number(found[1]) : null;
+};
+for (const analysis of ["Tweed", "Downs", "Wits", "Ricketts", "Steiner"]) {
+  console.log(`    ${analysis}:`, named.includes(analysis) ? "✓" : "غائب ✗");
+}
+const fma = value("FMA"), impa = value("IMPA"), fmia = value("FMIA");
+console.log("6ج) مثلث تويد يُغلق:",
+  fma !== null && impa !== null && fmia !== null && Math.abs(fma + impa + fmia - 180) < 0.3
+    ? `${fma}+${impa}+${fmia} = 180 ✓` : `لا يُغلق ✗ (${fma}+${impa}+${fmia})`);
+const ab = value("A-B plane"), els = value("E-line · LS"), eli = value("E-line · LI");
+console.log("    ومستوى A-B سالب:", ab !== null && ab < 0 ? `${ab}° ✓` : `${ab} ✗`);
+console.log("    والشفتان خلف الخط الجمالي:",
+  els !== null && eli !== null && els < 0 && eli < 0 ? `${els} · ${eli} ✓` : `${els} · ${eli} ✗`);
+console.log("    وWits محسوب:", value("Wits") !== null ? `${value("Wits")} مم ✓` : "غائب ✗");
+/*
+ * ومعياره يتبع جنس المريضة.
+ *
+ * معيار جاكوبسون للإناث ٠±٢ وللذكور ١±٢ — ومليمترٌ واحد هنا يقلب حكمًا. والملف
+ * يعرف الجنس، فلا يُسأل عنه الطبيب من جديد ولا يُطبَّق معيار الذكور على الجميع.
+ */
+const femaleNorm = /Wits[\s\S]{0,220}?المعيار 0±2/.test(named);
+console.log("    ومعياره يتبع جنسها:", femaleNorm ? "«المعيار 0±2» للإناث ✓"
+  : /Wits[\s\S]{0,220}?المعيار 1±2/.test(named) ? "طُبّق معيار الذكور ✗" : "بلا معيار ✗");
+if (!femaleNorm) {
+  // التشخيص عند السقوط وحده: ما الذي أرسله الخادم فعلًا؟
+  const probe = await page.evaluate(async () => {
+    const id = /\/patients\/(\d+)/.exec(location.pathname)?.[1];
+    const list = await (await fetch(`/api/patients/${id}/documents`)).json();
+    const payload = await (await fetch(`/api/documents/${list.documents?.[0]?.id}/tracing`)).json();
+    return { wits: payload.norms?.WITS ?? null, count: Object.keys(payload.norms ?? {}).length };
+  });
+  console.log("    [تشخيص] المعيار من الخادم:", JSON.stringify(probe));
+}
+console.log("    ومصدر النقطة معلن:",
+  /من الدليل الموقَّع|من الأدبيات/.test(named) ? "✓" : "صامت ✗");
+await page.screenshot({ path: OUT + "/ceph-6-analyses.png", fullPage: false });
+
 await tracer.getByRole("button", { name: "احفظ التتبّع" }).click();
 await page.waitForTimeout(2500);
 console.log("7) حُفظ التتبّع:", /محفوظ/.test(await page.locator("body").innerText()) ? "✓" : "لم يُحفظ");
@@ -100,7 +286,9 @@ await page.getByRole("button", { name: "تتبّع سيفالومتري" }).clic
 await page.waitForTimeout(3000);
 const reopened = await page.locator("body").innerText();
 console.log("8) وعاد بعد الفتح من جديد:",
-  /4 من 24 نقطة/.test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+  new RegExp(`${Object.keys(NORMAL).length} من 28 نقطة`).test(reopened) && /الصنف الأول/.test(reopened) ? "✓" : "لم يعد");
+// المعايرة تُحفظ مع النقاط: لو ضاعت لعادت المسافات معطّلةً بعد كل إغلاق.
+console.log("   والمعايرة معها:", /N-Me/.test(reopened) && /مم/.test(reopened) ? "✓" : "ضاعت ✗");
 
 // ٩) اللغة تُبدَّل بزرّ واحد — والرموز لا تُترجم
 await tracer.getByRole("button", { name: "EN" }).click();
@@ -125,4 +313,90 @@ await tracer.getByRole("button", { name: "ع" }).click();
 await page.waitForTimeout(1000);
 console.log("   وتعود للعربية:", (await tracer.getAttribute("dir")) === "rtl" ? "✓" : "بقيت LTR");
 await page.screenshot({ path: OUT + "/ceph-2-reopened.png", fullPage: false });
+
+/*
+ * ١٠) والحارس على الخادم لا في إخفاء الزرّ.
+ *
+ * كانت الكتابة محميّة بالطبيب والمدير، والقراءة مفتوحةً لكل من يملك جلسة —
+ * فتقرأ الاستقبال مواضع المعالم والقياسات، وهي تشخيصٌ سريري لا حالةُ موعد.
+ * والفحص يستدعي المسار مباشرةً بجلسة استقبال: إخفاء الزرّ من الشاشة لا يُثبت شيئًا،
+ * ومن يريد القراءة لا يمرّ بالشاشة أصلًا.
+ */
+const docId = await page.evaluate(async () => {
+  const id = /\/patients\/(\d+)/.exec(location.pathname)?.[1];
+  const list = await (await fetch(`/api/patients/${id}/documents`)).json();
+  return list.documents?.[0]?.id ?? null;
+});
+
+const clerk = `estqbal${Date.now().toString().slice(-6)}`;
+const made = await page.evaluate(async ({ username }) => {
+  const response = await fetch("/api/users", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password: "reception-only-1234", role: "reception", displayName: "استقبال الفحص" }),
+  });
+  return response.status;
+}, { username: clerk });
+
+const clerkPage = await (await b.newContext({ locale: "ar" })).newPage();
+await login(clerkPage, { base: BASE, user: clerk, pass: "reception-only-1234" });
+const guard = await clerkPage.evaluate(async (id) => {
+  const response = await fetch(`/api/documents/${id}/tracing`);
+  return { status: response.status, body: await response.json().catch(() => null) };
+}, docId);
+
+console.log("10) الاستقبال أُنشئت:", made === 201 ? "✓" : `✗ (${made})`);
+console.log("    ولا تقرأ التتبّع:",
+  guard.status === 403 ? `✓ — ${guard.body?.message ?? ""}` : `تقرأه ✗ (${guard.status})`);
+
+/*
+ * ١١) المعيار يُعدَّل من الشاشة، فينقلب الحكم على الرقم نفسه.
+ *
+ * وهذا هو الفرق بين معيارٍ «في القاعدة» ومعيارٍ **قابل للتعديل**: أن يملكه المالك
+ * من شاشته، لا أن يُنقل من الكود إلى جدولٍ لا يصل إليه أحد.
+ */
+await page.goto(BASE + "/settings/ceph", { waitUntil: "networkidle" });
+await page.waitForTimeout(2500);
+const normsScreen = await page.locator("body").innerText();
+console.log("11) شاشة المعايير:", /SNA/.test(normsScreen) && /Steiner/.test(normsScreen) ? "✓" : "لم تُعرض ✗");
+
+const row = page.locator("li").filter({ hasText: "موضع الفك العلوي" }).first();
+await row.getByRole("button", { name: "عدّل" }).click();
+await page.waitForTimeout(600);
+const setField = async (label, value) => {
+  const field = row.getByLabel(label);
+  await field.click();
+  await field.fill("");
+  await field.pressSequentially(value, { delay: 20 });
+};
+await setField("المتوسط", "74");
+await setField("المرجع", "مجموعة الرحلة");
+await row.getByRole("button", { name: "احفظ المعيار" }).click();
+await page.waitForTimeout(2500);
+console.log("    عُدّل المتوسط إلى ٧٤:",
+  /74/.test(await page.locator("body").innerText()) ? "✓" : "لم يُحفظ ✗");
+await page.screenshot({ path: OUT + "/ceph-5-norms.png", fullPage: true });
+
+// ثم يُقرأ التتبّع نفسه من جديد — الرقم كما هو، والحكم انقلب.
+await page.goto(patientUrl, { waitUntil: "networkidle" });
+await page.waitForTimeout(2500);
+await page.getByRole("button", { name: "الأشعة" }).click();
+await page.waitForTimeout(1800);
+await page.getByRole("button", { name: "تتبّع سيفالومتري" }).click();
+await page.waitForTimeout(3500);
+const rejudged = await page.getByRole("dialog").innerText();
+const stillSNA = /SNA[^\n]*\n?\s*(\d+(?:\.\d+)?)°/.exec(rejudged);
+console.log("    والرقم كما هو:", stillSNA && Math.abs(Number(stillSNA[1]) - 82) <= 0.6 ? `${stillSNA[1]}° ✓` : "تغيّر ✗");
+console.log("    والحكم انقلب:", /أعلى من المعيار/.test(rejudged) ? "«أعلى من المعيار» ✓" : "لم ينقلب ✗");
+console.log("    والمرجع الجديد ظاهر:", /مجموعة الرحلة/.test(rejudged) ? "✓" : "غائب ✗");
+
+// وتُعاد كما كانت: الرحلة لا تترك أثرًا في المعايير.
+await page.evaluate(async () => {
+  const sets = await (await fetch("/api/ceph/reference")).json();
+  const active = sets.sets.find((set) => set.isDefault);
+  await fetch("/api/ceph/reference", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ setId: active.id, measurement: "SNA", mean: 82, tolerance: 2, source: "Steiner" }),
+  });
+});
+
 await b.close();

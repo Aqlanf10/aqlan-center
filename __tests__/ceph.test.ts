@@ -10,6 +10,9 @@ import {
   LANDMARKS,
   SKELETAL_LABEL,
   millimetresPerUnit,
+  offsetFromLine,
+  DEFAULT_NORMS,
+  NORM_LABEL,
   skeletalClass,
   verdictFor,
   NORMS,
@@ -267,12 +270,21 @@ describe("اتجاه التغيّر — الحارس الذي لا يمرّ من
 });
 
 describe("النقاط الأربع والعشرون المعتمدة", () => {
+  /*
+   * والفحص مقصورٌ على نقاط الدليل وحدها.
+   *
+   * أُضيفت بعده نقاطٌ من الأدبيات بإذن المالك، ولو عدّها هذا الفحص لَصار كل إضافةٍ
+   * تكسره فيُرفع العدد — فيضيع ما بُني له: أن يبقى **محتوى الدليل الموقَّع** كما
+   * وُقّع، لا أن يُعدّ ما في الشاشة.
+   */
+  const manual = LANDMARKS.filter((item) => !item.source);
+
   it("عددها ٢٤ كما في الدليل الموقَّع", () => {
-    expect(LANDMARKS.length).toBe(24);
+    expect(manual.length).toBe(24);
   });
 
   it("وتوزيعها كما في خريطة الدليل", () => {
-    const count = (group: string) => LANDMARKS.filter((l) => l.group === group).length;
+    const count = (group: string) => manual.filter((l) => l.group === group).length;
     expect(count("cranial")).toBe(6);
     expect(count("maxilla")).toBe(3);
     expect(count("mandible")).toBe(7);
@@ -296,5 +308,309 @@ describe("النقاط الأربع والعشرون المعتمدة", () => {
     expect(co.hint.ar).toContain("الأبعد عن الفيلم");
     const u1a = LANDMARKS.find((l) => l.code === "U1A")!;
     expect(u1a.hint.ar).toContain("نفسه");        // الطرف والذروة من السن نفسه
+  });
+});
+
+
+/*
+ * القياسات الطولية — والمعايرة التي كانت تُحفظ ولا تُنتج شيئًا.
+ *
+ * إطار الوجه المصنوع طوله ٢٠٠ وحدة على ٢٠٠، فالإحداثي النسبيّ ‎x/200‎. فإن عوّلنا
+ * طولًا معلومًا مقداره ١٠٠ على مسافةٍ نسبية ٠٫٥ صار المقياس ٢٠٠ مليمترًا للوحدة —
+ * وعندها تخرج كل مسافةٍ بالمليمتر مساويةً لمسافتها في الإطار بالضبط. فالمتوقَّع
+ * محسوبٌ لا مقروءٌ من المخرجات.
+ */
+const CAL = { from: frame(0, 0), to: frame(100, 0), millimetres: 100 };
+/*
+ * الوجه الكامل — بنقاط الأدبيات معه.
+ *
+ * وPogonion **أمام** النقطة B لا خلفها: وضعتُه أولًا عند ٨٤ فخرجت زاوية مستوى
+ * A-B موجبةً، ومعيار داونز لها سالبٌ (‎−4.6‎) — فالخلل في الذقن المصنوع لا في
+ * الصيغة: ذقنٌ خلف النقطة B ليس ذقنًا. ولولا اشتراطُ المعيار بإشارته لَمرّ.
+ */
+const FACE_MM: Tracing = {
+  ...FACE,
+  Pog: frame(88, -70), ANS: frame(80, -8),
+  // مستوى الإطباق الوظيفي — Jacobson
+  U6: frame(55, -23), L6: frame(55, -25),
+  // الأنسجة الرخوة — Ricketts، والشفتان خلف الخط الجمالي كما في السويّ
+  Pn: frame(108, -18), PogS: frame(92, -72),
+  LS: frame(98.1, -38), LI: frame(96.5, -50),
+};
+
+const mmValue = (tracing: Tracing, key: string, calibration = CAL) =>
+  analyse({ tracing, calibration }).measurements.find((m) => m.key === key)?.value ?? Number.NaN;
+
+const measuredIn = (tracing: Tracing, key: string, calibration?: typeof CAL) =>
+  analyse({ tracing, calibration }).measurements.find((m) => m.key === key)?.value ?? Number.NaN;
+
+describe("المعايرة تُشغّل ما كان معطّلًا", () => {
+  it("بلا معايرة: لا مسافةَ واحدة بالمليمتر", () => {
+    const plain = analyse({ tracing: FACE_MM });
+    expect(plain.calibrated).toBe(false);
+    expect(plain.measurements.filter((m) => m.unit === "mm")).toHaveLength(0);
+  });
+
+  it("وبالمعايرة تظهر — والزوايا كما هي لم تتغيّر", () => {
+    const plain = analyse({ tracing: FACE_MM });
+    const scaled = analyse({ tracing: FACE_MM, calibration: CAL });
+    expect(scaled.calibrated).toBe(true);
+    expect(scaled.measurements.filter((m) => m.unit === "mm").length).toBeGreaterThan(0);
+    for (const angle of plain.measurements.filter((m) => m.unit === "deg")) {
+      const same = scaled.measurements.find((m) => m.key === angle.key)!;
+      expect(same.value).toBeCloseTo(angle.value, 10);
+    }
+  });
+
+  it("والمقياس يُطبَّق كما هو: طولٌ معلومٌ ضعفُه يُضاعف كل مليمتر", () => {
+    const once = mmValue(FACE_MM, "N-Me");
+    const twice = mmValue(FACE_MM, "N-Me", { ...CAL, millimetres: 200 });
+    expect(twice).toBeCloseTo(once * 2, 8);
+  });
+
+  it("ومعايرةٌ بطول صفر لا تُشغّل شيئًا", () => {
+    const zero = analyse({ tracing: FACE_MM, calibration: { ...CAL, to: CAL.from } });
+    expect(zero.calibrated).toBe(false);
+    expect(millimetresPerUnit({ ...CAL, to: CAL.from })).toBeNull();
+  });
+
+  it("والأطوال تخرج بمقاديرها المحسوبة", () => {
+    expect(mmValue(FACE_MM, "N-Me")).toBeCloseTo(106.7929, 3);
+    expect(mmValue(FACE_MM, "S-Go")).toBeCloseTo(65.1920, 3);
+  });
+});
+
+describe("المسافة الموقّعة عن خط — والإشارة هي التشخيص", () => {
+  it("القاطع أمام خط NA فالإشارة موجبة", () => {
+    expect(mmValue(FACE_MM, "U1-NA-mm")).toBeCloseTo(7.1634, 3);
+    expect(mmValue(FACE_MM, "L1-NB-mm")).toBeCloseTo(3.0013, 3);
+  });
+
+  it("وقاطعٌ يُسحب خلف الخط تنقلب إشارته", () => {
+    // القاطع إلى الخلف من A بمسافة — فيصير خلف خط NA.
+    const retruded = { ...FACE_MM, U1T: frame(70, -33.5) };
+    expect(mmValue(retruded, "U1-NA-mm")).toBeLessThan(0);
+  });
+
+  it("والإشارة من التشريح لا من الصورة: قلبُ الصورة أفقيًّا لا يقلبها", () => {
+    /*
+     * وهذا هو الحارس الذي بُني له كل شيء. الأشعة الجانبية تُصوَّر ووجهها يمينًا
+     * أحيانًا ويسارًا أحيانًا، فربطُ «الأمام» بمحور الصورة يقلب كل إشارةٍ على نصف
+     * الصور — ويقلب معها التشخيص، بلا أن يبدو على الرقم شيء.
+     */
+    const mirrored: Tracing = Object.fromEntries(
+      Object.entries(FACE_MM).map(([code, point]) => [code, { x: 1 - point.x, y: point.y }]),
+    );
+    const mirroredCal = { ...CAL, from: { x: 1 - CAL.from.x, y: CAL.from.y }, to: { x: 1 - CAL.to.x, y: CAL.to.y } };
+    expect(mmValue(mirrored, "U1-NA-mm", mirroredCal)).toBeCloseTo(mmValue(FACE_MM, "U1-NA-mm"), 8);
+    expect(mmValue(mirrored, "L1-NB-mm", mirroredCal)).toBeCloseTo(mmValue(FACE_MM, "L1-NB-mm"), 8);
+  });
+
+  it("ونقطةٌ على الخط نفسه بُعدها صفر", () => {
+    const N = FACE_MM.N!, A = FACE_MM.A!, S = FACE_MM.S!;
+    const middle = { x: (N.x + A.x) / 2, y: (N.y + A.y) / 2 };
+    expect(offsetFromLine(middle, N, A, S)).toBeCloseTo(0, 10);
+  });
+});
+
+describe("نسبة ياراباك — نسبةٌ لا طول", () => {
+  const ratio = (tracing: Tracing, calibration?: typeof CAL) =>
+    analyse({ tracing, calibration }).measurements.find((m) => m.key === "Jarabak")?.value ?? Number.NaN;
+
+  it("تُحسب بلا معايرة أصلًا — لأن المقياس يسقط بالقسمة", () => {
+    expect(ratio(FACE_MM)).toBeCloseTo(61.0453, 3);
+    expect(ratio(FACE_MM, CAL)).toBeCloseTo(ratio(FACE_MM), 10);
+  });
+
+  it("ولا تتغيّر بتغيّر المعايرة", () => {
+    expect(ratio(FACE_MM, { ...CAL, millimetres: 37 })).toBeCloseTo(ratio(FACE_MM, CAL), 10);
+  });
+
+  it("وارتفاعٌ خلفيٌّ أطول يرفعها — وهو نمو أفقي", () => {
+    const horizontal = { ...FACE_MM, Go: frame(15, -70) };
+    expect(ratio(horizontal)).toBeGreaterThan(ratio(FACE_MM));
+  });
+});
+
+describe("قياسٌ بلا معيار يُعرض بلا حكم", () => {
+  it("ارتفاع الوجه يخرج بلا معيار ولا تصنيف", () => {
+    const height = analyse({ tracing: FACE_MM, calibration: CAL })
+      .measurements.find((m) => m.key === "N-Me")!;
+    expect(height.norm).toBeNull();
+    expect(height.verdict).toBeNull();
+  });
+
+  it("بينما بروز القاطع يخرج بمعياره وحكمه", () => {
+    const incisor = analyse({ tracing: FACE_MM, calibration: CAL })
+      .measurements.find((m) => m.key === "U1-NA-mm")!;
+    expect(incisor.norm).toEqual(NORMS.U1_NA_MM);
+    expect(incisor.verdict).toBe("high");
+  });
+});
+
+describe("صياغة الرقم", () => {
+  it("وحدة المليمتر تتبع لغة الشاشة", () => {
+    expect(formatMeasurement(4.25, "mm", "ar")).toBe("4.3 مم");
+    expect(formatMeasurement(4.25, "mm", "en")).toBe("4.3 mm");
+  });
+
+  it("والنسبة بالمئة، والدرجة بعلامتها", () => {
+    expect(formatMeasurement(63.5, "ratio")).toBe("63.5%");
+    expect(formatMeasurement(82, "deg")).toBe("82.0°");
+  });
+});
+
+
+describe("المعايير تُمرَّر ولا تُثبَّت", () => {
+  const verdictOf = (key: string, norms?: Record<string, { mean: number; tolerance: number; source: string }>) =>
+    analyse({ tracing: FACE, norms }).measurements.find((m) => m.key === key)?.verdict;
+
+  it("بلا تمرير: الافتراضي هو المعمول به", () => {
+    expect(verdictOf("SNA")).toBe("normal");
+  });
+
+  it("ومجموعةٌ أخرى تقلب الحكم — وهذا هو المقصود", () => {
+    // معيارٌ يجعل ٨٢ مرتفعة: لو بقيت المعايير في الكود لما أمكن هذا أصلًا.
+    expect(verdictOf("SNA", { SNA: { mean: 74, tolerance: 2, source: "محلّي" } })).toBe("high");
+    expect(verdictOf("SNA", { SNA: { mean: 90, tolerance: 2, source: "محلّي" } })).toBe("low");
+  });
+
+  it("والمرجع يظهر مع الرقم — فيُراجَع لا يُصدَّق", () => {
+    const measured = analyse({
+      tracing: FACE, norms: { SNA: { mean: 82, tolerance: 2, source: "مرضى تعز ٢٠٢٦" } },
+    }).measurements.find((m) => m.key === "SNA")!;
+    expect(measured.norm!.source).toBe("مرضى تعز ٢٠٢٦");
+  });
+
+  it("ومجموعةٌ ناقصة لا تُعطّل ما لم تُذكر فيه", () => {
+    // تُمرَّر SNA وحدها، فتبقى SNB على الافتراضي بدل أن تختفي.
+    const partial = analyse({ tracing: FACE, norms: { SNA: { mean: 74, tolerance: 2, source: "محلّي" } } });
+    expect(partial.measurements.find((m) => m.key === "SNB")!.norm).toEqual(DEFAULT_NORMS.SNB);
+  });
+});
+
+
+describe("أسماء المعايير تطابق المعايير", () => {
+  it("لكل معيارٍ اسمٌ للعرض — ولا اسمَ بلا معيار", () => {
+    expect(Object.keys(NORM_LABEL).sort()).toEqual(Object.keys(DEFAULT_NORMS).sort());
+  });
+
+  it("وكل اسمٍ معروضٍ في التحليل له مفتاحٌ يُعدَّل منه", () => {
+    // القياسات التي لها معيار يجب أن يوجد لها صفٌّ في شاشة الإدارة — وإلّا صار
+    // معيارٌ يحكم على المريض ولا سبيل إلى تغييره.
+    const named = new Set(Object.values(NORM_LABEL).map((entry) => entry.name));
+    const judged = analyse({ tracing: FACE_MM, calibration: CAL }).measurements
+      .filter((m) => m.norm !== null).map((m) => m.name);
+    for (const name of judged) expect(named.has(name)).toBe(true);
+  });
+});
+
+
+/*
+ * تحاليل من الأدبيات المنشورة — بإذن المالك، وكلٌّ بمرجعه.
+ *
+ * والفحص لا يقنع بمطابقة المقدار: يشترط أن يقع كل قياسٍ **داخل معياره المنشور**
+ * على وجهٍ واحد مصنوع، وأن تصحّ إشارتُه. فوقوعُ عشرين قياسًا من ثلاثة تحاليل
+ * مختلفة داخل معاييرها معًا لا يحتمله اصطلاحٌ مقلوب في واحد منها.
+ */
+const full = analyse({ tracing: FACE_MM, calibration: CAL });
+const got = (key: string) => full.measurements.find((m) => m.key === key)!;
+
+describe("مثلث تويد — يُغلق أو لا يكون", () => {
+  it("مجموع زواياه ١٨٠ بالضبط", () => {
+    // ولا تُحسب الثالثة طرحًا من ١٨٠: كلٌّ من نقاطها مستقلّةً، فيكون المجموع
+    // برهانًا لا تحصيلَ حاصل. واصطلاحٌ مقلوب في أيّها يكسره.
+    const sum = got("FMA").value + got("IMPA").value + got("FMIA").value;
+    expect(sum).toBeCloseTo(180, 6);
+  });
+
+  it("وFMIA على معيارها", () => {
+    expect(got("FMIA").value).toBeCloseTo(64.8, 1);
+    expect(got("FMIA").verdict).toBe("normal");
+  });
+});
+
+describe("تحليل داونز", () => {
+  it("الزوايا الثلاث داخل معاييرها المنشورة", () => {
+    for (const key of ["Facial", "Convexity", "AB-plane"]) {
+      expect(got(key).verdict, key).toBe("normal");
+    }
+  });
+
+  it("وزاوية مستوى A-B سالبة — كما يقول المعيار", () => {
+    // إشارتُها هي الفحص: معيار داونز ‎−4.6‎، وموجبةٌ تعني ذقنًا خلف النقطة B.
+    expect(got("AB-plane").value).toBeLessThan(0);
+  });
+
+  it("وذقنٌ متقدّم يرفع الزاوية الوجهية", () => {
+    const jutting = { ...FACE_MM, Pog: frame(96, -70) };
+    expect(measuredIn(jutting, "Facial")).toBeGreaterThan(got("Facial").value);
+  });
+
+  it("وذقنٌ متراجع يزيد التحدّب", () => {
+    const receding = { ...FACE_MM, Pog: frame(80, -70) };
+    expect(measuredIn(receding, "Convexity")).toBeGreaterThan(got("Convexity").value);
+  });
+});
+
+describe("تقييم Wits — يُقرأ حيث تُضلّل ANB", () => {
+  it("على وجهٍ سويّ يقع داخل معياره", () => {
+    expect(got("Wits").verdict).toBe("normal");
+  });
+
+  it("وفكٌّ سفليٌّ متقدّم يجعله سالبًا — وهو الصنف الثالث", () => {
+    const classIII = { ...FACE_MM, B: frame(95, -46.24) };
+    expect(measuredIn(classIII, "Wits", CAL)).toBeLessThan(-2);
+  });
+
+  it("وفكٌّ علويٌّ متقدّم يرفعه — وهو الصنف الثاني", () => {
+    const classII = { ...FACE_MM, A: frame(96, -21.34) };
+    expect(measuredIn(classII, "Wits", CAL)).toBeGreaterThan(got("Wits").value + 3);
+  });
+
+  it("ولا يُحسب بلا معايرة — لأنه مسافة", () => {
+    expect(analyse({ tracing: FACE_MM }).measurements.find((m) => m.key === "Wits")).toBeUndefined();
+  });
+
+  it("ولا تقلبه الصورة المقلوبة", () => {
+    const mirrored: Tracing = Object.fromEntries(
+      Object.entries(FACE_MM).map(([code, point]) => [code, { x: 1 - point.x, y: point.y }]),
+    );
+    const mirroredCal = { ...CAL, from: { x: 1 - CAL.from.x, y: CAL.from.y }, to: { x: 1 - CAL.to.x, y: CAL.to.y } };
+    expect(measuredIn(mirrored, "Wits", mirroredCal)).toBeCloseTo(got("Wits").value, 8);
+  });
+});
+
+describe("الخط الجمالي", () => {
+  it("الشفتان خلفه في الوجه السويّ — فالقيمتان سالبتان وضمن المعيار", () => {
+    expect(got("E-LS").value).toBeLessThan(0);
+    expect(got("E-LI").value).toBeLessThan(0);
+    expect(got("E-LS").verdict).toBe("normal");
+    expect(got("E-LI").verdict).toBe("normal");
+  });
+
+  it("وشفةٌ بارزة تُقرَّب من الصفر ثم تتجاوزه", () => {
+    const protrusive = { ...FACE_MM, LS: frame(106, -38) };
+    expect(measuredIn(protrusive, "E-LS", CAL)).toBeGreaterThan(got("E-LS").value);
+  });
+});
+
+describe("مصدر تعريف كل نقطة مكتوب", () => {
+  it("أربعٌ وعشرون من الدليل الموقَّع", () => {
+    expect(LANDMARKS.filter((item) => !item.source)).toHaveLength(24);
+  });
+
+  it("وأربعٌ من الأدبيات، كلٌّ بمرجعه", () => {
+    const cited = LANDMARKS.filter((item) => item.source);
+    expect(cited).toHaveLength(4);
+    expect(cited.map((item) => item.code).sort()).toEqual(["Ba", "L6", "PogS", "U6"]);
+    for (const item of cited) expect(item.source!.trim().length).toBeGreaterThan(8);
+  });
+
+  it("ولا نقطةَ بلا تعريفٍ بلغتين", () => {
+    for (const item of LANDMARKS) {
+      expect(item.hint.ar.length, item.code).toBeGreaterThan(10);
+      expect(item.hint.en.length, item.code).toBeGreaterThan(10);
+    }
   });
 });

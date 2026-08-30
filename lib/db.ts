@@ -531,6 +531,95 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS ceph_tracings_patient_idx
         ON ceph_tracings (patient_id, traced_at DESC);
 
+      /*
+       * المجموعات المرجعية السيفالومترية.
+       *
+       * كانت المعايير ثابتةً في الكود: متوسّطٌ وانحرافٌ لكل قياس، بلا عمرٍ ولا جنسٍ
+       * ولا مجتمع. وهذا يخالف قاعدة المشروع — لا تثبيت للقواعد التشغيلية في الكود —
+       * ويُطبّق معيارَ ستاينر المأخوذ من مجتمعٍ آخر على مريضٍ في تعز بلا تمييز.
+       *
+       * فصارت مجموعاتٍ تُدار: واحدةٌ افتراضية تُزرع بالقيم الكلاسيكية موثَّقةً
+       * بمرجعها، وللمدير أن يضيف مجموعةً محلّية متى جمع بياناته ويجعلها الافتراضية.
+       */
+      CREATE TABLE IF NOT EXISTS ceph_reference_sets (
+        id          SERIAL PRIMARY KEY,
+        name        TEXT    NOT NULL,
+        -- المرجع العلمي — كي يُراجَع الرقم لا يُصدَّق.
+        source      TEXT    NOT NULL,
+        note        TEXT,
+        is_default  BOOLEAN NOT NULL DEFAULT FALSE,
+        archived    BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by  TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_by  TEXT,
+        updated_at  TIMESTAMPTZ
+      );
+      -- مجموعةٌ افتراضية واحدة لا أكثر: واثنتان تعنيان أن «المعيار» سؤالٌ بجوابين.
+      CREATE UNIQUE INDEX IF NOT EXISTS ceph_reference_one_default
+        ON ceph_reference_sets (is_default) WHERE is_default;
+
+      /*
+       * والقيمة قد تختلف بالجنس.
+       *
+       * معيار Wits ذكورًا ١±٢ وإناثًا ٠±٢ (Jacobson 1975) — ومليمترٌ واحد هنا يقلب
+       * حكمًا. والقيمة العامّة «any» تُستعمل حين لا يُعرف جنس المريض أو حين لا
+       * يفرّق المعيار — فلا يُجبَر كل قياسٍ على صفَّين لا معنى لثانيهما.
+       *
+       * أمّا الفئة العمرية فلم تُضف: المواصفة تطلبها، ولا قيمَ عمريةً موثَّقةً
+       * تُملأ بها. وحقلٌ فارغٌ يُوهم أن العمر داخلٌ في الحساب وهو ليس كذلك.
+       */
+      CREATE TABLE IF NOT EXISTS ceph_reference_values (
+        set_id      INTEGER NOT NULL REFERENCES ceph_reference_sets(id) ON DELETE CASCADE,
+        measurement TEXT    NOT NULL,
+        sex         TEXT    NOT NULL DEFAULT 'any' CHECK (sex IN ('any', 'male', 'female')),
+        mean        DOUBLE PRECISION NOT NULL,
+        -- الانحراف موجبٌ دائمًا: صفرٌ يجعل كل قياسٍ خارج المعيار إلا المطابق تمامًا.
+        tolerance   DOUBLE PRECISION NOT NULL CHECK (tolerance > 0),
+        source      TEXT    NOT NULL,
+        PRIMARY KEY (set_id, measurement, sex)
+      );
+
+      /*
+       * وترقيةُ جدولٍ أُنشئ قبل إدخال الجنس.
+       *
+       * CREATE TABLE IF NOT EXISTS لا يضيف عمودًا إلى جدولٍ قائم — يمرّ صامتًا
+       * ويترك الجدول على شكله القديم. فتنكسر القراءة على قاعدةٍ عمرها يومان بينما
+       * تنجح على قاعدةٍ تُبنى من الصفر، ويُفحص الفحصُ على الثانية فيُظنّ كل شيء
+       * بخير. وهذا ما وقع: قاعدة التطوير بقيت بلا العمود، فسقط الاستدعاء وعادت
+       * الشاشة إلى المعيار المدمج — فطُبّق معيار الذكور على مريضة.
+       */
+      ALTER TABLE ceph_reference_values
+        ADD COLUMN IF NOT EXISTS sex TEXT NOT NULL DEFAULT 'any';
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.key_column_usage
+           WHERE table_name = 'ceph_reference_values'
+             AND constraint_name = 'ceph_reference_values_pkey'
+             AND column_name = 'sex'
+        ) THEN
+          ALTER TABLE ceph_reference_values DROP CONSTRAINT IF EXISTS ceph_reference_values_pkey;
+          ALTER TABLE ceph_reference_values
+            ADD CONSTRAINT ceph_reference_values_pkey PRIMARY KEY (set_id, measurement, sex);
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'ceph_reference_values_sex_check'
+        ) THEN
+          ALTER TABLE ceph_reference_values
+            ADD CONSTRAINT ceph_reference_values_sex_check CHECK (sex IN ('any', 'male', 'female'));
+        END IF;
+      END $$;
+
+      -- وبذرةٌ قديمة فيها Wits صفًّا عامًّا واحدًا: يصير صفَّ الذكور ويُضاف صفُّ
+      -- الإناث. وتركُها عامّةً يعني تطبيق معيار الذكور على كل مريضة.
+      UPDATE ceph_reference_values SET sex = 'male'
+       WHERE measurement = 'WITS' AND sex = 'any';
+      INSERT INTO ceph_reference_values (set_id, measurement, sex, mean, tolerance, source)
+      SELECT set_id, 'WITS', 'female', 0, 2, source
+        FROM ceph_reference_values WHERE measurement = 'WITS' AND sex = 'male'
+      ON CONFLICT (set_id, measurement, sex) DO NOTHING;
+
       -- الدفعة قد تكون على خطة: عليها يقوم حساب ما سُدّد منها.
       ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES treatment_plans(id);
       CREATE INDEX IF NOT EXISTS payments_plan_idx ON payments (plan_id);
@@ -5777,8 +5866,8 @@ export async function closeOrthoCase(input: {
 // ─── التتبّع السيفالومتري ────────────────────────────────────────────────────
 
 import {
-  analyse, isLandmarkCode,
-  type Analysis, type Calibration, type Tracing,
+  DEFAULT_NORMS, analyse, isLandmarkCode,
+  type Analysis, type Calibration, type Norm, type Tracing,
 } from "./ceph";
 
 export interface CephTracing {
@@ -5834,6 +5923,7 @@ const toTracing = (row: {
   id: number; document_id: number; patient_id: number; points: unknown;
   calibration: unknown; note: string | null; traced_by: string; traced_at: Date;
   updated_by: string | null; updated_at: Date | null; aspect?: number;
+  norms?: Record<string, Norm>;
 }): CephTracing => {
   const points = sanitizeTracing(row.points);
   const calibration = sanitizeCalibration(row.calibration);
@@ -5848,29 +5938,225 @@ const toTracing = (row: {
     tracedAt: row.traced_at.toISOString(),
     updatedBy: row.updated_by,
     updatedAt: row.updated_at ? row.updated_at.toISOString() : null,
-    analysis: analyse({ tracing: points, calibration, aspect: row.aspect }),
+    analysis: analyse({ tracing: points, calibration, aspect: row.aspect, norms: row.norms }),
   };
 };
 
 const TRACING_COLUMNS = `id, document_id, patient_id, points, calibration, note,
        traced_by, traced_at, updated_by, updated_at`;
 
+/* ─── المجموعات المرجعية ─────────────────────────────────────────────────── */
+
+export type ReferenceSex = "any" | "male" | "female";
+
+export interface ReferenceValue {
+  measurement: string;
+  /** `any` عامّة، وما عداها يخصّ جنسًا — والخاصّ يسبق العامّ عند القراءة. */
+  sex: ReferenceSex;
+  mean: number;
+  tolerance: number;
+  source: string;
+}
+
+export interface ReferenceSet {
+  id: number;
+  name: string;
+  source: string;
+  note: string | null;
+  isDefault: boolean;
+  archived: boolean;
+  values: ReferenceValue[];
+}
+
+/**
+ * تُنشأ المجموعة الافتراضية مرّةً، وتُملأ فجواتُها دائمًا.
+ *
+ * وكان الزرعُ مشروطًا بخلوّ الجدول كلّه — فمنع عودةَ القيم الأصلية فوق تعديل
+ * المالك، وهو مقصود. لكنه منع معه شيئًا آخر لم يكن مقصودًا: **كلَّ معيارٍ يُضاف
+ * بعد أوّل تشغيل**. أُضيفت تسعةُ معايير في دفعةٍ لاحقة، فبقيت قاعدةُ التطوير بلا
+ * صفوفها — فلا يراها المالك في شاشته ولا يستطيع تعديلها، ويسقط التحليل صامتًا إلى
+ * المعيار المدمج في الكود. وهو بالضبط ما بُنيت المجموعات لإخراجه منه.
+ *
+ * فصار الشرطان منفصلين: المجموعة تُنشأ إن لم توجد، والقيم تُدرَج دائمًا بـ
+ * `DO NOTHING` — فتُملأ الفجوة ولا يُمسّ ما عدّله المالك.
+ */
+async function ensureReferenceSeed(): Promise<void> {
+  const pool = getPool();
+
+  /*
+   * وWits وحده يُزرع بقيمتين — لأنه وحده ممّا عندنا يفرّق بالجنس في مرجعه.
+   * وزرعُ صفَّين لكل قياسٍ كان سيملأ الجدول بأرقامٍ متطابقة تُوهم بتفريقٍ لا وجود له.
+   */
+  const bySex: Record<string, { sex: string; mean: number; tolerance: number }[]> = {
+    WITS: [
+      { sex: "male", mean: 1, tolerance: 2 },
+      { sex: "female", mean: 0, tolerance: 2 },
+    ],
+  };
+  const entries = Object.entries(DEFAULT_NORMS).flatMap(([key, norm]) =>
+    (bySex[key] ?? [{ sex: "any", mean: norm.mean, tolerance: norm.tolerance }])
+      .map((row) => ({ key, sex: row.sex, mean: row.mean, tolerance: row.tolerance, source: norm.source })));
+
+  const { rows: existing } = await pool.query<{ id: number }>(
+    `SELECT id FROM ceph_reference_sets WHERE is_default AND NOT archived LIMIT 1`,
+  );
+  let setId = existing[0]?.id;
+
+  if (!setId) {
+    const { rows: created } = await pool.query<{ id: number }>(
+      `INSERT INTO ceph_reference_sets (name, source, note, is_default, created_by)
+       VALUES ($1, $2, $3, TRUE, $4) RETURNING id`,
+      [
+        "المعايير الكلاسيكية",
+        "Steiner · Tweed · Downs · Jarabak · Jacobson · Ricketts",
+        "القيم المنشورة الأوسع استعمالًا، كلٌّ بمرجعه. وهي مأخوذة من مجتمعاتٍ غير يمنية — فتُقرأ مع الوجه لا وحدها، وللمدير أن يضيف مجموعةً محلّية ويجعلها الافتراضية.",
+        "النظام",
+      ],
+    );
+    setId = created[0].id;
+  }
+
+  await pool.query(
+    `INSERT INTO ceph_reference_values (set_id, measurement, sex, mean, tolerance, source)
+     SELECT $1, m, x, v, t, s
+       FROM UNNEST($2::text[], $3::text[], $4::float8[], $5::float8[], $6::text[]) AS u(m, x, v, t, s)
+     ON CONFLICT (set_id, measurement, sex) DO NOTHING`,
+    [
+      setId,
+      entries.map((entry) => entry.key),
+      entries.map((entry) => entry.sex),
+      entries.map((entry) => entry.mean),
+      entries.map((entry) => entry.tolerance),
+      entries.map((entry) => entry.source),
+    ],
+  );
+}
+
+const toReferenceSet = (row: Record<string, unknown>, values: ReferenceValue[]): ReferenceSet => ({
+  id: row.id as number,
+  name: row.name as string,
+  source: row.source as string,
+  note: (row.note as string | null) ?? null,
+  isDefault: Boolean(row.is_default),
+  archived: Boolean(row.archived),
+  values,
+});
+
+export async function listReferenceSets(): Promise<ReferenceSet[]> {
+  await ensureSchema();
+  await ensureReferenceSeed();
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT id, name, source, note, is_default, archived FROM ceph_reference_sets
+      ORDER BY is_default DESC, archived, id`,
+  );
+  const { rows: values } = await pool.query<ReferenceValue & { set_id: number }>(
+    `SELECT set_id, measurement, sex, mean, tolerance, source FROM ceph_reference_values
+      ORDER BY set_id, measurement, sex`,
+  );
+  return rows.map((row) => toReferenceSet(
+    row, values.filter((value) => value.set_id === row.id)
+      .map(({ measurement, sex, mean, tolerance, source }) =>
+        ({ measurement, sex, mean: Number(mean), tolerance: Number(tolerance), source })),
+  ));
+}
+
+/**
+ * معايير المجموعة الافتراضية، بالشكل الذي يقرأه التحليل.
+ *
+ * ولا تُخبَّأ في الذاكرة: تعديلُ المدير يجب أن يظهر في القراءة التالية لا بعد
+ * إعادة تشغيل — والقراءة صفٌّ واحدٌ من عشرة، لا حملَ فيها.
+ *
+ * والخاصُّ بالجنس يسبق العامّ: يُقرأ الصفّان معًا ثم يغلب صفُّ المريض. ولو رُشّح
+ * بالجنس في الاستعلام وحده لَسقط كلُّ قياسٍ عامٍّ عن مريضٍ معروف الجنس — فيبقى
+ * بلا معيار وهو له معيار.
+ */
+export async function referenceNorms(sex?: string | null): Promise<Record<string, Norm>> {
+  await ensureSchema();
+  await ensureReferenceSeed();
+  const { rows } = await getPool().query<{ measurement: string; sex: string; mean: string; tolerance: string; source: string }>(
+    `SELECT v.measurement, v.sex, v.mean, v.tolerance, v.source
+       FROM ceph_reference_values v
+       JOIN ceph_reference_sets s ON s.id = v.set_id
+      WHERE s.is_default AND NOT s.archived
+        AND (v.sex = 'any' OR v.sex = $1)
+      -- العامّ أولًا ثم الخاصّ، فيكتب الخاصُّ فوقه.
+      ORDER BY (v.sex <> 'any')`,
+    [sex === "male" || sex === "female" ? sex : "any"],
+  );
+  const norms: Record<string, Norm> = {};
+  for (const row of rows) {
+    norms[row.measurement] = { mean: Number(row.mean), tolerance: Number(row.tolerance), source: row.source };
+  }
+  return norms;
+}
+
+/** تعديل قيمة في مجموعة — للمدير وحده، ومُسجَّلٌ باسمه. */
+export async function setReferenceValue(input: {
+  setId: number; measurement: string; sex?: string;
+  mean: number; tolerance: number; source: string; actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  if (!Number.isFinite(input.mean)) return { ok: false, message: "المتوسط رقمٌ مطلوب." };
+  if (!(input.tolerance > 0)) return { ok: false, message: "الانحراف يجب أن يكون أكبر من صفر." };
+  if (!input.source.trim()) return { ok: false, message: "اكتب مرجع القيمة — رقمٌ بلا مرجع لا يُراجَع." };
+
+  const sex = input.sex === "male" || input.sex === "female" ? input.sex : "any";
+  const { rowCount } = await getPool().query(
+    `INSERT INTO ceph_reference_values (set_id, measurement, sex, mean, tolerance, source)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (set_id, measurement, sex)
+     DO UPDATE SET mean = EXCLUDED.mean, tolerance = EXCLUDED.tolerance, source = EXCLUDED.source`,
+    [input.setId, input.measurement, sex, input.mean, input.tolerance, input.source.trim()],
+  );
+  if (!rowCount) return { ok: false, message: "المجموعة المرجعية غير موجودة." };
+  await getPool().query(
+    `UPDATE ceph_reference_sets SET updated_by = $2, updated_at = NOW() WHERE id = $1`,
+    [input.setId, input.actor],
+  );
+  return { ok: true };
+}
+
 export async function getCephTracing(documentId: number, aspect?: number): Promise<CephTracing | null> {
   await ensureSchema();
-  const { rows } = await getPool().query(
-    `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE document_id = $1`, [documentId],
+  // جنس المريض يدخل اختيار المعيار — ومعيار Wits ذكورًا غيرُه إناثًا بمليمتر،
+  // ومليمترٌ هنا يقلب حكمًا. فيُقرأ من ملفّه لا يُسأل عنه الطبيب من جديد.
+  const { rows } = await getPool().query<{ gender: string }>(
+    `SELECT p.gender FROM ceph_tracings t
+       JOIN patients p ON p.id = t.patient_id
+      WHERE t.document_id = $1`,
+    [documentId],
   );
-  return rows[0] ? toTracing({ ...rows[0], aspect }) : null;
+  const [{ rows: tracings }, norms] = await Promise.all([
+    getPool().query(`SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE document_id = $1`, [documentId]),
+    referenceNorms(rows[0]?.gender ?? null),
+  ]);
+  return tracings[0] ? toTracing({ ...tracings[0], aspect, norms }) : null;
+}
+
+/** جنس صاحب الصورة — تختاره الشاشة به معيارها كما يختاره الخادم. */
+export async function patientSexForDocument(documentId: number): Promise<string | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ gender: string }>(
+    `SELECT p.gender FROM patient_documents d
+       JOIN patients p ON p.id = d.patient_id
+      WHERE d.id = $1`,
+    [documentId],
+  );
+  return rows[0]?.gender ?? null;
 }
 
 export async function listPatientTracings(patientId: number): Promise<CephTracing[]> {
   await ensureSchema();
-  const { rows } = await getPool().query(
-    `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE patient_id = $1
-      ORDER BY traced_at DESC`,
-    [patientId],
-  );
-  return rows.map((row) => toTracing(row));
+  const [{ rows }, norms] = await Promise.all([
+    getPool().query(
+      `SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE patient_id = $1
+        ORDER BY traced_at DESC`,
+      [patientId],
+    ),
+    referenceNorms(),
+  ]);
+  return rows.map((row) => toTracing({ ...row, norms }));
 }
 
 /**
