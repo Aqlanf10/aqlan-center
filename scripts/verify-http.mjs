@@ -55,7 +55,8 @@ try {
   console.log(`${checks} HTTP checks passed.`);
 }catch(e){console.error(logs);throw e;}finally{
   if(server&&server.exitCode===null){server.kill();await Promise.race([once(server,'exit'),new Promise(r=>setTimeout(r,5000))]);}
-  await db.getPool().end();await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);await admin.end();
+  // Normal DROP waits for closing pool connections without killing them.
+  await db.getPool().end();await admin.query(`DROP DATABASE IF EXISTS ${name}`);await admin.end();
   if(!resolve(directory).startsWith(resolve(tmpdir())+sep))throw Error('Unsafe test path');
   await rm(directory,{recursive:true,force:true});
 }

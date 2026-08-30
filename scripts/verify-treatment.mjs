@@ -87,5 +87,6 @@ try {
   console.log(`${checks} treatment checks passed.`);
   if(process.env.KEEP_TEST_DB==='1')console.log(`TEST_DATABASE=${url}; PATIENT_ID=${patient.id}; VISIT_ID=${other.id}`);
 } finally {
-  await db.getPool().end();if(process.env.KEEP_TEST_DB!=='1')await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);await admin.end();
+  // Normal DROP waits for closing pool connections without killing them.
+  await db.getPool().end();if(process.env.KEEP_TEST_DB!=='1')await admin.query(`DROP DATABASE ${name}`);await admin.end();
 }

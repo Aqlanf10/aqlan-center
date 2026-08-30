@@ -83,7 +83,8 @@ try {
   console.log(`${checks} recovery checks passed.`);
 } finally {
   await full?.end();await origin?.end();await restored?.end();if(db)await db.getPool().end();
-  for(const name of names)await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+  // Do not forcibly terminate connections while pool.end() sockets are closing.
+  for(const name of names)await admin.query(`DROP DATABASE IF EXISTS ${name}`);
   await admin.end();
   if(!resolve(stage).startsWith(base+sep))throw new Error('Unsafe temporary directory');
   await rm(stage,{recursive:true,force:true});

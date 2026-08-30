@@ -83,6 +83,8 @@ try {
 } finally {
   if (closer) { await closer.query("ROLLBACK").catch(() => {}); await closer.end(); }
   await db.getPool().end();
-  await admin.query(`DROP DATABASE ${temporary} WITH (FORCE)`);
+  // Let PostgreSQL wait for pool sockets to close; FORCE can kill a closing
+  // idle connection and emit an unhandled pool error after every check passed.
+  await admin.query(`DROP DATABASE ${temporary}`);
   await admin.end();
 }
