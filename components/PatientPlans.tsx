@@ -23,7 +23,7 @@ import { clinicDateString } from "@/lib/schedule";
  * وبلا خطة كان الجواب اجتهادًا يختلف بين موظفة وأخرى.
  */
 
-interface Service { id: number; name: string; category: string | null; priceMinor: number }
+interface Service { id: number; name: string; category: string | null; priceMinor: number; priceConfigured: boolean }
 
 interface PlanItem {
   id: number; serviceName: string; toothCode: number | null; surfaces: string | null;
@@ -473,14 +473,14 @@ function PlanItems({ plan, base, onChanged, onError }: {
       const payload = await response.json();
       const list = (payload.services ?? payload) as Service[];
       setServices(list);
-      setServiceId((current) => current ?? list[0]?.id ?? null);
+      setServiceId((current) => list.some(service => service.id === current && service.priceConfigured) ? current : null);
     })();
   }, [locked]);
 
   const chosen = services.find((service) => service.id === serviceId) ?? null;
 
   const add = async () => {
-    if (!serviceId || busy) return;
+    if (!serviceId || !chosen?.priceConfigured || busy) return;
     setBusy(true);
     onError(null);
     try {
@@ -577,7 +577,7 @@ function PlanItems({ plan, base, onChanged, onError }: {
               aria-label="أسطح البند" dir="ltr" placeholder="MO"
               className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs" />
           </label>
-          <button onClick={() => void add()} disabled={busy || !serviceId}
+          <button onClick={() => void add()} disabled={busy || !chosen?.priceConfigured}
             className="rounded-lg bg-navy-800 px-3 py-1.5 text-xs font-extrabold text-white disabled:opacity-40">
             + أضف
           </button>
