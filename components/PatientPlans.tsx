@@ -15,6 +15,7 @@ import { useSession } from './SessionProvider';
 import { useSetting } from "./SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import { canHandleMoney } from "@/lib/roles";
 
 /**
  * خطط علاج المريض.
@@ -23,7 +24,7 @@ import { clinicDateString } from "@/lib/schedule";
  * وبلا خطة كان الجواب اجتهادًا يختلف بين موظفة وأخرى.
  */
 
-interface Service { id: number; name: string; category: string | null; priceMinor: number }
+interface Service { id: number; name: string; category: string | null; priceMinor: number; priceConfigured: boolean }
 
 interface PlanItem {
   id: number; serviceName: string; toothCode: number | null; surfaces: string | null;
@@ -49,6 +50,7 @@ interface Plan {
 
 export function PatientPlans({ patientId }: { patientId: number }) {
   const session=useSession();
+  const canManageStatus = canHandleMoney(session?.role);
   const baseSetting = useSetting("finance.base_currency");
   const fallback: Currency = isCurrency(baseSetting) ? baseSetting : "YER";
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -239,7 +241,7 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                 * أن يفتح لها البرنامج بابًا من هنا. والمسوّدة أولى بالمنع: ما لم
                 * يوافق المريض بعد ليس اتفاقًا يُقبض عليه.
                 */}
-              {session?.role!=='doctor' && plan.status === "active" && plan.installments.length > 0 ? (
+              {canManageStatus && plan.status === "active" && plan.installments.length > 0 ? (
                 payFor === plan.id ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                     <div className="mb-2 flex flex-wrap gap-2">
@@ -315,7 +317,7 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                   <p className="flex-1 text-[11px] text-slate-500">
                     تُفوتَر هذه الخطة بزياراتها — والمال في تبويب «الحساب».
                   </p>
-                  <button
+                  {canManageStatus ? <button
                     onClick={async () => {
                       await fetch(`/api/plans/${plan.id}`, {
                         method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -325,7 +327,7 @@ export function PatientPlans({ patientId }: { patientId: number }) {
                     }}
                     className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-600">
                     إنهاء الخطة
-                  </button>
+                  </button> : <p className="text-[11px] text-slate-500">إنهاء الخطة للإدارة والاستقبال.</p>}
                 </div>
               ) : null}
 
@@ -473,14 +475,14 @@ function PlanItems({ plan, base, onChanged, onError }: {
       const payload = await response.json();
       const list = (payload.services ?? payload) as Service[];
       setServices(list);
-      setServiceId((current) => current ?? list[0]?.id ?? null);
+      setServiceId((current) => list.some(service => service.id === current && service.priceConfigured) ? current : null);
     })();
   }, [locked]);
 
   const chosen = services.find((service) => service.id === serviceId) ?? null;
 
   const add = async () => {
-    if (!serviceId || busy) return;
+    if (!serviceId || !chosen?.priceConfigured || busy) return;
     setBusy(true);
     onError(null);
     try {
@@ -577,7 +579,7 @@ function PlanItems({ plan, base, onChanged, onError }: {
               aria-label="أسطح البند" dir="ltr" placeholder="MO"
               className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs" />
           </label>
-          <button onClick={() => void add()} disabled={busy || !serviceId}
+          <button onClick={() => void add()} disabled={busy || !chosen?.priceConfigured}
             className="rounded-lg bg-navy-800 px-3 py-1.5 text-xs font-extrabold text-white disabled:opacity-40">
             + أضف
           </button>

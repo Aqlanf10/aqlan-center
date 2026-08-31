@@ -24,6 +24,7 @@ interface Service {
 
 export default function ServicesPage() {
   const session=useSession();
+  const canEdit = session?.role === 'admin';
   const baseSetting = useSetting("finance.base_currency");
   const base: Currency = isCurrency(baseSetting) ? baseSetting : "YER";
 
@@ -103,8 +104,9 @@ export default function ServicesPage() {
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
       ) : null}
 
-      {session?.role==='admin'&&<CatalogSetup services={services} base={base} onChanged={()=>void load()}/>}
-      <form onSubmit={add} className="mb-5 rounded-2xl border border-slate-200 bg-white p-4">
+      {canEdit&&<CatalogSetup services={services} base={base} onChanged={()=>void load()}/>}
+      {!canEdit && <p className="mb-4 text-sm text-slate-600">قائمة الأسعار للقراءة فقط. تعديل الأعمال والأسعار للمدير.</p>}
+      {canEdit && <form onSubmit={add} className="mb-5 rounded-2xl border border-slate-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-bold">خدمة جديدة</h2>
         <div className="flex flex-wrap gap-2">
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم الخدمة"
@@ -124,7 +126,7 @@ export default function ServicesPage() {
             أضف
           </button>
         </div>
-      </form>
+      </form>}
 
       {loading ? (
         <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">جارٍ التحميل…</p>
@@ -141,7 +143,7 @@ export default function ServicesPage() {
                 <li key={service.id} className={`rounded-2xl border p-3 ${service.isActive ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-60"}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="min-w-[8rem] flex-1 truncate text-sm font-extrabold">{service.name}</span>
-                    {editingId === service.id ? (
+                    {canEdit && editingId === service.id ? (
                       <>
                         <input value={editPrice} onChange={(e) => setEditPrice(e.target.value)}
                           inputMode="decimal" dir="ltr" autoFocus
@@ -167,6 +169,7 @@ export default function ServicesPage() {
                     ) : (
                       <>
                         <span className="text-sm font-bold">{service.priceConfigured ? formatMoney(service.priceMinor, base) : "لم يُحدد السعر"}</span>
+                        {canEdit && <>
                         <button
                           onClick={() => { setEditingId(service.id); setEditPrice(formatAmount(service.priceMinor, base).replace(/,/g, "")); }}
                           className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-navy-800">
@@ -182,6 +185,7 @@ export default function ServicesPage() {
                           className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-500 disabled:opacity-40">
                           {service.isActive ? "إيقاف" : "تفعيل"}
                         </button>
+                        </>}
                       </>
                     )}
                   </div>

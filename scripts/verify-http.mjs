@@ -43,6 +43,10 @@ try {
   check('cross-site mutation rejected',(await request('/api/services/catalog',a,{action:'import'},{origin:'https://untrusted.example','sec-fetch-site':'cross-site'})).status===403);
   check('admin imports catalog',(await request('/api/services/catalog',a,{action:'import'},{origin:base})).status===200);
   const catalog=await (await request('/api/clinical/catalog',d)).json();check('no commission fields in clinical catalog',catalog.doctors.every(p=>Object.keys(p).every(k=>['id','name'].includes(k))));
+  check('reception cannot create individual service',(await request('/api/services',reception,{name:'Forbidden test service',price:'100'})).status===403);
+  check('doctor cannot create individual service',(await request('/api/services',d,{name:'Forbidden test service',price:'100'})).status===403);
+  const edit=await fetch(base+`/api/services/${catalog.services[0].id}`,{method:'PATCH',headers:{cookie:reception,'content-type':'application/json'},body:JSON.stringify({price:'1'})});
+  check('reception cannot edit individual service price',edit.status===403);
   const security=await request('/login');check('security headers present',security.headers.get('x-content-type-options')==='nosniff'&&security.headers.get('content-security-policy')?.includes("frame-ancestors 'self'"));
   check('doctor cannot export database',(await request('/api/backup/full',d)).status===403);
   const backup=await request('/api/backup/full',a);check('admin full backup streams successfully',backup.ok&&(await backup.arrayBuffer()).byteLength>100);
