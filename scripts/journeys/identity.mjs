@@ -57,13 +57,13 @@ await page.getByRole("button", { name: "وصل", exact: true }).click();
 await page.waitForTimeout(2200);
 
 // ٣) يُنادى ويُوثَّق ويُوقَّع — بلا ملفٍّ ثانٍ
-await callAndSeat(page, name);
+await callAndSeat(page, name, BASE);
 await openChart(page, name);
 const visitScreen = await page.locator("body").innerText();
 console.log("4) شاشة الزيارة:", /غير مربوطة بملف/.test(visitScreen) ? "حذّرت بلا داعٍ ✗" : "لا تحذير — مربوطة ✓");
 
-await type(page.getByLabel("التشخيص"), "كشف");
-await type(page.getByLabel("ما نُفّذ"), "كشف");
+await type(page.getByLabel("التشخيص", { exact: true }), "كشف");
+await type(page.getByLabel("ما نُفّذ", { exact: true }), "كشف");
 const pick = async (needle) => {
   const value = await page.getByLabel("أضف إجراءً").evaluate((select, text) =>
     [...select.options].find((o) => o.textContent.includes(text))?.value ?? "", needle);
@@ -72,7 +72,16 @@ const pick = async (needle) => {
 await pick("كشف");
 await page.waitForTimeout(1200);
 await page.getByRole("button", { name: /وقّع الزيارة/ }).click();
-await page.waitForURL(BASE + "/", { timeout: 25000 });
+// الرحلة كانت تنتظر انتقالًا إلى اللوحة، والشاشة صارت تبقى على الزيارة بعد
+// التوقيع. فانتظارُ الانتقال يفحص عادةً قديمة لا الميزةَ نفسها؛ والميزة هي أن
+// الزيارة صارت موقَّعة. وانتظارٌ يقول سببه عند سقوطه: «انتهت المهلة» وحدها تُرسل
+// من يقرأها إلى الشيفرة يفتّش، والشاشة نفسها تحمل الجواب مكتوبًا.
+const sealed = await page.getByText("زيارة موقَّعة").first()
+  .waitFor({ state: "visible", timeout: 25000 }).then(() => true, () => false);
+if (!sealed) {
+  const screen = (await page.locator("body").innerText()).replace(/\s+/g, " ").slice(0, 300);
+  throw new Error(`التوقيع لم يُختم — ما على الشاشة: ${screen}`);
+}
 await page.waitForTimeout(2500);
 
 await page.goto(BASE + "/patients", { waitUntil: "networkidle" });
@@ -90,7 +99,7 @@ await type(page.getByLabel("اسم المريض"), name);
 await page.waitForTimeout(1800);
 await page.getByRole("button", { name: "وصل", exact: true }).click();  // بلا اختيار ملف
 await page.waitForTimeout(2200);
-await callAndSeat(page, name);
+await callAndSeat(page, name, BASE);
 await openChart(page, name);
 const unlinked = await page.locator("body").innerText();
 console.log("6) زيارةٌ بلا ربط:", /غير مربوطة بملف/.test(unlinked) ? "حُذِّرت ✓" : "مرّت صامتة ✗");
