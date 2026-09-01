@@ -15,8 +15,46 @@ const WAITING = 'section[aria-label="قائمة الانتظار"]';
 const CALLED = 'section[aria-label="نُودي عليهم"]';
 const CHAIRS = 'section[aria-label="الكراسي"]';
 
+/**
+ * الكراسي المشغولة بمرضى هذه الرحلة — لتُخلى مهما انتهت.
+ *
+ * كان كلّ ملفٍ يتذكّر أن يُخلي كرسيه في سطره الأخير: فنسي ملفّان أصلًا، وسقط ثالثٌ
+ * قبل بلوغ سطره. وكرسيان فقط في المركز، فتشغيلان فاشلان يملآن اللوحة ولا تعمل رحلةٌ
+ * بعدهما — وتُقرأ نتيجتها «كل الكراسي مشغولة» كأنها عيبٌ في البرنامج لا أثرٌ متروك.
+ * **ومجموعة فحوصٍ لا تُعاد مجموعةٌ يُكفّ عن إعادتها** ثم يُكفّ عن تصديقها.
+ *
+ * فصار التنظيف من `callAndSeat` نفسها: من أَجلَس أَخلى — في النجاح بالسطر الأخير،
+ * وفي السقوط بالحارس أدناه، والمتصفّح حينها ما يزال مفتوحًا.
+ */
+const seated = new Set();
+let guarded = false;
+
+const guardExit = (page, base) => {
+  if (guarded) return;
+  guarded = true;
+  const clear = async () => {
+    for (const name of [...seated]) {
+      // مهلةٌ قصيرة: الرحلة سقطت أصلًا، وتنظيفٌ يتعلّق يخفي سبب السقوط.
+      await Promise.race([
+        releaseChair(page, name, base).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 15000)),
+      ]);
+    }
+    seated.clear();
+  };
+  for (const event of ["uncaughtException", "unhandledRejection"]) {
+    process.on(event, async (error) => {
+      await clear();
+      console.error(error);
+      process.exit(1);
+    });
+  }
+};
+
 /** نداء المريض إلى أوّل كرسيٍّ شاغر، ثم إجلاسه عليه. */
-export async function callAndSeat(page, name) {
+export async function callAndSeat(page, name, base = "http://127.0.0.1:3000") {
+  guardExit(page, base);
+
   const row = page.locator(`${WAITING} li`).filter({ hasText: name });
   await row.waitFor({ state: "visible", timeout: 20000 });
 
@@ -34,6 +72,7 @@ export async function callAndSeat(page, name) {
   await page.locator(`${CALLED} li`).filter({ hasText: name })
     .getByRole("button", { name: "دخل الكرسي" })
     .click({ timeout: 20000 });
+  seated.add(name);
   await page.waitForTimeout(1500);
 }
 
@@ -55,6 +94,7 @@ export async function openChart(page, name) {
  * والرحلة التي لا تنظّف أثرها تعمل مرّةً وتُقرأ نتيجتها مرّتين.
  */
 export async function releaseChair(page, name, base) {
+  seated.delete(name);
   await page.goto(base + "/", { waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
   const card = page.locator(`${CHAIRS} > div > div`).filter({ hasText: name });

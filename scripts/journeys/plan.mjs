@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { loadChromium, executablePath } from "./playwright.mjs";
 import { login } from "./login.mjs";
-import { callAndSeat, openChart } from "./chair.mjs";
+import { callAndSeat, openChart, releaseChair } from "./chair.mjs";
 import { createPatient } from "./patient.mjs";
 
 /**
@@ -81,11 +81,11 @@ await type(page.getByLabel("اسم المريض"), name);
 await type(page.getByLabel("هاتف المريض"), phone);
 await page.getByRole("button", { name: "وصل", exact: true }).click();
 await page.waitForTimeout(2000);
-await callAndSeat(page, name);
+await callAndSeat(page, name, BASE);
 await openChart(page, name);
 
-await type(page.getByLabel("التشخيص"), "تسوّس الرحى الأولى");
-await type(page.getByLabel("ما نُفّذ"), "حشوة ضوئية");
+await type(page.getByLabel("التشخيص", { exact: true }), "تسوّس الرحى الأولى");
+await type(page.getByLabel("ما نُفّذ", { exact: true }), "حشوة ضوئية");
 const pickProc = async (needle) => {
   const value = await page.getByLabel("أضف إجراءً").evaluate((select, text) =>
     [...select.options].find((o) => o.textContent.includes(text))?.value ?? "", needle);
@@ -135,4 +135,7 @@ console.log("   وجدول أقساطها:", /جدول الأقساط/.test(fina
 console.log("   والسريرية بلا «تحصيل قسط»:",
   (await page.getByRole("button", { name: "تحصيل قسط" }).count()) === 1 ? "✓" : "ظهر لكليهما");
 await page.screenshot({ path: OUT + "/plan-7-financial.png", fullPage: true });
+// الكرسي يُخلى قبل إغلاق المتصفّح: الرحلة التي لا تنظّف أثرها تعمل مرّةً
+// وتُقرأ نتيجتها مرّتين — والثانية «كل الكراسي مشغولة».
+await releaseChair(page, name, BASE);
 await b.close();
