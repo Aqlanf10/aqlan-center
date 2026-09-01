@@ -6613,6 +6613,48 @@ export async function listMovements(itemId: number, limit = 100): Promise<Invent
   }));
 }
 
+export interface VisitMaterial {
+  id: number;
+  itemId: number;
+  itemName: string;
+  unit: string;
+  kind: MovementKind;
+  qty: number;
+  reason: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+/**
+ * ما صُرف على زيارةٍ بعينها — ومعه ما رُدّ منه.
+ *
+ * والمردود يُعرض ولا يُطرح صامتًا: «صُرفت علبتان ورُدّت واحدة» تُقرأ وتُراجَع،
+ * و«صُرفت واحدة» تخفي أن اثنتين خرجتا من المخزن يومًا. وهو نفس سبب منع حذف الحركات.
+ */
+export async function listVisitMaterials(visitId: number): Promise<VisitMaterial[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.item_id, i.name AS item_name, i.unit, m.kind, m.qty,
+            m.reason, m.created_by, m.created_at
+       FROM inventory_movements m
+       JOIN inventory_items i ON i.id = m.item_id
+      WHERE m.visit_id = $1
+      ORDER BY m.id`,
+    [visitId],
+  );
+  return rows.map((row) => ({
+    id: row.id as number,
+    itemId: row.item_id as number,
+    itemName: row.item_name as string,
+    unit: row.unit as string,
+    kind: row.kind as MovementKind,
+    qty: Number(row.qty),
+    reason: (row.reason as string | null) ?? null,
+    createdBy: row.created_by as string,
+    createdAt: (row.created_at as Date).toISOString(),
+  }));
+}
+
 /** حركاتُ بندٍ بشكلها المجرّد — للاشتقاق في الاختبارات وفي الفحص. */
 export async function inventoryBalance(itemId: number): Promise<number> {
   const movements = await listMovements(itemId, 500);

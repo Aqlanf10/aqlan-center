@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveBalance, expiryState, filterItems, formatQty, inventorySummary,
-  isItemCategory, isMovementKind, nearestExpiry, needsAttention, signedQty,
-  sortByNeed, stockStatus, validateMovement,
+  isItemCategory, isMovementKind, nearestExpiry, needsAttention, netMaterials,
+  signedQty, sortByNeed, stockStatus, validateMovement,
 } from "../lib/inventory";
 
 describe("أثر الحركة على الرصيد", () => {
@@ -202,5 +202,42 @@ describe("ما تعرضه الشاشة", () => {
 
   it("والأرقام تُحسب من البنود نفسها ولا تعدّ الموقوفة", () => {
     expect(inventorySummary(items, today)).toEqual({ out: 1, low: 1, expiring: 1 });
+  });
+});
+
+describe("صافي مواد الزيارة", () => {
+  const material = (over: Partial<Parameters<typeof netMaterials>[0][number]>) => ({
+    itemId: 1, itemName: "قفازات", unit: "علبة", kind: "out" as const, qty: 1, ...over,
+  });
+
+  it("المصروف يُجمع لبندٍ بندٍ", () => {
+    expect(netMaterials([material({ qty: 2 }), material({ qty: 3 })]))
+      .toEqual([{ itemId: 1, name: "قفازات", unit: "علبة", used: 5 }]);
+  });
+
+  it("والمردود يُطرح من الصافي — ولا تُحذف حركته", () => {
+    expect(netMaterials([material({ qty: 2 }), material({ kind: "in", qty: 1 })])[0].used).toBe(1);
+  });
+
+  it("وبندٌ رُدّ كلّه يبقى بصفرٍ لا يختفي — صرفٌ رُدّ واقعةٌ حدثت", () => {
+    const totals = netMaterials([material({ qty: 2 }), material({ kind: "in", qty: 2 })]);
+    expect(totals).toHaveLength(1);
+    expect(totals[0].used).toBe(0);
+  });
+
+  it("والبنود تُفصل بعضها عن بعض", () => {
+    const totals = netMaterials([
+      material({ itemId: 1, qty: 2 }),
+      material({ itemId: 2, itemName: "بنج", unit: "أمبولة", qty: 1 }),
+    ]);
+    expect(totals.map((one) => [one.itemId, one.used])).toEqual([[1, 2], [2, 1]]);
+  });
+
+  it("والتسوية لا تُحسب استهلاكًا — هي تصحيح جردٍ لا صرفٌ على مريض", () => {
+    expect(netMaterials([material({ qty: 2 }), material({ kind: "adjust", qty: -5 })])[0].used).toBe(2);
+  });
+
+  it("وزيارةٌ بلا مواد صافيها فارغ", () => {
+    expect(netMaterials([])).toEqual([]);
   });
 });

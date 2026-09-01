@@ -258,3 +258,46 @@ export function inventorySummary(items: ItemLike[], today: string): {
       item.nearestExpiry ? expiryState(item.nearestExpiry, today) !== "ok" : false).length,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * مواد الزيارة
+ * ------------------------------------------------------------------ */
+
+export interface VisitMaterialLike {
+  itemId: number;
+  itemName: string;
+  unit: string;
+  kind: MovementKind;
+  qty: number;
+}
+
+export interface MaterialTotal {
+  itemId: number;
+  name: string;
+  unit: string;
+  /** ما خرج فعلًا: المصروف ناقص المردود. */
+  used: number;
+}
+
+/**
+ * صافي ما استُهلك على زيارة.
+ *
+ * والحركات تُعرض كلّها ولا تُطرح صامتًا: «صُرفت علبتان ورُدّت واحدة» تُقرأ وتُراجَع،
+ * و«صُرفت واحدة» تخفي أن اثنتين خرجتا من المخزن يومًا. لكن السؤال «كم استُهلك على
+ * هذه الحالة؟» يريد الصافي — فيُحسب هنا، ويبقى السجلّ كاملًا فوقه.
+ *
+ * ويبقى البند في الحساب ولو صار صافيه صفرًا: صرفٌ رُدّ كلّه واقعةٌ حدثت، وحذفها من
+ * الصافي يجعل زيارتين مختلفتين تبدوان سواء.
+ */
+export function netMaterials(materials: VisitMaterialLike[]): MaterialTotal[] {
+  const totals = new Map<number, MaterialTotal>();
+  for (const material of materials) {
+    const row = totals.get(material.itemId)
+      ?? { itemId: material.itemId, name: material.itemName, unit: material.unit, used: 0 };
+    // التسوية لا تُنسب إلى زيارة — وإن وقعت فهي تصحيح جردٍ لا استهلاك مريض.
+    if (material.kind === "out") row.used += Math.abs(material.qty);
+    else if (material.kind === "in") row.used -= Math.abs(material.qty);
+    totals.set(material.itemId, row);
+  }
+  return [...totals.values()];
+}

@@ -203,6 +203,44 @@ try {
   check("وصُرف كل ما دخل فلا صلاحيةَ تُعرض", (await nearestOf()) === null, String(await nearestOf()));
   check("وتوافق القاعدةُ التطبيقَ عند الفراغ", (await nearestOf()) === (await jsNearest()));
 
+  console.log("\n  ── الصرف يُنسب إلى زيارة ──");
+
+  const { rows: visitRows } = await db.getPool().query(
+    `INSERT INTO visits (patient_name, status) VALUES ('مريض الفحص', 'in_chair') RETURNING id`,
+  );
+  const visitId = visitRows[0].id;
+
+  const linked = await db.createInventoryItem({
+    name: "قفازات الزيارة", category: "consumable", unit: "علبة",
+    minLevel: 0, note: null, actor: "فحص",
+  });
+  await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 10, expiryDate: null,
+    reason: null, visitId: null, patientId: null, actor: "فحص",
+  });
+  await db.recordMovement({
+    itemId: linked.id, kind: "out", qty: 3, expiryDate: null,
+    reason: null, visitId, patientId: null, actor: "طبيب",
+  });
+
+  const onVisit = await db.listVisitMaterials(visitId);
+  check("ما صُرف على الزيارة يُقرأ منها", onVisit.length === 1, `${onVisit.length}`);
+  check("ومعه اسم البند ووحدته — لا رقمٌ مجرّد",
+    onVisit[0]?.itemName === "قفازات الزيارة" && onVisit[0]?.unit === "علبة",
+    `${onVisit[0]?.itemName} · ${onVisit[0]?.unit}`);
+  check("ونزل من رصيد المخزن نفسه", (await db.inventoryBalance(linked.id)) === 7);
+  check("ولا يظهر على زيارةٍ أخرى", (await db.listVisitMaterials(visitId + 999)).length === 0);
+
+  // الردّ حركةُ إدخالٍ لا حذفًا: الرصيد يعود، وأن علبةً خرجت ورجعت يبقى مقروءًا.
+  await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 1, expiryDate: null,
+    reason: `ردُّ ما لم يُستعمل — زيارة ${visitId}`, visitId, patientId: null, actor: "طبيب",
+  });
+  const afterReturn = await db.listVisitMaterials(visitId);
+  check("والردُّ يُسجَّل ولا يُمحى الصرف", afterReturn.length === 2,
+    afterReturn.map((one) => one.kind).join("+"));
+  check("والرصيد عاد بمقداره", (await db.inventoryBalance(linked.id)) === 8);
+
   console.log("\n  ── تعديل البند ──");
 
   const renamed = await db.updateInventoryItem({ id: datedId, minLevel: 3, note: "من المورّد س" });

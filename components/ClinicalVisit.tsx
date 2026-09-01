@@ -11,6 +11,7 @@ import { Icon } from "./Icon";
 import { ServicePicker, ToothSelect, type CatalogService } from './ClinicSelectors';
 import { QUICK_NOTES } from '@/lib/clinicCatalog';
 import { PHASE_LABEL, type OrthoPhase } from "@/lib/ortho";
+import { VisitMaterials } from "./VisitMaterials";
 
 const orthoPhaseLabel = (phase: string): string =>
   PHASE_LABEL[phase as OrthoPhase] ?? phase;
@@ -304,6 +305,10 @@ export function ClinicalVisit({ visitId, onSigned }: {
           </div>}
         </> : null}
       </section>
+
+      {/* المواد بعد الإجراءات وقبل التوقيع: هذا ترتيب العمل نفسه — يُنفَّذ العمل،
+          وتُستهلك مادّته، ثم يُوقَّع على الاثنين. */}
+      <VisitMaterials visitId={visit.id} patientId={visit.patientId} canWrite={!signed && canWrite} />
 
       {signed ? (
         <section aria-label="الملاحق">
