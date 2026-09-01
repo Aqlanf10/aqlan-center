@@ -5513,6 +5513,16 @@ export async function listPatientDocuments(
 }
 
 /** الوصف مع مفتاح التخزين — للتنزيل وحده، ولا يخرج المفتاح إلى المتصفّح أبدًا. */
+/** مستندٌ واحد بعينه — للتقرير الذي يُطبع عنه. */
+export async function getPatientDocument(id: number): Promise<PatientDocument | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<DocumentRow>(
+    `SELECT ${DOCUMENT_COLUMNS} FROM patient_documents WHERE id = $1 AND removed_at IS NULL`,
+    [id],
+  );
+  return rows[0] ? toDocument(rows[0]) : null;
+}
+
 export async function getDocumentForDownload(id: number): Promise<
   { document: PatientDocument; storageKey: string } | null
 > {

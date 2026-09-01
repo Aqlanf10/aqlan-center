@@ -445,6 +445,41 @@ export interface Measurement {
   analysis?: string;
 }
 
+/**
+ * الدرجة المعيارية — كم انحرافًا معياريًّا يبعد القياس عن متوسّطه.
+ *
+ * و«خارج المعيار» وحدها لا تكفي سريريًّا: قياسٌ يتجاوز حدَّه بعُشر درجة ليس كقياسٍ
+ * يتجاوزه بثلاثة انحرافات، والعلاج يختلف. فيُعطى بُعدُه رقمًا يُقارَن به غيرُه.
+ *
+ * والانحراف المذكور في معاييرنا (‎82±2‎) هو الانحراف المعياري المنشور، فيُقسَم عليه.
+ */
+export function zScore(value: number, norm: Norm | null): number | null {
+  if (!norm || !Number.isFinite(value) || !Number.isFinite(norm.mean)) return null;
+  if (!Number.isFinite(norm.tolerance) || norm.tolerance <= 0) return null;
+  return (value - norm.mean) / norm.tolerance;
+}
+
+export type Severity = "within" | "mild" | "marked";
+
+export const SEVERITY_LABEL: Record<Severity, Bilingual> = {
+  within: { ar: "داخل المدى المرجعي", en: "within the reference range" },
+  mild: { ar: "انحرافٌ بسيط", en: "mild deviation" },
+  marked: { ar: "انحرافٌ واضح", en: "marked deviation" },
+};
+
+/**
+ * تصنيف البُعد: داخل المدى (‎|Z| ≤ 1‎)، بسيط (‎1–2‎)، واضح (فوق ‎2‎).
+ *
+ * قراءةُ عرضٍ لا حكمٌ سريري — واللفظ محمولٌ في النصّ لا في اللون وحده، فمن يطبع
+ * التقرير بالأبيض والأسود يقرأ ما يقرأه من ينظر إلى الشاشة.
+ */
+export function severityOf(z: number | null): Severity | null {
+  if (z === null || !Number.isFinite(z)) return null;
+  const away = Math.abs(z);
+  if (away <= 1) return "within";
+  return away <= 2 ? "mild" : "marked";
+}
+
 export function verdictFor(value: number, norm: Norm): Verdict {
   if (value < norm.mean - norm.tolerance) return "low";
   if (value > norm.mean + norm.tolerance) return "high";
@@ -511,9 +546,51 @@ export function skeletalClass(anb: number): SkeletalClass {
   return "I";
 }
 
+/**
+ * النمط العمودي — يُقرأ من انحدار الفك السفلي.
+ *
+ * والصنف الهيكلي وحده نصف القراءة: مريضان بـANB واحدة أحدهما وجهه طويل مفتوح
+ * العضّة والآخر قصيرٌ عميقها، وعلاجهما مختلف. فيُقرأ الانحدار معه.
+ */
+export type VerticalPattern = "horizontal" | "balanced" | "vertical";
+
+export const VERTICAL_LABEL: Record<VerticalPattern, Bilingual> = {
+  horizontal: { ar: "نمطٌ أفقيّ — وجهٌ قصير وزاويةٌ مغلقة", en: "Horizontal pattern — short face, closed angle" },
+  balanced: { ar: "نمطٌ متوازن", en: "Balanced pattern" },
+  vertical: { ar: "نمطٌ رأسيّ — وجهٌ طويل وزاويةٌ مفتوحة", en: "Vertical pattern — long face, open angle" },
+};
+
+/**
+ * ويُقرأ من قياسين لا من واحد.
+ *
+ * FMA وSN-GoGn يقيسان الانحدار من مرجعين مختلفين، واتفاقهما أوثق من انفراد
+ * أحدهما. فإن اختلفا لم يُحسم النمط — وقولُ «لم يُحسم» أصدق من ترجيحٍ بلا سبب.
+ */
+export function verticalPattern(
+  fma: number | null, snGoGn: number | null, norms: Record<string, Norm>,
+): VerticalPattern | null {
+  const readings = [
+    fma !== null ? severityOfSide(fma, norms.FMA) : null,
+    snGoGn !== null ? severityOfSide(snGoGn, norms.SN_GoGn) : null,
+  ].filter((side): side is -1 | 0 | 1 => side !== null);
+  if (readings.length === 0) return null;
+  if (readings.every((side) => side > 0)) return "vertical";
+  if (readings.every((side) => side < 0)) return "horizontal";
+  if (readings.every((side) => side === 0)) return "balanced";
+  return null;
+}
+
+const severityOfSide = (value: number, norm: Norm | undefined): -1 | 0 | 1 | null => {
+  const z = zScore(value, norm ?? null);
+  if (z === null) return null;
+  return z > 1 ? 1 : z < -1 ? -1 : 0;
+};
+
 export interface Analysis {
   measurements: Measurement[];
   skeletal: { anb: number; klass: SkeletalClass } | null;
+  /** النمط العمودي — أو `null` إن اختلف القياسان أو نقصا. */
+  vertical: VerticalPattern | null;
   /** ما نقص من النقاط المطلوبة — فيُقال للطبيب ما يُعلّمه ليكتمل التحليل. */
   missing: LandmarkCode[];
   /** القياسات الطولية معطّلة بلا معايرة — ويُقال ذلك لا يُسكت عنه. */
@@ -884,9 +961,12 @@ export function analyse(input: {
     }
   }
 
+  const valueOf = (key: string) => measurements.find((item) => item.key === key)?.value ?? null;
+
   return {
     measurements,
     skeletal: anb === null ? null : { anb, klass: skeletalClass(anb) },
+    vertical: verticalPattern(valueOf("FMA"), valueOf("SN-GoGn"), NORMS),
     missing,
     calibrated: Boolean(scale),
   };
@@ -941,3 +1021,50 @@ export const NORM_LABEL: Record<string, { name: string; unit: Unit; meaning: Bil
   E_LINE_UPPER: { name: "E-line · LS", unit: "mm", meaning: { ar: "الشفة العليا عن الخط الجمالي", en: "Upper lip to the aesthetic line" } },
   E_LINE_LOWER: { name: "E-line · LI", unit: "mm", meaning: { ar: "الشفة السفلى عن الخط الجمالي", en: "Lower lip to the aesthetic line" } },
 };
+
+
+/* ─────────────────────── المستويات المرجعية للرسم ─────────────────────── */
+
+export interface ReferenceLine {
+  key: string;
+  name: Bilingual;
+  from: TracedPoint;
+  to: TracedPoint;
+}
+
+/**
+ * الخطوط التي تُرسم على الصورة في التقرير.
+ *
+ * وهي **توصيل نقاطٍ لا تتبّعٌ تشريحي**: لا تُرسم حدود العظم ولا ظلّ الأنسجة الرخوة،
+ * بل المستويات التي تُبنى عليها الزوايا. والفرق يُقال في التقرير صراحةً — فادّعاء
+ * «تتبّعٍ كامل» على رسمٍ من ثمانية خطوط أكبر من الحقيقة.
+ *
+ * ولا يُرسم خطٌّ نقطتاه غير موضوعتين: خطٌّ ناقص يوحي بقياسٍ لم يُحسب.
+ */
+export function referenceLines(tracing: Tracing): ReferenceLine[] {
+  const { S, N, A, B, Po, Or, Go, Me, Pog, U1A, U1T, L1A, L1T, U6, L6, Pn, PogS, ANS, PNS } = tracing;
+  const mid = (first: TracedPoint, second: TracedPoint) =>
+    ({ x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 });
+
+  const lines: (ReferenceLine | null)[] = [
+    S && N ? { key: "SN", name: { ar: "قاعدة الجمجمة SN", en: "Cranial base SN" }, from: S, to: N } : null,
+    Po && Or ? { key: "FH", name: { ar: "مستوى فرانكفورت", en: "Frankfort horizontal" }, from: Po, to: Or } : null,
+    ANS && PNS ? { key: "PP", name: { ar: "مستوى الحنك", en: "Palatal plane" }, from: ANS, to: PNS } : null,
+    Go && Me ? { key: "MP", name: { ar: "مستوى الفك السفلي", en: "Mandibular plane" }, from: Go, to: Me } : null,
+    N && Pog ? { key: "FP", name: { ar: "المستوى الوجهي", en: "Facial plane" }, from: N, to: Pog } : null,
+    N && A ? { key: "NA", name: { ar: "خط NA", en: "NA line" }, from: N, to: A } : null,
+    N && B ? { key: "NB", name: { ar: "خط NB", en: "NB line" }, from: N, to: B } : null,
+    U1A && U1T ? { key: "U1", name: { ar: "محور القاطع العلوي", en: "Upper incisor axis" }, from: U1A, to: U1T } : null,
+    L1A && L1T ? { key: "L1", name: { ar: "محور القاطع السفلي", en: "Lower incisor axis" }, from: L1A, to: L1T } : null,
+    U1T && L1T && U6 && L6
+      ? { key: "OccP", name: { ar: "مستوى الإطباق الوظيفي", en: "Functional occlusal plane" },
+          from: mid(U6, L6), to: mid(U1T, L1T) } : null,
+    Pn && PogS ? { key: "E", name: { ar: "الخط الجمالي", en: "Aesthetic E-line" }, from: Pn, to: PogS } : null,
+  ];
+  return lines.filter((line): line is ReferenceLine => line !== null);
+}
+
+/** فرق القياس عن معياره — يُقرأ مع القيمة لا بدلها. */
+export function deviation(value: number, norm: Norm | null): number | null {
+  return norm ? value - norm.mean : null;
+}

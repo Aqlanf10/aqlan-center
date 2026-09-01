@@ -73,6 +73,7 @@ const T = {
     ar: "اختر رمز النقطة ثم اسحبها لتصحيحها · الأسهم تُزيحها بدقّة (مع Shift أسرع) · Ctrl+Z تراجع",
     en: "Select the landmark chip, then drag it to correct · arrows nudge finely (Shift for faster) · Ctrl+Z undo",
   },
+  report: { ar: "التقرير", en: "Report" },
   calibration: { ar: "المعايرة", en: "Calibration" },
   calibrateHint: {
     ar: "انقر طرفَي مسطرة الأشعة أو أيّ طولٍ معلوم على الصورة، ثم اكتب طوله الحقيقي بالمليمتر.",
@@ -403,6 +404,11 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
             className="rounded-lg border border-slate-500 px-3 py-1.5 text-xs font-bold text-slate-200">
             {lang === "ar" ? "EN" : "ع"}
           </button>
+          {/* التقرير يُفتح بلغة الشاشة نفسها — ومن يقرأ التحليل بالإنجليزية يطبعه بها. */}
+          <a href={`/print/ceph/${documentId}?lang=${lang}`} target="_blank" rel="noreferrer"
+            className="rounded-lg border border-slate-500 px-4 py-1.5 text-xs font-bold text-slate-200">
+            {say(T.report, lang)}
+          </a>
           {canWrite ? (
             <button onClick={() => void save()} disabled={saving || !dirty}
               className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-extrabold text-white disabled:opacity-40">

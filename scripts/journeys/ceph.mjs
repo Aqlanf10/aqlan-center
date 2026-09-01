@@ -349,6 +349,53 @@ console.log("    ولا تقرأ التتبّع:",
   guard.status === 403 ? `✓ — ${guard.body?.message ?? ""}` : `تقرأه ✗ (${guard.status})`);
 
 /*
+ * ١٠أ) التقرير — الورقة التي تخرج من الوحدة إلى يد إنسان.
+ *
+ * ولا يكفي أن تُفتح الصفحة: يُشترط أن تحمل ما يجعلها تقريرًا — اسم المركز، واسم
+ * المريضة ورقم ملفّها، والأرقام نفسها التي على الشاشة، وحدَّ المعايرة، والتنبيه
+ * بأنها تُقرأ مع الفحص. وصفحةٌ تُفتح فارغةً أسوأ من صفحةٍ لا تُفتح.
+ */
+const reportDoc = await page.evaluate(async () => {
+  const id = /\/patients\/(\d+)/.exec(location.pathname)?.[1];
+  const list = await (await fetch(`/api/patients/${id}/documents`)).json();
+  return list.documents?.[0]?.id ?? null;
+});
+const report = await (await b.newContext({ locale: "ar", storageState: await page.context().storageState() })).newPage();
+await report.goto(`${BASE}/print/ceph/${reportDoc}`, { waitUntil: "networkidle" });
+await report.waitForTimeout(2000);
+const paper = await report.locator("body").innerText();
+
+console.log("10أ) التقرير يُفتح:", /تقرير التحليل السيفالومتري/.test(paper) ? "✓" : "لم يُفتح ✗");
+console.log("    وعليه هوية المركز:", /عقلان/.test(paper) ? "✓" : "غائبة ✗");
+console.log("    واسم المريضة ورقم ملفّها:",
+  paper.includes(name) && /P-\d{5}/.test(paper) ? "✓" : "ناقص ✗");
+console.log("    والأرقام نفسها التي على الشاشة:",
+  new RegExp(`SNA[\\s\\S]{0,80}?${String(sna).replace(".", "\\.")}`).test(paper) ? `SNA ${sna}° ✓` : "لا تطابق ✗");
+console.log("    والتحاليل بأسمائها:",
+  ["Tweed", "Downs", "Wits", "Ricketts"].every((one) => paper.includes(one)) ? "✓" : "ناقصة ✗");
+console.log("    والدرجة المعيارية:", /Z\s-?\d/.test(paper) ? "✓" : "غائبة ✗");
+console.log("    والنمط العمودي:", /النمط العمودي/.test(paper) ? "✓" : "غائب ✗");
+console.log("    وحدّ المعايرة معلن:", /معايَرة/.test(paper) ? "✓" : "صامت ✗");
+console.log("    ويقول إنه ليس تتبّعًا تشريحيًّا:",
+  /ليس تتبّعٌ تشريحي|لا تتبّعٌ تشريحي/.test(paper) ? "✓" : "يدّعي أكثر ممّا فعل ✗");
+console.log("    وينبّه أنه يُقرأ مع الفحص:",
+  /يُقرأ مع الفحص السريري/.test(paper) ? "✓" : "بلا تنبيه ✗");
+console.log("    والمعالم مرسومة عليه:",
+  await report.locator(".ceph-mark").count() >= 15 ? "✓" : "ناقصة ✗");
+console.log("    والمستويات مرسومة:",
+  await report.locator(".ceph-overlay line").count() >= 6 ? "✓" : "ناقصة ✗");
+await report.screenshot({ path: OUT + "/ceph-7-report.png", fullPage: true });
+
+// وبالإنجليزية كذلك — ولا يبقى فيه عربية إلا اسم المريضة وهوية المركز.
+await report.goto(`${BASE}/print/ceph/${reportDoc}?lang=en`, { waitUntil: "networkidle" });
+await report.waitForTimeout(1500);
+const paperEn = await report.locator("body").innerText();
+console.log("    وبالإنجليزية:", /Cephalometric Analysis Report/.test(paperEn) ? "✓" : "لم يُترجم ✗");
+console.log("    واتجاهه LTR:",
+  (await report.locator("main").getAttribute("dir")) === "ltr" ? "✓" : "بقي RTL ✗");
+await report.screenshot({ path: OUT + "/ceph-8-report-en.png", fullPage: true });
+
+/*
  * ١١) المعيار يُعدَّل من الشاشة، فينقلب الحكم على الرقم نفسه.
  *
  * وهذا هو الفرق بين معيارٍ «في القاعدة» ومعيارٍ **قابل للتعديل**: أن يملكه المالك
