@@ -88,6 +88,10 @@ export default function InventoryPage() {
   const [openItem, setOpenItem] = useState<number | null>(null);
   const [movements, setMovements] = useState<Movement[]>([]);
   const inFlight = useRef(false);
+  // أيُّ بندٍ تخصّه الحركات المعروضة الآن. ومن يفتح بندًا ثم يفتح آخر قبل وصول
+  // الأول يرى حركات الأول تحت اسم الثاني — وسجلُّ صرفٍ منسوبٌ إلى بندٍ لم يقع
+  // عليه أسوأ من لا سجلّ: يُقرأ ويُبنى عليه.
+  const movementsFor = useRef<number | null>(null);
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
@@ -106,13 +110,37 @@ export default function InventoryPage() {
 
   useEffect(() => { void load(true); }, [load]);
 
+  /*
+   * الشاشة تُفتح صباحًا وتبقى مفتوحة: الاستقبال على جهازٍ والطبيب على آخر. وما
+   * يصرفه أحدهما لا يظهر عند الثاني إن لم تُحدَّث الشاشة إلا بفعلٍ منه هو — فيُخطَّط
+   * ليومٍ كامل على رصيدٍ استُهلك، وهو بعينه العطل الذي بُنيت الوحدة لمنعه.
+   *
+   * ودقيقة تكفي: هذه أرقام مخزون لا نداءُ مريضٍ ينتظر. ومعها تحديثٌ عند العودة إلى
+   * اللسان — من غاب ثم عاد أولى الناس برقمٍ جديد، ولا يُنتظر به دورُ المؤقّت.
+   */
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") void load(false); };
+    const timer = setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [load]);
+
   const loadMovements = useCallback(async (itemId: number) => {
+    movementsFor.current = itemId;
+    setMovements([]);
     try {
       const response = await fetch(`/api/inventory/${itemId}/movements`, { cache: "no-store" });
-      if (!response.ok) { setMovements([]); return; }
-      setMovements((await response.json()).movements as Movement[]);
+      const payload = response.ok ? ((await response.json()).movements as Movement[]) : [];
+      // وصل الردّ وقد أُغلق بنده أو فُتح غيره — فيُطرح، ولا يُكتب فوق حركات سواه.
+      if (movementsFor.current !== itemId) return;
+      setMovements(payload);
     } catch {
-      setMovements([]);
+      if (movementsFor.current === itemId) setMovements([]);
     }
   }, []);
 
@@ -152,7 +180,7 @@ export default function InventoryPage() {
     setOpenItem((current) => {
       const next = current === itemId ? null : itemId;
       if (next) void loadMovements(next);
-      else setMovements([]);
+      else { movementsFor.current = null; setMovements([]); }
       return next;
     });
   }, [loadMovements]);
