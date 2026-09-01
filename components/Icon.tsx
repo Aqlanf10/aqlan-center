@@ -14,7 +14,8 @@
 export type IconName =
   | "tooth" | "calendar" | "user" | "wallet" | "flask" | "phone" | "inbox"
   | "chart" | "settings" | "menu" | "logout" | "screen" | "link" | "print"
-  | "download" | "plus" | "check" | "clock" | "alert" | "search" | "back";
+  | "download" | "plus" | "check" | "clock" | "alert" | "search" | "back"
+  | "box";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // سنّ: رمز المركز نفسه — تاجٌ وجذران.
@@ -29,6 +30,7 @@ const PATHS: Record<IconName, React.ReactNode> = {
   // مقابض ضبط لا تروس: التروس تصير عجينة رمادية عند 18 بكسل، والمقابض تبقى
   // مقروءة — وأيقونة لا تُقرأ في حجمها الحقيقي ليست أيقونة.
   settings: <><path d="M3.6 7.2h16.8M3.6 12h16.8M3.6 16.8h16.8" /><circle cx="8.4" cy="7.2" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="9.6" cy="16.8" r="2" /></>,
+  box: <><path d="M3.6 7.6 12 3.6l8.4 4v8.8L12 20.4 3.6 16.4z" /><path d="M3.6 7.6 12 11.6l8.4-4M12 11.6v8.8" /></>,
   menu: <path d="M3.6 6.8h16.8M3.6 12h16.8M3.6 17.2h16.8" />,
   logout: <><path d="M14.4 8V5.6a2 2 0 0 0-2-2H5.6a2 2 0 0 0-2 2v12.8a2 2 0 0 0 2 2h6.8a2 2 0 0 0 2-2V16" /><path d="M9.6 12h10.8M17.2 8.4 20.8 12l-3.6 3.6" /></>,
   screen: <><rect x="2.8" y="4" width="18.4" height="12.8" rx="2" /><path d="M8.4 20.4h7.2M12 16.8v3.6" /></>,

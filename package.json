@@ -33,7 +33,9 @@
     "verify:recovery": "tsx scripts/verify-recovery.mjs",
     "verify:http": "tsx scripts/verify-http.mjs",
     "verify:all": "node scripts/verify-all.mjs",
-    "verify:treatment": "tsx scripts/verify-treatment.mjs"
+    "verify:treatment": "tsx scripts/verify-treatment.mjs",
+    "verify:inventory": "tsx scripts/verify-inventory.mjs",
+    "journey:inventory": "node scripts/journeys/inventory.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",

@@ -50,6 +50,15 @@ try {
   const security=await request('/login');check('security headers present',security.headers.get('x-content-type-options')==='nosniff'&&security.headers.get('content-security-policy')?.includes("frame-ancestors 'self'"));
   check('doctor cannot export database',(await request('/api/backup/full',d)).status===403);
   const backup=await request('/api/backup/full',a);check('admin full backup streams successfully',backup.ok&&(await backup.arrayBuffer()).byteLength>100);
+  check('doctor cannot create inventory item',(await request('/api/inventory',d,{name:'Forbidden item',unit:'box'},{origin:base})).status===403);
+  const madeItem=await request('/api/inventory',a,{name:'Gloves M',category:'consumable',unit:'box',minLevel:2},{origin:base});
+  check('admin creates inventory item',madeItem.status===201);
+  const inventoryId=(await madeItem.json()).id;
+  check('doctor records a stock-in — the guard is on what is recorded, not who records it',(await request(`/api/inventory/${inventoryId}/movements`,d,{kind:'in',qty:3},{origin:base})).status===201);
+  check('doctor cannot dispense more than the balance',(await request(`/api/inventory/${inventoryId}/movements`,d,{kind:'out',qty:99},{origin:base})).status===409);
+  check('doctor cannot adjust stock without a written reason',(await request(`/api/inventory/${inventoryId}/movements`,d,{kind:'adjust',qty:-1},{origin:base})).status===409);
+  const stop=await fetch(base+`/api/inventory/${inventoryId}`,{method:'PATCH',headers:{cookie:d,'content-type':'application/json',origin:base},body:JSON.stringify({isActive:false})});
+  check('doctor cannot deactivate an inventory item',stop.status===403);
   for(let i=0;i<10;i++)await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   const limited=await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   check('HTTP login rate limit with Retry-After',limited.status===429&&Number(limited.headers.get('retry-after'))>0);
