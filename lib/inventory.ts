@@ -29,6 +29,13 @@ export interface MovementLike {
   kind: MovementKind;
   /** موجبٌ للإدخال والصرف؛ والتسوية تحمل إشارتها في القيمة نفسها. */
   qty: number;
+  /**
+   * ردُّ ما صُرف على زيارة — لا إدخالٌ جديد.
+   *
+   * وأثره على الرصيد أثرُ الإدخال نفسه، لكن أثره على **الصلاحية** معاكس: الإدخال
+   * دفعةٌ جديدة، والردّ إلغاءُ استهلاكٍ يعيد المادّة إلى دفعتها بصلاحيتها الأولى.
+   */
+  isReturn?: boolean;
 }
 
 /** أثر حركةٍ واحدة على الرصيد: الإدخال يزيد، والصرف ينقص، والتسوية كما وُقّعت. */
@@ -152,13 +159,17 @@ export interface BatchLike extends MovementLike {
  * يُنقص التنبيهات ولا يزيدها — وتنبيهٌ متأخر أهون من تنبيهٍ كاذب يُفقد الثقة بالبقية.
  */
 export function nearestExpiry(movements: BatchLike[]): string | null {
-  const used = movements.reduce((sum, move) => {
+  // الردّ يُنقص المستهلك ولا يُضاف دفعةً جديدة: المادّة لم تفارق دفعتها الأولى،
+  // فرجوعُها يعيدها إلى مكانها من الطابور بصلاحيتها. ولو حُسب إدخالًا لبدا بندٌ
+  // عاد إلى الرفّ وهو على وشك الانتهاء كأنه سليم — وهذا تنبيهٌ يُسكت لا يُصدق.
+  const used = Math.max(0, movements.reduce((sum, move) => {
+    if (move.kind === "in" && move.isReturn) return sum - Math.abs(move.qty);
     const signed = signedQty(move.kind, move.qty);
     return signed < 0 ? sum - signed : sum;
-  }, 0);
+  }, 0));
 
   const batches = movements
-    .filter((move) => move.kind === "in" && move.expiryDate)
+    .filter((move) => move.kind === "in" && !move.isReturn && move.expiryDate)
     .sort((a, b) => (a.expiryDate! < b.expiryDate! ? -1
       : a.expiryDate! > b.expiryDate! ? 1
       : (a.id ?? 0) - (b.id ?? 0)));
@@ -269,6 +280,7 @@ export interface VisitMaterialLike {
   unit: string;
   kind: MovementKind;
   qty: number;
+  isReturn?: boolean;
 }
 
 export interface MaterialTotal {
@@ -289,6 +301,22 @@ export interface MaterialTotal {
  * ويبقى البند في الحساب ولو صار صافيه صفرًا: صرفٌ رُدّ كلّه واقعةٌ حدثت، وحذفها من
  * الصافي يجعل زيارتين مختلفتين تبدوان سواء.
  */
+/**
+ * ما يبقى قابلًا للردّ من بندٍ على زيارة: المصروف ناقص المردود.
+ *
+ * وبدونه يبقى صفُّ الصرف في السجلّ فيُضغط زرّ الردّ عليه مرّةً بعد مرّة — **فيُصنع
+ * مخزونٌ من العدم**، وهو نقيض ما بُنيت عليه الوحدة كلّها. ويُفحص هذا في الخادم
+ * تحت القفل كذلك: زرٌّ يُخفى في لسانٍ لا يُخفى في لسانٍ ثانٍ.
+ */
+export function outstandingReturn(materials: VisitMaterialLike[], itemId: number): number {
+  return materials.reduce((sum, material) => {
+    if (material.itemId !== itemId) return sum;
+    if (material.kind === "out") return sum + Math.abs(material.qty);
+    if (material.kind === "in" && material.isReturn) return sum - Math.abs(material.qty);
+    return sum;
+  }, 0);
+}
+
 export function netMaterials(materials: VisitMaterialLike[]): MaterialTotal[] {
   const totals = new Map<number, MaterialTotal>();
   for (const material of materials) {
@@ -296,7 +324,7 @@ export function netMaterials(materials: VisitMaterialLike[]): MaterialTotal[] {
       ?? { itemId: material.itemId, name: material.itemName, unit: material.unit, used: 0 };
     // التسوية لا تُنسب إلى زيارة — وإن وقعت فهي تصحيح جردٍ لا استهلاك مريض.
     if (material.kind === "out") row.used += Math.abs(material.qty);
-    else if (material.kind === "in") row.used -= Math.abs(material.qty);
+    else if (material.kind === "in" && material.isReturn) row.used -= Math.abs(material.qty);
     totals.set(material.itemId, row);
   }
   return [...totals.values()];

@@ -9,7 +9,9 @@ export const dynamic = "force-dynamic";
  * حركات بندٍ واحد.
  *
  * والتسجيل لكل من يعمل — الصرف يقع على الكرسي لا في مكتب المدير. والحارس على
- * **ما يُسجَّل** لا على من يسجّل: لا صرفَ فوق الرصيد، ولا تسويةَ بلا سبب.
+ * **ما يُسجَّل** لا على من يسجّل: لا صرفَ فوق الرصيد، ولا تسويةَ بلا سبب، ولا ردَّ
+ * أكثر مما صُرف، ولا حركةَ على زيارةٍ وُقّعت. وكلّها تُفحص تحت القفل في `recordMovement`
+ * لا هنا: فحصٌ في المسار يمرّ عليه مسارٌ آخر، وفحصٌ تحت القفل لا يمرّ عليه أحد.
  */
 
 const denied = () =>
@@ -54,6 +56,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       expiryDate: typeof source.expiryDate === "string" && source.expiryDate ? source.expiryDate : null,
       reason: typeof source.reason === "string" ? source.reason : null,
       visitId: Number.isInteger(Number(source.visitId)) && Number(source.visitId) > 0 ? Number(source.visitId) : null,
+      isReturn: source.isReturn === true,
       patientId: Number.isInteger(Number(source.patientId)) && Number(source.patientId) > 0 ? Number(source.patientId) : null,
       actor: session.username,
     });

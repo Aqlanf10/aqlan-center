@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatQty, netMaterials, type ItemCategory, type StockStatus } from "@/lib/inventory";
+import {
+  formatQty, netMaterials, outstandingReturn, type ItemCategory, type StockStatus,
+} from "@/lib/inventory";
 
 /**
  * المواد المصروفة على الزيارة.
@@ -31,6 +33,7 @@ interface Material {
   unit: string;
   kind: "in" | "out" | "adjust";
   qty: number;
+  isReturn: boolean;
   reason: string | null;
   createdBy: string;
 }
@@ -104,24 +107,32 @@ export function VisitMaterials({ visitId, patientId, canWrite }: {
   }, [act, itemId, qty, visitId, patientId]);
 
   /*
-   * الردّ حركةُ إدخالٍ بسببٍ مكتوب، لا حذفًا للحركة الأولى.
+   * الردّ حركةُ ردٍّ موسومة، لا حذفًا للحركة الأولى ولا إدخالًا جديدًا.
    *
    * وحذفُها يجعل الرصيد يوافق الواقع ويمحو أن علبةً خرجت ورجعت — فلا يُعرف من
    * كثرة الردّ أن بندًا يُصرف زيادةً كل يوم. والسجلّ الذي يُصحَّح بالحذف يُصحَّح
    * بالحذف مرّتين.
+   *
+   * ويُردّ **البند بمقداره الباقي** لا صفُّ السجلّ: صفُّ الصرف يبقى بعد ردّه، فزرٌّ
+   * عليه يُضغط مرّةً بعد مرّة فيُصنع مخزونٌ من العدم. والخادم يرفض الزائد تحت القفل
+   * كذلك — الواجهةُ تُخفي، والقفل يمنع.
    */
-  const takeBack = useCallback(async (material: Material) => {
-    await act(() => fetch(`/api/inventory/${material.itemId}/movements`, {
+  const takeBack = useCallback(async (itemId: number, qty: number) => {
+    await act(() => fetch(`/api/inventory/${itemId}/movements`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        kind: "in", qty: Math.abs(material.qty), visitId, patientId,
+        kind: "in", qty, visitId, patientId, isReturn: true,
         reason: `ردُّ ما لم يُستعمل — زيارة ${visitId}`,
       }),
     }));
   }, [act, visitId, patientId]);
 
-  const net = useMemo(() => netMaterials(materials), [materials]);
+  const net = useMemo(
+    () => netMaterials(materials)
+      .map((row) => ({ ...row, outstanding: outstandingReturn(materials, row.itemId) })),
+    [materials],
+  );
 
   const usable = items.filter((item) => item.balance > 0);
   if (!canWrite && materials.length === 0 && !unread) return null;
@@ -199,36 +210,42 @@ export function VisitMaterials({ visitId, patientId, canWrite }: {
       ) : materials.length === 0 ? null : (
         <ul className="space-y-1" aria-label="سجلّ مواد الزيارة">
           {materials.map((material) => (
-            <li key={material.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
-              <span className="min-w-0 truncate">
-                <span className="font-bold">{material.itemName}</span>
-                <span className="mr-1.5 text-slate-500">
-                  {material.kind === "out" ? "صُرفت" : "رُدّت"} {formatQty(Math.abs(material.qty))} {material.unit}
-                </span>
-                <span className="mr-1.5 text-slate-400">{material.createdBy}</span>
+            <li key={material.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
+              <span className="font-bold">{material.itemName}</span>
+              <span className="mr-1.5 text-slate-500">
+                {material.kind === "out" ? "صُرفت" : "رُدّت"} {formatQty(Math.abs(material.qty))} {material.unit}
               </span>
-              {canWrite && material.kind === "out" ? (
-                <button
-                  type="button"
-                  onClick={() => { void takeBack(material); }}
-                  disabled={busy}
-                  className="shrink-0 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-navy-800 disabled:opacity-40"
-                >
-                  رُدَّت للمخزن
-                </button>
-              ) : null}
+              <span className="mr-1.5 text-slate-400">{material.createdBy}</span>
             </li>
           ))}
         </ul>
       )}
 
-      {net.some((row) => row.used !== 0) ? (
-        <p className="mt-2 text-[11px] font-bold text-navy-900">
-          الصافي على الزيارة:{" "}
-          {net.filter((row) => row.used !== 0)
-            .map((row) => `${row.name} ${formatQty(row.used)} ${row.unit}`)
-            .join(" · ")}
-        </p>
+      {/*
+        * الصافي وزرّ الردّ في مكانٍ واحد: الردّ يقع على **البند بمقداره الباقي** لا
+        * على صفٍّ في السجلّ. وزرٌّ على كل صفٍّ مصروف يبقى بعد ردّه فيُضغط ثانيةً —
+        * فيدخل المخزنَ ما لم يخرج منه.
+        */}
+      {net.length > 0 ? (
+        <ul className="mt-2 space-y-1" aria-label="صافي مواد الزيارة">
+          {net.map((row) => (
+            <li key={row.itemId} className="flex items-center justify-between gap-2 text-[11px] font-bold text-navy-900">
+              <span className="min-w-0 truncate">
+                {row.name}: {formatQty(row.used)} {row.unit}
+              </span>
+              {canWrite && row.outstanding > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => { void takeBack(row.itemId, row.outstanding); }}
+                  disabled={busy}
+                  className="shrink-0 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-navy-800 disabled:opacity-40"
+                >
+                  ردَّ {formatQty(row.outstanding)} للمخزن
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </section>
   );

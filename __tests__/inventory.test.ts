@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveBalance, expiryState, filterItems, formatQty, inventorySummary,
   isItemCategory, isMovementKind, nearestExpiry, needsAttention, netMaterials,
-  signedQty, sortByNeed, stockStatus, validateMovement,
+  outstandingReturn, signedQty, sortByNeed, stockStatus, validateMovement,
 } from "../lib/inventory";
 
 describe("أثر الحركة على الرصيد", () => {
@@ -216,11 +216,15 @@ describe("صافي مواد الزيارة", () => {
   });
 
   it("والمردود يُطرح من الصافي — ولا تُحذف حركته", () => {
-    expect(netMaterials([material({ qty: 2 }), material({ kind: "in", qty: 1 })])[0].used).toBe(1);
+    expect(netMaterials([
+      material({ qty: 2 }), material({ kind: "in", qty: 1, isReturn: true }),
+    ])[0].used).toBe(1);
   });
 
   it("وبندٌ رُدّ كلّه يبقى بصفرٍ لا يختفي — صرفٌ رُدّ واقعةٌ حدثت", () => {
-    const totals = netMaterials([material({ qty: 2 }), material({ kind: "in", qty: 2 })]);
+    const totals = netMaterials([
+      material({ qty: 2 }), material({ kind: "in", qty: 2, isReturn: true }),
+    ]);
     expect(totals).toHaveLength(1);
     expect(totals[0].used).toBe(0);
   });
@@ -239,5 +243,64 @@ describe("صافي مواد الزيارة", () => {
 
   it("وزيارةٌ بلا مواد صافيها فارغ", () => {
     expect(netMaterials([])).toEqual([]);
+  });
+});
+
+describe("الردّ ليس إدخالًا", () => {
+  it("الردّ يُعيد الدفعة إلى مكانها من الطابور بصلاحيتها", () => {
+    // صُرفت الدفعة القريبة كلّها ثم رُدّت: التنبيه يجب أن يعود، فالمادّة على الرفّ.
+    const movements = [
+      { id: 1, kind: "in" as const, qty: 5, expiryDate: "2026-06-01" },
+      { id: 2, kind: "in" as const, qty: 5, expiryDate: "2026-12-01" },
+      { id: 3, kind: "out" as const, qty: 5 },
+      { id: 4, kind: "in" as const, qty: 5, isReturn: true },
+    ];
+    expect(nearestExpiry(movements)).toBe("2026-06-01");
+  });
+
+  it("بينما إدخالٌ حقيقي بلا صلاحية يترك الدفعة مستهلكة", () => {
+    const movements = [
+      { id: 1, kind: "in" as const, qty: 5, expiryDate: "2026-06-01" },
+      { id: 2, kind: "in" as const, qty: 5, expiryDate: "2026-12-01" },
+      { id: 3, kind: "out" as const, qty: 5 },
+      { id: 4, kind: "in" as const, qty: 5 },
+    ];
+    expect(nearestExpiry(movements)).toBe("2026-12-01");
+  });
+
+  it("والردّ يزيد الرصيد كالإدخال — الخلاف في الصلاحية لا في الكمية", () => {
+    expect(deriveBalance([
+      { kind: "in", qty: 5 }, { kind: "out", qty: 5 }, { kind: "in", qty: 5, isReturn: true },
+    ])).toBe(5);
+  });
+});
+
+describe("لا يُردّ أكثر مما صُرف", () => {
+  const material = (over: Partial<Parameters<typeof outstandingReturn>[0][number]>) => ({
+    itemId: 1, itemName: "قفازات", unit: "علبة", kind: "out" as const, qty: 1, ...over,
+  });
+
+  it("الباقي هو المصروف ناقص المردود", () => {
+    expect(outstandingReturn([material({ qty: 3 }), material({ kind: "in", qty: 1, isReturn: true })], 1)).toBe(2);
+  });
+
+  it("وبعد ردّ الكلّ لا يبقى شيء — فلا يُضغط الزرّ ثانيةً فيُصنع مخزون", () => {
+    expect(outstandingReturn([material({ qty: 3 }), material({ kind: "in", qty: 3, isReturn: true })], 1)).toBe(0);
+  });
+
+  it("وإدخالٌ ليس ردًّا لا يُنقص الباقي — وإلا صار الإدخال بابًا لردٍّ ثانٍ", () => {
+    expect(outstandingReturn([material({ qty: 3 }), material({ kind: "in", qty: 3 })], 1)).toBe(3);
+  });
+
+  it("وبندٌ آخر لا يُخصم من باقي هذا", () => {
+    expect(outstandingReturn([
+      material({ qty: 3 }),
+      material({ itemId: 2, kind: "in", qty: 3, isReturn: true }),
+    ], 1)).toBe(3);
+  });
+
+  it("والصافي يتبع الردّ الموسوم وحده", () => {
+    expect(netMaterials([material({ qty: 3 }), material({ kind: "in", qty: 3, isReturn: true })])[0].used).toBe(0);
+    expect(netMaterials([material({ qty: 3 }), material({ kind: "in", qty: 3 })])[0].used).toBe(3);
   });
 });

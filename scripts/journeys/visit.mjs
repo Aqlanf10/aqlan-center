@@ -94,7 +94,9 @@ await page.waitForTimeout(2500);
 const dispensed = (await materials.innerText()).replace(/\s+/g, " ");
 console.log("4) صُرفت علبتان على الزيارة:",
   /صُرفت 2 علبة/.test(dispensed) ? "✓" : `✗ (${dispensed.slice(-140)})`);
-console.log("   والصافي معلن:", /الصافي على الزيارة/.test(dispensed) ? "✓" : "✗");
+const netList = materials.locator('ul[aria-label="صافي مواد الزيارة"]');
+console.log("   والصافي معلن باسم البند ومقداره:",
+  (await netList.count()) > 0 && /2 علبة/.test(await netList.innerText()) ? "✓" : "✗");
 
 // صرفٌ فوق الرصيد: يُردّ برسالةٍ عربية تقول الرقم، لا بصمتٍ ولا بـ«تعذّر».
 await chooseMaterial();
@@ -106,12 +108,26 @@ const refusal = await materials.getByRole("alert").first().innerText()
 console.log("   وصرفٌ فوق الرصيد يُردّ بالرقم:",
   /الرصيد 3 لا يكفي صرف 99/.test(refusal) ? "✓" : `✗ (${refusal.slice(0, 60)})`);
 
-// الردّ حركةُ إدخال: الرصيد يعود، والحركتان تبقيان مقروءتين.
-await materials.getByRole("button", { name: "رُدَّت للمخزن" }).first().click();
+// الردّ حركةُ ردٍّ موسومة: الرصيد يعود، والحركتان تبقيان مقروءتين.
+await materials.getByRole("button", { name: /ردَّ .* للمخزن/ }).first().click();
 await page.waitForTimeout(2500);
 const returned = (await materials.innerText()).replace(/\s+/g, " ");
 console.log("   والردّ يُسجَّل ولا يمحو الصرف:",
   /صُرفت 2 علبة/.test(returned) && /رُدّت 2 علبة/.test(returned) ? "✓" : "✗");
+
+// ولا يُعرض زرُّ ردٍّ ثانٍ: صفُّ الصرف يبقى في السجلّ، وزرٌّ عليه يُصنع به مخزونٌ
+// من العدم. والخادم يرفضه تحت القفل كذلك — والواجهة لا تعرضه أصلًا.
+console.log("   ولا يُعرض ردٌّ ثانٍ على ما رُدّ:",
+  (await materials.getByRole("button", { name: /ردَّ .* للمخزن/ }).count()) === 0 ? "✓" : "✗");
+const doubled = await page.evaluate(async ({ id, visit }) => {
+  const response = await fetch(`/api/inventory/${id}/movements`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "in", qty: 2, visitId: visit, isReturn: true }),
+  });
+  return { status: response.status, message: (await response.json().catch(() => ({}))).message };
+}, { id: stocked.id, visit: Number(new URL(page.url()).pathname.split("/").pop()) });
+console.log("   ويرفضه الخادم ولو طُلب مباشرةً:",
+  doubled.status === 409 ? `✓ ${doubled.message}` : `✗ ${doubled.status}`);
 const stockNow = await page.evaluate(async (id) => {
   const response = await fetch("/api/inventory", { cache: "no-store" });
   return (await response.json()).items.find((item) => item.id === id)?.balance;
