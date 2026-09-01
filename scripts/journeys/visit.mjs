@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { loadChromium, executablePath } from "./playwright.mjs";
 import { login } from "./login.mjs";
-import { callAndSeat, openChart } from "./chair.mjs";
+import { callAndSeat, openChart, releaseChair } from "./chair.mjs";
 
 /**
  * رحلة الزيارة — من باب العيادة إلى كشف الحساب.
@@ -34,16 +34,16 @@ await page.getByRole("button", { name: "وصل", exact: true }).click();
 await page.waitForTimeout(1800);
 console.log("1) وصل المريض");
 
-await callAndSeat(page, name);
+await callAndSeat(page, name, BASE);
 console.log("2) نُودي ودخل الكرسي");
 
 await openChart(page, name);
 await page.screenshot({ path: OUT + "/visit-1-open.png", fullPage: true });
 console.log("3) فُتحت شاشة الزيارة");
 
-await type(page.getByLabel("الشكوى الرئيسية"), "ألم في الضرس العلوي");
-await type(page.getByLabel("التشخيص"), "تسوّس الرحى الأولى");
-await type(page.getByLabel("ما نُفّذ"), "حشوة ضوئية");
+await type(page.getByLabel("الشكوى الرئيسية", { exact: true }), "ألم في الضرس العلوي");
+await type(page.getByLabel("التشخيص", { exact: true }), "تسوّس الرحى الأولى");
+await type(page.getByLabel("ما نُفّذ", { exact: true }), "حشوة ضوئية");
 const pick = async (needle) => {
   const value = await page.getByLabel("أضف إجراءً").evaluate((select, text) =>
     [...select.options].find((o) => o.textContent.includes(text))?.value ?? "", needle);
@@ -89,4 +89,7 @@ await page.waitForTimeout(1000);
 const tooth = await page.locator("body").innerText();
 console.log("8) السن 16:", /الحالة: حشوة/.test(tooth) ? "حشوة ✓" : "غير متوقّعة", "| MO:", /MO/.test(tooth));
 await page.screenshot({ path: OUT + "/visit-4-chart.png", fullPage: true });
+// الكرسي يُخلى قبل إغلاق المتصفّح: الرحلة التي لا تنظّف أثرها تعمل مرّةً
+// وتُقرأ نتيجتها مرّتين — والثانية «كل الكراسي مشغولة».
+await releaseChair(page, name, BASE);
 await b.close();
