@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { PrintableDoc } from "@/lib/prints";
 
 /**
  * زر الطباعة — ويسجّل الطبعة قبل أن يطبع.
@@ -12,7 +13,7 @@ import { useState } from "react";
  * ويطبع حتى لو تعذّر التسجيل: ورقةٌ بلا علامة أهون من مريض ينتظر سنده.
  */
 export function PrintButton({ docType, docId }: {
-  docType?: "receipt" | "invoice" | "voucher" | "statement";
+  docType?: PrintableDoc;
   docId?: string | number;
 } = {}) {
   const [busy, setBusy] = useState(false);

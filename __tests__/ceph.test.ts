@@ -13,6 +13,9 @@ import {
   offsetFromLine,
   DEFAULT_NORMS,
   NORM_LABEL,
+  zScore,
+  severityOf,
+  verticalPattern,
   skeletalClass,
   verdictFor,
   NORMS,
@@ -612,5 +615,66 @@ describe("مصدر تعريف كل نقطة مكتوب", () => {
       expect(item.hint.ar.length, item.code).toBeGreaterThan(10);
       expect(item.hint.en.length, item.code).toBeGreaterThan(10);
     }
+  });
+});
+
+
+describe("الدرجة المعيارية — كم انحرافًا يبعد القياس", () => {
+  const norm = { mean: 82, tolerance: 2, source: "فحص" };
+
+  it("المطابق صفر، والبعيد بانحرافٍ واحد ±١", () => {
+    expect(zScore(82, norm)).toBe(0);
+    expect(zScore(84, norm)).toBe(1);
+    expect(zScore(78, norm)).toBe(-2);
+  });
+
+  it("وبلا معيارٍ لا رقم — ولا صفرٌ يُوهم التطابق", () => {
+    expect(zScore(82, null)).toBeNull();
+    expect(zScore(82, { ...norm, tolerance: 0 })).toBeNull();
+  });
+
+  it("والتصنيف ثلاثُ درجات لا اثنتان", () => {
+    // «خارج المعيار» وحدها تسوّي بين تجاوزٍ بعُشر درجة وتجاوزٍ بثلاثة انحرافات.
+    expect(severityOf(0.9)).toBe("within");
+    expect(severityOf(-1.5)).toBe("mild");
+    expect(severityOf(2.6)).toBe("marked");
+    expect(severityOf(null)).toBeNull();
+  });
+
+  it("ويوافق الحكم الثنائي عند حدّه", () => {
+    // ‏|Z| ≤ 1 هو نفسه «ضمن المعيار» — فلا يقول السطران شيئين مختلفين.
+    for (const value of [80, 81, 82, 83, 84, 85, 79]) {
+      const within = severityOf(zScore(value, norm)) === "within";
+      expect(within).toBe(verdictFor(value, norm) === "normal");
+    }
+  });
+});
+
+describe("النمط العمودي — من قياسين لا من واحد", () => {
+  const norms = DEFAULT_NORMS;
+
+  it("انحدارٌ مرتفع في القياسين نمطٌ رأسيّ", () => {
+    expect(verticalPattern(34, 40, norms)).toBe("vertical");
+  });
+
+  it("ومنخفضٌ فيهما نمطٌ أفقيّ", () => {
+    expect(verticalPattern(17, 24, norms)).toBe("horizontal");
+  });
+
+  it("وداخل المدى فيهما متوازن", () => {
+    expect(verticalPattern(25, 32, norms)).toBe("balanced");
+  });
+
+  it("وإن اختلفا لم يُحسم — ولا يُرجَّح أحدهما بلا سبب", () => {
+    expect(verticalPattern(34, 32, norms)).toBeNull();
+    expect(verticalPattern(17, 40, norms)).toBeNull();
+  });
+
+  it("وبلا قياسٍ منهما لا نمط", () => {
+    expect(verticalPattern(null, null, norms)).toBeNull();
+  });
+
+  it("والوجه المصنوع متوازنٌ عموديًّا", () => {
+    expect(analyse({ tracing: FACE_MM }).vertical).toBe("balanced");
   });
 });
