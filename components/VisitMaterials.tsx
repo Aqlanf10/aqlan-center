@@ -46,6 +46,9 @@ export function VisitMaterials({ visitId, patientId, canWrite }: {
   const [itemId, setItemId] = useState("");
   const [qty, setQty] = useState("1");
   const [error, setError] = useState<string | null>(null);
+  // «لم تُصرف مواد» جملةٌ تُقال عن علمٍ لا عن جهل. فإن لم يصل السجلّ قيل ذلك —
+  // وقائمةٌ فارغة تدّعي أن شيئًا لم يُصرف تُقرأ يقينًا وهي لا تعرف.
+  const [unread, setUnread] = useState(false);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
 
@@ -56,9 +59,15 @@ export function VisitMaterials({ visitId, patientId, canWrite }: {
         fetch(`/api/visits/${visitId}/materials`, { cache: "no-store" }),
       ]);
       if (itemsResponse.ok) setItems(((await itemsResponse.json()).items as Item[]));
-      if (usedResponse.ok) setMaterials(((await usedResponse.json()).materials as Material[]));
+      if (usedResponse.ok) {
+        setMaterials(((await usedResponse.json()).materials as Material[]));
+        setUnread(false);
+      } else {
+        setUnread(true);
+      }
     } catch {
       // القائمة تبقى على آخر ما وصل: قسمٌ يختفي وسط شاشة التوثيق أسوأ من قائمةٍ قديمة.
+      setUnread(true);
     }
   }, [visitId]);
 
@@ -115,7 +124,7 @@ export function VisitMaterials({ visitId, patientId, canWrite }: {
   const net = useMemo(() => netMaterials(materials), [materials]);
 
   const usable = items.filter((item) => item.balance > 0);
-  if (!canWrite && materials.length === 0) return null;
+  if (!canWrite && materials.length === 0 && !unread) return null;
 
   return (
     <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4" aria-label="المواد المصروفة">
@@ -179,9 +188,15 @@ export function VisitMaterials({ visitId, patientId, canWrite }: {
         </p>
       ) : null}
 
-      {materials.length === 0 ? (
+      {unread ? (
+        <p className="rounded-xl border border-warning-300 bg-warning-50 px-3 py-2 text-[11px] font-semibold text-warning-900">
+          تعذّر قراءة سجلّ مواد هذه الزيارة — ما يُعرض أدناه قد يكون ناقصًا. حدّث الصفحة.
+        </p>
+      ) : null}
+
+      {!unread && materials.length === 0 ? (
         <p className="text-xs text-slate-400">لم تُصرف مواد على هذه الزيارة.</p>
-      ) : (
+      ) : materials.length === 0 ? null : (
         <ul className="space-y-1" aria-label="سجلّ مواد الزيارة">
           {materials.map((material) => (
             <li key={material.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px]">
