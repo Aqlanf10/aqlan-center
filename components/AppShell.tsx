@@ -22,7 +22,7 @@ interface NavItem {
   href: string;
   label: string;
   icon: IconName;
-  badge?: "requests" | "lab";
+  badge?: "requests" | "lab" | "inventory";
   /** من يرى هذا الرابط. الغياب يعني الجميع. */
   needs?: "money" | "admin";
 }
@@ -33,7 +33,7 @@ const NAV: NavItem[] = [
   { href: "/patients", label: "المرضى", icon: "user" },
   { href: "/finance", label: "الصندوق", icon: "wallet", needs: "money" },
   { href: "/lab", label: "المختبر", icon: "flask", badge: "lab" },
-  { href: "/inventory", label: "المخزون", icon: "box" },
+  { href: "/inventory", label: "المخزون", icon: "box", badge: "inventory" },
   { href: "/recall", label: "المتابعة", icon: "phone" },
   { href: "/requests", label: "الطلبات", icon: "inbox", badge: "requests" },
   { href: "/report", label: "التقرير", icon: "chart" },
@@ -58,20 +58,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     item.needs === "admin" ? isAdmin(session?.role)
       : item.needs === "money" ? canHandleMoney(session?.role)
       : true);
-  const [badges, setBadges] = useState<{ requests: number; lab: number }>({ requests: 0, lab: 0 });
+  const [badges, setBadges] = useState<{ requests: number; lab: number; inventory: number }>(
+    { requests: 0, lab: 0, inventory: 0 },
+  );
   const [moreOpen, setMoreOpen] = useState(false);
 
   const bare = BARE_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 
   const loadBadges = useCallback(async () => {
     try {
-      const [requests, lab] = await Promise.all([
+      const [requests, lab, inventory] = await Promise.all([
         fetch("/api/booking-requests?status=new", { cache: "no-store" }),
         fetch("/api/lab?summary=1", { cache: "no-store" }),
+        fetch("/api/inventory?summary=1", { cache: "no-store" }),
       ]);
-      const next = { requests: 0, lab: 0 };
+      const next = { requests: 0, lab: 0, inventory: 0 };
       if (requests.ok) next.requests = ((await requests.json()) as unknown[]).length;
       if (lab.ok) next.lab = Number(((await lab.json()) as { late?: number }).late ?? 0);
+      // بندٌ نفد أو قارب حدّه أو قاربت صلاحيته: كلّها «تصرّفٌ اليوم» وعددٌ واحد
+      // يكفي. وثلاثة أعداد على أيقونةٍ واحدة تُقرأ ولا تُفهم.
+      if (inventory.ok) {
+        next.inventory = Number(((await inventory.json()) as { attention?: number }).attention ?? 0);
+      }
       setBadges(next);
     } catch {
       // العدّادان يبقيان على آخر قيمة: رقمٌ قديم أنفع من اختفاء التنبيه.
@@ -101,7 +109,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
   // شاشة من الشاشات المخفية خلف «المزيد» مفتوحة الآن — فيُضاء الزر.
-  const restActive = nav.slice(4).some((item) => isActive(item.href));
+  const rest = nav.slice(4);
+  const restActive = rest.some((item) => isActive(item.href));
+
+  /*
+   * تنبيهات ما خلف «المزيد» تظهر على الزرّ نفسه.
+   *
+   * والاستقبال على هاتفٍ طول اليوم، والشريط السفلي لا يسع إلا أربعة — فما بعدها
+   * مخفيّ. وكان الزرّ يعدّ الطلبات وحدها، فبندٌ نفد أو تراكيبُ تأخّرت لا تُرى على
+   * الجهاز الذي يُنظر إليه فعلًا. **وتنبيهٌ لا يصل إلى الشاشة التي بيد صاحبه ليس
+   * تنبيهًا** — والوحدة تعود إلى ما بُني العدّاد ليمنعه: تُفتح متى تُذكر.
+   *
+   * ويُجمع من القائمة نفسها لا بعدٍّ يدوي: القائمة تتغيّر بالدور — الطبيب لا يرى
+   * الصندوق فينزاح المخفيّ — وعدٌّ مكتوبٌ بالاسم يتخلّف عن أول تغيير.
+   */
+  const restBadges = rest.reduce(
+    (sum, item) => sum + (item.badge ? badges[item.badge] : 0), 0);
 
   return (
     <div className="min-h-full lg:flex">
@@ -198,7 +221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur lg:hidden">
         {moreOpen ? (
           <div className="border-b border-slate-100 p-2">
-            {nav.slice(4).map((item) => (
+            {rest.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
@@ -244,9 +267,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Icon name="menu" className="h-5 w-5" />
             المزيد
-            {!moreOpen && badges.requests > 0 ? (
+            {!moreOpen && restBadges > 0 ? (
               <span className="absolute -top-0.5 left-1/4 rounded-full bg-accent-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
-                {badges.requests}
+                {restBadges}
               </span>
             ) : null}
           </button>
@@ -258,7 +281,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
 function Badge({ item, badges, floating = false }: {
   item: NavItem;
-  badges: { requests: number; lab: number };
+  badges: { requests: number; lab: number; inventory: number };
   floating?: boolean;
 }) {
   if (!item.badge) return null;

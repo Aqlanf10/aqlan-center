@@ -335,6 +335,26 @@ try {
   const belowZero = await db.updateInventoryItem({ id: datedId, minLevel: -1 });
   check("ولا حدَّ طلبٍ سالب", !belowZero.ok, belowZero.message ?? "");
 
+  console.log("\n  ── عدّاد القشرة يوافق الشاشة ──");
+
+  /*
+   * عدّادٌ يقول رقمًا والشاشةُ تقول غيره أسوأ من لا عدّاد: يُفتح المخزون على قائمةٍ
+   * لا توافق ما نادى به، فيُتعلَّم أن العدّاد لا يُصدَّق — ثم لا يُصدَّق حين يصدق.
+   * فيُقابَل هنا بما تعرضه تصفية «يحتاج تصرّفًا» نفسها.
+   */
+  const { needsAttention, inventorySummary } = await import("../lib/inventory.ts");
+  const badgeDay = "2026-09-01";
+  const badge = await db.inventoryCounts(badgeDay);
+  const onScreen = (await db.listInventory()).filter((item) => needsAttention(item, badgeDay));
+  check("عدد ما يحتاج تصرّفًا يوافق ما تعرضه الشاشة",
+    badge.attention === onScreen.length, `${badge.attention} = ${onScreen.length}`);
+  check("والتفصيل يوافق كذلك",
+    JSON.stringify({ out: badge.out, low: badge.low, expiring: badge.expiring })
+      === JSON.stringify(inventorySummary(await db.listInventory(), badgeDay)),
+    JSON.stringify(badge));
+  check("ولا يُعدّ العدّادُ بندًا موقوفًا — لا يُصرف منه أصلًا",
+    badge.attention === onScreen.filter((item) => item.isActive).length);
+
   console.log("\n  ── البند الموقوف ──");
 
   await db.getPool().query(`UPDATE inventory_items SET is_active = FALSE WHERE id = $1`, [itemId]);

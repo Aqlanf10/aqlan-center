@@ -6356,7 +6356,8 @@ export async function saveCephTracing(input: {
 // ─── المخزون ─────────────────────────────────────────────────────────────────
 
 import {
-  deriveBalance, isItemCategory, signedQty, stockStatus, validateMovement,
+  deriveBalance, inventorySummary, isItemCategory, needsAttention, signedQty,
+  stockStatus, validateMovement,
   type ItemCategory, type MovementKind, type StockStatus,
 } from "./inventory";
 
@@ -6457,6 +6458,28 @@ export async function listInventory(includeInactive = false): Promise<InventoryI
       ORDER BY i.is_active DESC, i.name`,
   );
   return rows.map(toItem);
+}
+
+/**
+ * أرقام العدّاد: كم بندًا يحتاج تصرّفًا اليوم.
+ *
+ * وتُحسب من `listInventory` نفسها لا بجملةٍ ثانية تكرّر منطقها. وجملتان لقاعدةٍ
+ * واحدة تفترقان بصمت — وقد وقع ذلك في هذا الملف مرّة: نسخةٌ للصلاحية في SQL وأخرى
+ * في التطبيق، ولولا فحصٌ يقابل بينهما لَما ظهر. وبنود المخزون عشراتٌ لا تنمو مع
+ * الأيام كما تنمو الفواتير، فجرُّها كلّها مرّةً في الدقيقة ثمنٌ زهيد مقابل ألّا
+ * يقول العدّادُ شيئًا وتقول الشاشة غيره.
+ *
+ * واليوم يُمرَّر ولا يُقرأ هنا: اليمن UTC+3، ودالّةٌ تقرأ ساعة الخادم تُنهي صلاحية
+ * دفعةٍ قبل أوانها كل مساء.
+ */
+export async function inventoryCounts(today: string): Promise<{
+  out: number; low: number; expiring: number; attention: number;
+}> {
+  const items = await listInventory();
+  return {
+    ...inventorySummary(items, today),
+    attention: items.filter((item) => needsAttention(item, today)).length,
+  };
 }
 
 export async function createInventoryItem(input: {

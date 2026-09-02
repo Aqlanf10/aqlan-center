@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { createInventoryItem, listInventory, recordAudit } from "@/lib/db";
+import {
+  CLINIC_TIME_ZONE, createInventoryItem, inventoryCounts, listInventory, recordAudit,
+} from "@/lib/db";
+import { clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -19,8 +22,16 @@ const denied = () =>
 export async function GET(request: Request) {
   const session = await requireSession();
   if (!session) return denied();
-  const includeInactive = new URL(request.url).searchParams.get("all") === "1";
+  const parameters = new URL(request.url).searchParams;
   try {
+    // القشرة تسأل عن الأرقام وحدها كل دقيقة: بندٌ نفد أو قارب حدّه أو قاربت صلاحيته
+    // لا يُعرف اليوم إلا بفتح شاشته — ووحدةٌ لا تُنادي صاحبها تُفتح أسبوعًا ثم تُنسى.
+    if (parameters.get("summary") === "1") {
+      return NextResponse.json(
+        await inventoryCounts(clinicDateString(new Date(), CLINIC_TIME_ZONE)),
+      );
+    }
+    const includeInactive = parameters.get("all") === "1";
     return NextResponse.json({ items: await listInventory(includeInactive && isAdmin(session.role)) });
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل المخزون." }, { status: 500 });
