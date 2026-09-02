@@ -203,6 +203,127 @@ try {
   check("وصُرف كل ما دخل فلا صلاحيةَ تُعرض", (await nearestOf()) === null, String(await nearestOf()));
   check("وتوافق القاعدةُ التطبيقَ عند الفراغ", (await nearestOf()) === (await jsNearest()));
 
+  console.log("\n  ── الصرف يُنسب إلى زيارة ──");
+
+  const { rows: visitRows } = await db.getPool().query(
+    `INSERT INTO visits (patient_name, status) VALUES ('مريض الفحص', 'in_chair') RETURNING id`,
+  );
+  const visitId = visitRows[0].id;
+
+  const linked = await db.createInventoryItem({
+    name: "قفازات الزيارة", category: "consumable", unit: "علبة",
+    minLevel: 0, note: null, actor: "فحص",
+  });
+  await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 10, expiryDate: null,
+    reason: null, visitId: null, patientId: null, actor: "فحص",
+  });
+  await db.recordMovement({
+    itemId: linked.id, kind: "out", qty: 3, expiryDate: null,
+    reason: null, visitId, patientId: null, actor: "طبيب",
+  });
+
+  const onVisit = await db.listVisitMaterials(visitId);
+  check("ما صُرف على الزيارة يُقرأ منها", onVisit.length === 1, `${onVisit.length}`);
+  check("ومعه اسم البند ووحدته — لا رقمٌ مجرّد",
+    onVisit[0]?.itemName === "قفازات الزيارة" && onVisit[0]?.unit === "علبة",
+    `${onVisit[0]?.itemName} · ${onVisit[0]?.unit}`);
+  check("ونزل من رصيد المخزن نفسه", (await db.inventoryBalance(linked.id)) === 7);
+  check("ولا يظهر على زيارةٍ أخرى", (await db.listVisitMaterials(visitId + 999)).length === 0);
+
+  // الردّ حركةُ ردٍّ موسومة لا حذفًا: الرصيد يعود، وأن علبةً خرجت ورجعت يبقى مقروءًا.
+  await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 1, expiryDate: null,
+    reason: `ردُّ ما لم يُستعمل — زيارة ${visitId}`, visitId, patientId: null,
+    actor: "طبيب", isReturn: true,
+  });
+  const afterReturn = await db.listVisitMaterials(visitId);
+  check("والردُّ يُسجَّل ولا يُمحى الصرف", afterReturn.length === 2,
+    afterReturn.map((one) => one.kind).join("+"));
+  check("والرصيد عاد بمقداره", (await db.inventoryBalance(linked.id)) === 8);
+
+  console.log("\n  ── لا يُردّ أكثر مما صُرف ──");
+
+  const backOnce = await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 2, expiryDate: null,
+    reason: "ردٌّ ثانٍ", visitId, patientId: null, actor: "طبيب", isReturn: true,
+  });
+  check("ما بقي من المصروف يُردّ", backOnce.ok, backOnce.ok ? "" : backOnce.message);
+  const backTwice = await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 1, expiryDate: null,
+    reason: "ردٌّ ثالث", visitId, patientId: null, actor: "طبيب", isReturn: true,
+  });
+  check("ثم لا يُردّ ما لم يُصرف — ولا يُصنع مخزونٌ من العدم",
+    !backTwice.ok, backTwice.message ?? "");
+  check("والرصيد وقف عند حدّه", (await db.inventoryBalance(linked.id)) === 10,
+    `${await db.inventoryBalance(linked.id)}`);
+  const visitNet = (await db.listVisitMaterials(visitId)).reduce(
+    (sum, one) => sum + (one.kind === "out" ? one.qty : one.isReturn ? -one.qty : 0), 0);
+  check("وصافي الزيارة صفرٌ لا سالب", visitNet === 0, `${visitNet}`);
+
+  const strayReturn = await db.recordMovement({
+    itemId: linked.id, kind: "in", qty: 1, expiryDate: null,
+    reason: "ردٌّ بلا زيارة", visitId: null, patientId: null, actor: "طبيب", isReturn: true,
+  });
+  check("ولا ردَّ بلا زيارةٍ صُرف عليها", !strayReturn.ok, strayReturn.message ?? "");
+
+  console.log("\n  ── الردّ يعيد الصلاحية، والإدخال لا يعيدها ──");
+
+  const dated2 = await db.createInventoryItem({
+    name: "مادّةٌ تُردّ بصلاحيتها", category: "consumable", unit: "علبة",
+    minLevel: 0, note: null, actor: "فحص",
+  });
+  const { rows: visit2Rows } = await db.getPool().query(
+    `INSERT INTO visits (patient_name, status) VALUES ('مريض الصلاحية', 'in_chair') RETURNING id`,
+  );
+  const visit2 = visit2Rows[0].id;
+  for (const [qty, expiry] of [[4, "2026-06-01"], [4, "2026-12-01"]]) {
+    await db.recordMovement({
+      itemId: dated2.id, kind: "in", qty, expiryDate: expiry,
+      reason: null, visitId: null, patientId: null, actor: "فحص",
+    });
+  }
+  await db.recordMovement({
+    itemId: dated2.id, kind: "out", qty: 4, expiryDate: null,
+    reason: null, visitId: visit2, patientId: null, actor: "طبيب",
+  });
+  const nearestOf2 = async () =>
+    (await db.listInventory(true)).find((item) => item.id === dated2.id).nearestExpiry;
+  check("صُرفت الدفعة القريبة فاختفى تنبيهها", (await nearestOf2()) === "2026-12-01",
+    String(await nearestOf2()));
+
+  await db.recordMovement({
+    itemId: dated2.id, kind: "in", qty: 4, expiryDate: null,
+    reason: "ردُّ ما لم يُستعمل", visitId: visit2, patientId: null, actor: "طبيب", isReturn: true,
+  });
+  check("ورُدَّت فعاد التنبيه — المادّة على الرفّ وتنتهي في موعدها",
+    (await nearestOf2()) === "2026-06-01", String(await nearestOf2()));
+  check("وتوافق القاعدةُ التطبيقَ في ذلك", await (async () => {
+    const { nearestExpiry } = await import("../lib/inventory.ts");
+    return (await nearestOf2()) === nearestExpiry(await db.listMovements(dated2.id, 500));
+  })());
+
+  console.log("\n  ── لا حركةَ على زيارةٍ وُقّعت ──");
+
+  await db.getPool().query(`UPDATE visits SET signed_at = NOW() WHERE id = $1`, [visit2]);
+  const afterSign = await db.recordMovement({
+    itemId: dated2.id, kind: "out", qty: 1, expiryDate: null,
+    reason: null, visitId: visit2, patientId: null, actor: "طبيب",
+  });
+  check("الصرف على زيارةٍ موقَّعة مرفوض — والواجهة وحدها ليست حارسًا",
+    !afterSign.ok, afterSign.message ?? "");
+  const ghostVisit = await db.recordMovement({
+    itemId: dated2.id, kind: "out", qty: 1, expiryDate: null,
+    reason: null, visitId: visit2 + 9999, patientId: null, actor: "طبيب",
+  });
+  check("ولا صرفَ على زيارةٍ لا وجود لها", !ghostVisit.ok, ghostVisit.message ?? "");
+  const withoutVisit = await db.recordMovement({
+    itemId: dated2.id, kind: "out", qty: 1, expiryDate: null,
+    reason: null, visitId: null, patientId: null, actor: "مخزن",
+  });
+  check("والصرف بلا زيارةٍ يبقى مقبولًا — جردٌ ومخزنٌ لا مريض", withoutVisit.ok,
+    withoutVisit.ok ? "" : withoutVisit.message);
+
   console.log("\n  ── تعديل البند ──");
 
   const renamed = await db.updateInventoryItem({ id: datedId, minLevel: 3, note: "من المورّد س" });

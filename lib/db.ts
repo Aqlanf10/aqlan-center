@@ -563,10 +563,19 @@ export function ensureSchema(): Promise<void> {
         reason      TEXT,
         visit_id    INTEGER       REFERENCES visits(id) ON DELETE SET NULL,
         patient_id  INTEGER       REFERENCES patients(id) ON DELETE SET NULL,
+        -- ردُّ ما صُرف على زيارة، لا إدخالٌ جديد إلى المخزن. والفرق ليس تسمية:
+        -- الإدخال دفعةٌ جديدة لها صلاحيتها، والردّ **إلغاءُ استهلاك** يعيد المادّة
+        -- إلى دفعتها الأولى بصلاحيتها. فلو حُسب الردّ إدخالًا لضاعت صلاحية ما رُدّ،
+        -- ولَبدا بندٌ عاد إلى الرفّ وهو على وشك الانتهاء كأنه سليم.
+        is_return   BOOLEAN       NOT NULL DEFAULT FALSE,
         created_by  TEXT          NOT NULL,
         created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE inventory_movements
+        ADD COLUMN IF NOT EXISTS is_return BOOLEAN NOT NULL DEFAULT FALSE;
       CREATE INDEX IF NOT EXISTS inventory_movements_item_idx ON inventory_movements (item_id, id);
+      CREATE INDEX IF NOT EXISTS inventory_movements_visit_idx
+        ON inventory_movements (visit_id, item_id) WHERE visit_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS inventory_movements_expiry_idx
         ON inventory_movements (expiry_date) WHERE kind = 'in' AND expiry_date IS NOT NULL;
 
@@ -6372,6 +6381,7 @@ export interface InventoryMovement {
   kind: MovementKind;
   qty: number;
   expiryDate: string | null;
+  isReturn: boolean;
   reason: string | null;
   visitId: number | null;
   patientId: number | null;
@@ -6411,16 +6421,21 @@ export async function listInventory(includeInactive = false): Promise<InventoryI
     // بينهما على قاعدةٍ حقيقية كي لا تفترقا بصمت.
     `WITH consumed AS (
        SELECT item_id,
-              SUM(CASE WHEN kind = 'out' THEN ABS(qty)
-                       WHEN kind = 'adjust' AND qty < 0 THEN -qty
-                       ELSE 0 END) AS used
+              GREATEST(SUM(CASE WHEN kind = 'out' THEN ABS(qty)
+                                WHEN kind = 'adjust' AND qty < 0 THEN -qty
+                                -- الردّ يُنقص المستهلك: المادّة عادت إلى دفعتها،
+                                -- فتعود صلاحيتها معها. ولو حُسب إدخالًا جديدًا لبدا
+                                -- بندٌ رجع إلى الرفّ وهو على وشك الانتهاء سليمًا.
+                                WHEN kind = 'in' AND is_return THEN -ABS(qty)
+                                ELSE 0 END), 0) AS used
          FROM inventory_movements GROUP BY item_id
      ),
      batches AS (
        SELECT item_id, expiry_date,
               SUM(ABS(qty)) OVER (PARTITION BY item_id ORDER BY expiry_date, id
                                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative
-         FROM inventory_movements WHERE kind = 'in' AND expiry_date IS NOT NULL
+         FROM inventory_movements
+        WHERE kind = 'in' AND NOT is_return AND expiry_date IS NOT NULL
      ),
      remaining AS (
        SELECT b.item_id, MIN(b.expiry_date) AS nearest_expiry
@@ -6536,11 +6551,39 @@ export async function recordMovement(input: {
   itemId: number; kind: MovementKind; qty: number;
   expiryDate: string | null; reason: string | null;
   visitId: number | null; patientId: number | null; actor: string;
+  /** ردُّ ما صُرف على هذه الزيارة — لا إدخالٌ جديد. يلزمه `visitId`. */
+  isReturn?: boolean;
 }): Promise<{ ok: true; id: number; balance: number } | { ok: false; message: string }> {
   await ensureSchema();
+  const isReturn = Boolean(input.isReturn);
+  if (isReturn && (input.kind !== "in" || !input.visitId)) {
+    return { ok: false, message: "الردّ لا يكون إلا إدخالًا على زيارةٍ صُرف عليها." };
+  }
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
+
+    /*
+     * الزيارة تُقفل أوّلًا وتُفحص.
+     *
+     * والشاشة تمنع الصرف على زيارةٍ موقَّعة — لكنها تمنعه بما **حمّلته** لا بما هو
+     * الآن: يوقّعها زميلٌ من جهازٍ آخر، فتبقى شاشة الطبيب تظنّها مفتوحة فتصرف
+     * عليها. فتُلحق مادّةٌ بزيارةٍ أُغلقت وحُوسبت — وحارسٌ في الواجهة وحدها ليس
+     * حارسًا. والقفل هنا يمنع كذلك أن يقع التوقيع بين الفحص والكتابة.
+     */
+    if (input.visitId) {
+      const { rows: visits } = await client.query<{ signed_at: Date | null }>(
+        `SELECT signed_at FROM visits WHERE id = $1 FOR UPDATE`, [input.visitId],
+      );
+      if (!visits[0]) {
+        await client.query("ROLLBACK");
+        return { ok: false, message: "الزيارة غير موجودة." };
+      }
+      if (visits[0].signed_at) {
+        await client.query("ROLLBACK");
+        return { ok: false, message: "الزيارة موقَّعة — لا تُسجَّل عليها مواد بعد التوقيع." };
+      }
+    }
 
     const { rows: items } = await client.query<{ id: number; is_active: boolean }>(
       `SELECT id, is_active FROM inventory_items WHERE id = $1 FOR UPDATE`,
@@ -6570,15 +6613,44 @@ export async function recordMovement(input: {
       return { ok: false, message: check.message ?? "حركة غير صالحة." };
     }
 
+    /*
+     * لا يُردّ أكثر مما صُرف — ويُحسب الباقي **تحت القفل**.
+     *
+     * وصفُّ الصرف يبقى في السجلّ بعد ردّه، فزرُّ الردّ يُضغط عليه مرّة بعد مرّة —
+     * أو من لسانين معًا — فيدخل المخزنَ في كلّ ضغطةٍ ما لم يخرج منه. **ومخزونٌ
+     * يُصنع من العدم نقيضُ ما بُنيت عليه الوحدة كلّها**، وإخفاء الزرّ في الواجهة
+     * لا يمنعه: الواجهةُ تُخفي، والقفل يمنع.
+     */
+    if (isReturn) {
+      const { rows: sums } = await client.query<{ outstanding: string }>(
+        `SELECT COALESCE(SUM(CASE WHEN kind = 'out' THEN ABS(qty)
+                                  WHEN kind = 'in' AND is_return THEN -ABS(qty)
+                                  ELSE 0 END), 0) AS outstanding
+           FROM inventory_movements WHERE visit_id = $1 AND item_id = $2`,
+        [input.visitId, input.itemId],
+      );
+      const outstanding = Number(sums[0]?.outstanding ?? 0);
+      if (Math.abs(input.qty) > outstanding) {
+        await client.query("ROLLBACK");
+        return {
+          ok: false,
+          message: outstanding > 0
+            ? `لا يُردّ أكثر مما صُرف — الباقي ${outstanding}.`
+            : "لا شيء يُردّ — رُدَّ كلّ ما صُرف على هذه الزيارة.",
+        };
+      }
+    }
+
     const { rows: created } = await client.query<{ id: number }>(
       `INSERT INTO inventory_movements
-         (item_id, kind, qty, expiry_date, reason, visit_id, patient_id, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+         (item_id, kind, qty, expiry_date, reason, visit_id, patient_id, is_return, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         input.itemId, input.kind, Math.abs(input.qty) * (input.kind === "adjust" ? Math.sign(input.qty) : 1),
-        input.kind === "in" ? input.expiryDate : null,
+        // الردّ لا يحمل صلاحية: هو ليس دفعةً جديدة بل رجوعٌ إلى دفعته الأولى.
+        input.kind === "in" && !isReturn ? input.expiryDate : null,
         input.reason?.trim() || null,
-        input.visitId, input.patientId, input.actor,
+        input.visitId, input.patientId, isReturn, input.actor,
       ],
     );
     await client.query("COMMIT");
@@ -6594,7 +6666,8 @@ export async function recordMovement(input: {
 export async function listMovements(itemId: number, limit = 100): Promise<InventoryMovement[]> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `SELECT id, item_id, kind, qty, expiry_date, reason, visit_id, patient_id, created_by, created_at
+    `SELECT id, item_id, kind, qty, expiry_date, is_return, reason, visit_id, patient_id,
+            created_by, created_at
        FROM inventory_movements WHERE item_id = $1
       ORDER BY id DESC LIMIT $2`,
     [itemId, Math.min(500, Math.max(1, limit))],
@@ -6605,9 +6678,54 @@ export async function listMovements(itemId: number, limit = 100): Promise<Invent
     kind: row.kind as MovementKind,
     qty: Number(row.qty),
     expiryDate: row.expiry_date ? (row.expiry_date as Date).toISOString().slice(0, 10) : null,
+    isReturn: Boolean(row.is_return),
     reason: (row.reason as string | null) ?? null,
     visitId: (row.visit_id as number | null) ?? null,
     patientId: (row.patient_id as number | null) ?? null,
+    createdBy: row.created_by as string,
+    createdAt: (row.created_at as Date).toISOString(),
+  }));
+}
+
+export interface VisitMaterial {
+  id: number;
+  itemId: number;
+  itemName: string;
+  unit: string;
+  kind: MovementKind;
+  qty: number;
+  isReturn: boolean;
+  reason: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+/**
+ * ما صُرف على زيارةٍ بعينها — ومعه ما رُدّ منه.
+ *
+ * والمردود يُعرض ولا يُطرح صامتًا: «صُرفت علبتان ورُدّت واحدة» تُقرأ وتُراجَع،
+ * و«صُرفت واحدة» تخفي أن اثنتين خرجتا من المخزن يومًا. وهو نفس سبب منع حذف الحركات.
+ */
+export async function listVisitMaterials(visitId: number): Promise<VisitMaterial[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT m.id, m.item_id, i.name AS item_name, i.unit, m.kind, m.qty, m.is_return,
+            m.reason, m.created_by, m.created_at
+       FROM inventory_movements m
+       JOIN inventory_items i ON i.id = m.item_id
+      WHERE m.visit_id = $1
+      ORDER BY m.id`,
+    [visitId],
+  );
+  return rows.map((row) => ({
+    id: row.id as number,
+    itemId: row.item_id as number,
+    itemName: row.item_name as string,
+    unit: row.unit as string,
+    kind: row.kind as MovementKind,
+    qty: Number(row.qty),
+    isReturn: Boolean(row.is_return),
+    reason: (row.reason as string | null) ?? null,
     createdBy: row.created_by as string,
     createdAt: (row.created_at as Date).toISOString(),
   }));
