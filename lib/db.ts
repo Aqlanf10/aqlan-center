@@ -5669,7 +5669,7 @@ export async function documentsForArchive(): Promise<{
 
 import {
   canComplete, caseProgress, dueState, followUpSummary, latenessDays,
-  nextAdjustmentDue, nextWire, sortByLateness,
+  nextFollowUpDue, nextWire, sortByLateness,
   type Appliance, type Arches, type CaseProgress, type CaseStatus,
   type ElasticClass, type FollowUpCase, type OrthoPhase, type RetainerType, type SlotSize,
 } from "./ortho";
@@ -5838,15 +5838,19 @@ export interface OrthoFollowUp extends FollowUpCase {
 export async function listOrthoFollowUp(input: {
   today: string; adjustWeeks: number; retentionWeeks: number;
 }): Promise<OrthoFollowUp[]> {
-  const cases = await listOrthoCases(input.today);
+  // بلا اقتطاع: من يسقط بالحدّ هو الأقدم، وهو أولى من يتأخّر.
+  const cases = await listOrthoCases(input.today, undefined, 5000);
   return sortByLateness(cases.map((one) => {
     const last = one.adjustments[0] ?? null;
-    const dueOn = nextAdjustmentDue({
+    const dueOn = nextFollowUpDue({
+      status: one.status,
       startDate: one.startDate,
+      // التثبيت يُقاس من تسليم المثبّت لا من مهلة آخر شدّة قبل نزع الجهاز.
+      retainerOn: one.retainerOn,
       lastAdjustment: last?.doneOn ?? null,
       lastNextWeeks: last?.nextWeeks ?? null,
-      // التثبيت يُراجَع ولا يُشدّ، فمهلته أبعد ومن إعدادٍ آخر.
-      defaultWeeks: one.status === "retention" ? input.retentionWeeks : input.adjustWeeks,
+      adjustWeeks: input.adjustWeeks,
+      retentionWeeks: input.retentionWeeks,
     });
     return {
       id: one.id,
@@ -5890,12 +5894,22 @@ export async function openOrthoCaseFor(patientId: number, today: string): Promis
   return (await hydrateCases(rows, today))[0] ?? null;
 }
 
-export async function listOrthoCases(today: string, status?: CaseStatus): Promise<OrthoCase[]> {
+/**
+ * حالات التقويم.
+ *
+ * و`limit` يُرفع للمتابعة عمدًا: الترتيب `start_date DESC` يجعل حدَّ الثلاثمئة يقطع
+ * **الأقدم** — وهم أولى من يتأخّر عن شدّته. فقائمةُ المتأخّرين كانت ستُسقط أحقّ
+ * الناس بالظهور فيها، بلا أن تقول إنها أسقطت أحدًا.
+ */
+export async function listOrthoCases(
+  today: string, status?: CaseStatus, limit = 300,
+): Promise<OrthoCase[]> {
   await ensureSchema();
+  const cap = Math.max(1, Math.min(5000, Math.round(limit)));
   const { rows } = await getPool().query<CaseRow>(
     status
-      ? `${CASE_SELECT} WHERE c.status = $1 ORDER BY c.start_date DESC LIMIT 300`
-      : `${CASE_SELECT} WHERE c.status IN ('active','retention') ORDER BY c.start_date DESC LIMIT 300`,
+      ? `${CASE_SELECT} WHERE c.status = $1 ORDER BY c.start_date DESC LIMIT ${cap}`
+      : `${CASE_SELECT} WHERE c.status IN ('active','retention') ORDER BY c.start_date DESC LIMIT ${cap}`,
     status ? [status] : [],
   );
   return hydrateCases(rows, today);

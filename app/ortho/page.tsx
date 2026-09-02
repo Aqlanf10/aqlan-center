@@ -145,6 +145,9 @@ export default function OrthoFollowUpPage() {
               clinicName,
               dueOn: friendlyDate(one.dueOn),
               lateDays: one.lateDays,
+              // رسالةٌ تقول «شدّ التقويم» لمن نُزع جهازه تُقرأ ارتباكًا — فيظنّ
+              // المركز خلط ملفّه بملفّ غيره.
+              status: one.status,
             });
             return (
               <li key={one.id} className={`rounded-2xl border p-3 ${DUE_STYLE[one.due]}`}>

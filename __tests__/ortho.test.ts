@@ -12,6 +12,7 @@ import {
   latenessDays,
   nextAdjustmentDate,
   nextAdjustmentDue,
+  nextFollowUpDue,
   sortByLateness,
   nextWire,
   usesArchwires,
@@ -229,5 +230,40 @@ describe("ترتيب المتابعة وتصفيتها", () => {
 
   it("والأرقام تفصل النشط عن التثبيت — وإلا أخفى عشرون مثبّتًا حالةً توقّفت", () => {
     expect(followUpSummary(cases)).toEqual({ overdue: 2, dueThisWeek: 3, retentionDue: 1 });
+  });
+});
+
+describe("التثبيت يُقاس من تسليم المثبّت", () => {
+  const base = {
+    startDate: "2026-01-01",
+    lastAdjustment: "2026-06-01",
+    lastNextWeeks: 4,
+    adjustWeeks: 4,
+    retentionWeeks: 24,
+  };
+
+  it("الحالة النشطة من مهلة آخر شدّة", () => {
+    expect(nextFollowUpDue({ ...base, status: "active", retainerOn: null }))
+      .toBe("2026-06-29");
+  });
+
+  it("والتثبيت من تاريخ تسليم المثبّت بمهلته — لا من مهلة شدّةٍ سبقت نزع الجهاز", () => {
+    expect(nextFollowUpDue({ ...base, status: "retention", retainerOn: "2026-06-10" }))
+      .toBe("2026-11-25");
+  });
+
+  it("وبلا تاريخ تسليمٍ مسجَّل يُرجع إلى آخر شدّة — بمهلة التثبيت لا بمهلتها", () => {
+    expect(nextFollowUpDue({ ...base, status: "retention", retainerOn: null }))
+      .toBe("2026-11-16");
+  });
+
+  /*
+   * الحارس على العطل بعينه: لولا الفصل لظهرت كلّ حالات التثبيت متأخّرةً في اليوم
+   * الذي تُغلق فيه — وقائمةٌ تُولد كاذبة يتجاوزها قارئها من أوّل يوم.
+   */
+  it("فلا تُولد حالة تثبيتٍ متأخّرةً يوم تسليم مثبّتها", () => {
+    const due = nextFollowUpDue({ ...base, status: "retention", retainerOn: "2026-06-10" });
+    expect(dueState(due, "2026-06-10")).toBe("later");
+    expect(dueState(due, "2026-07-10")).toBe("later");
   });
 });

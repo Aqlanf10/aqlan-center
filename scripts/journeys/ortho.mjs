@@ -133,11 +133,15 @@ await releaseChair(page, name, BASE);
  * وتُصنع الحالةُ متأخّرةً بشدّةٍ قديمة عبر المسار، لا بانتظارِ شهرين: الرحلة تفحص
  * أن الشاشة تعرض ما في القاعدة، لا أن الزمن يمرّ.
  */
-const lateName = "مريضة انقطعت " + Date.now().toString().slice(-4);
+const lateStamp = Date.now().toString();
+const lateName = "مريضة انقطعت " + lateStamp.slice(-4);
+// رقمٌ فريد لكل تشغيل: كاشفُ التكرار يردّ 409 على رقمٍ مسجَّل — وهو يعمل كما يجب،
+// والرحلة هي التي كانت تعيد رقمًا واحدًا كل مرّة.
+const latePhone = "77" + lateStamp.slice(-7);
 const seeded = await page.evaluate(async (patientName) => {
   const madePatient = await fetch("/api/patients", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fullName: patientName, phone: "770998877", gender: "female" }),
+    body: JSON.stringify({ fullName: patientName.name, phone: patientName.phone, gender: "female" }),
   });
   if (!madePatient.ok) return { ok: false, step: "patient", status: madePatient.status };
   const patient = await madePatient.json();
@@ -159,7 +163,7 @@ const seeded = await page.evaluate(async (patientName) => {
     }),
   });
   return { ok: madeAdjust.ok, step: "adjust", status: madeAdjust.status, id };
-}, lateName);
+}, { name: lateName, phone: latePhone });
 console.log("10) حالةٌ منقطعة مُهيَّأة:", seeded.ok ? "✓" : `✗ (${seeded.step} ${seeded.status})`);
 
 await page.getByRole("link", { name: "متابعة التقويم" }).first().click();

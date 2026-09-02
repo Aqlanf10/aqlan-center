@@ -194,6 +194,71 @@ try {
   check("ومن شُدّ اليوم يخرج من المتأخّرين", afterAdjust?.due !== "overdue", String(afterAdjust?.due));
   check("وموعده القادم بمهلته الجديدة", afterAdjust?.dueOn === "2026-10-13", String(afterAdjust?.dueOn));
 
+  console.log("\n  ── التثبيت يُقاس من تسليم مثبّته ──");
+
+  /*
+   * والعطل الذي يمنعه هذا: آخر شدّةٍ قبل نزع الجهاز قالت «بعد أربعة أسابيع»، ومضى
+   * على موعدها شهران قبل أن يُنزع الجهاز ويُسلَّم المثبّت. فلو حُسب التثبيت من تلك
+   * المهلة لظهرت الحالة **متأخّرةً في اليوم الذي أُغلقت فيه** — وقائمةٌ تُولد كاذبة
+   * يتجاوزها قارئها من أوّل يوم فلا يرى الصادق فيها أبدًا.
+   */
+  const held = await db.createPatient({
+    fullName: "مريضة التثبيت", phone: "770333444", altPhone: null, gender: "female",
+    birthYear: 2006, address: null, medicalAlert: null, note: null,
+  });
+  const heldCase = await db.createOrthoCase({
+    patientId: held.id, appliance: "fixed_metal", arches: "both", slot: "022",
+    bracketSystem: null, startDate: "2025-01-01", plannedMonths: 18,
+    planId: null, note: null, createdBy: "فحص",
+  });
+  await db.recordAdjustment({
+    caseId: heldCase.id, visitId: null, doneOn: "2026-06-20", phase: "finishing",
+    upperWire: "019x25 SS", lowerWire: "019x25 SS", elastics: "none",
+    elasticNote: null, done: "آخر شدّة قبل النزع", nextWeeks: 4, note: null, recordedBy: "فحص",
+  });
+  await db.setRetainer({ id: heldCase.id, retainer: "essix", deliveredOn: "2026-08-20" });
+
+  const retained = (await db.listOrthoFollowUp({ today, ...cadence }))
+    .find((one) => one.id === heldCase.id);
+  check("الحالة صارت تثبيتًا", retained?.status === "retention", String(retained?.status));
+  check("وموعد مراجعتها بعد ستة أشهر من تسليم المثبّت",
+    retained?.dueOn === "2027-02-04", String(retained?.dueOn));
+  check("ولا تُولد متأخّرةً بمهلة شدّةٍ سبقت نزع الجهاز",
+    retained?.due === "later", String(retained?.due));
+  const retainedCounts = await db.orthoCounts({ today, ...cadence });
+  check("ولا تُحسب في عدّاد المتأخّرين",
+    retainedCounts.overdue === 0, JSON.stringify(retainedCounts));
+
+  console.log("\n  ── لا يسقط أحدٌ من قائمة المتابعة بلا أن يُقال ──");
+
+  /*
+   * قائمةُ الحالات مقطوعةٌ بحدّ ثلاثمئة مرتَّبةً بتاريخ البدء تنازليًّا — أي أن
+   * **الأقدم هو أوّل من يسقط**، وهو أولى من يتأخّر عن شدّته. فقائمةُ المتأخّرين
+   * كانت ستُسقط أحقّ الناس بالظهور فيها، بلا أن تقول إنها أسقطت أحدًا.
+   *
+   * ويُصنع هنا ما يتجاوز الحدّ: حالةٌ قديمة تسبق الثلاثمئة كلَّها، فإن ظهرت ظهر
+   * معها أنّ القطع رُفع.
+   */
+  const bulk = 320;
+  await db.getPool().query(
+    `INSERT INTO patients (patient_number, full_name, gender)
+     SELECT 'P-BULK-' || g, 'مريض الحشد ' || g, 'unknown' FROM generate_series(1, $1) g`,
+    [bulk],
+  );
+  await db.getPool().query(
+    `INSERT INTO ortho_cases
+       (patient_id, appliance, arches, slot, status, phase, start_date, planned_months, created_by)
+     SELECT p.id, 'fixed_metal', 'both', '022', 'active', 'working',
+            DATE '2026-03-01' + (row_number() OVER (ORDER BY p.id))::int, 18, 'فحص'
+       FROM patients p WHERE p.patient_number LIKE 'P-BULK-%'`,
+  );
+
+  const crowded = await db.listOrthoFollowUp({ today, ...cadence });
+  check("القائمة تتجاوز حدّ الثلاثمئة", crowded.length > 300, `${crowded.length} حالة`);
+  check("والأقدم — أولى من يتأخّر — لم يسقط منها",
+    crowded.some((one) => one.id === lateCase.id),
+    crowded.some((one) => one.id === lateCase.id) ? "" : "سقطت الحالة الأقدم");
+
   await db.getPool().end();
 } catch (error) {
   console.error(`فشل: ${error.message}`);

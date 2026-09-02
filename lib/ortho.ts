@@ -334,6 +334,40 @@ export function nextAdjustmentDue(input: {
 }
 
 /**
+ * موعد المتابعة القادم — للحالة النشطة وللتثبيت معًا.
+ *
+ * **والتثبيت لا يُقاس بمهلة الشدّ.** الحالة التي انتقلت إلى التثبيت آخرُ شدّةٍ فيها
+ * قالت «بعد أربعة أسابيع» — لكن الجهاز نُزع بعدها، والمثبّت يُراجَع كل ستّة أشهر لا
+ * كل شهر. فلو حُسب من مهلة تلك الشدّة لظهرت **كلّ حالات التثبيت متأخّرةً في اليوم
+ * الذي تُغلق فيه** — وقائمةٌ تُولد كاذبة يتجاوزها قارئها من أوّل يوم.
+ *
+ * فالتثبيت يُقاس من **تاريخ تسليم المثبّت** (`retainerOn`) بمهلة التثبيت، والنشطة
+ * من مهلة آخر شدّةٍ كما حدّدها الطبيب.
+ */
+export function nextFollowUpDue(input: {
+  status: CaseStatus;
+  startDate: string;
+  retainerOn: string | null;
+  lastAdjustment: string | null;
+  lastNextWeeks: number | null;
+  adjustWeeks: number;
+  retentionWeeks: number;
+}): string {
+  if (input.status === "retention") {
+    return nextAdjustmentDate(
+      input.retainerOn ?? input.lastAdjustment ?? input.startDate,
+      Math.max(1, input.retentionWeeks),
+    );
+  }
+  return nextAdjustmentDue({
+    startDate: input.startDate,
+    lastAdjustment: input.lastAdjustment,
+    lastNextWeeks: input.lastNextWeeks,
+    defaultWeeks: input.adjustWeeks,
+  });
+}
+
+/**
  * موضع الحالة من موعدها.
  *
  * ومهلةُ أسبوعٍ بعد الموعد قبل أن يُقال «تأخّر»: مريضٌ تأخّر ثلاثة أيام ليس منقطعًا،
@@ -424,15 +458,26 @@ export function adjustmentRecallText(input: {
   clinicName: string;
   dueOn: string;
   lateDays: number;
+  /** حالة التقويم — والتثبيت رسالته غير رسالة الشدّ. */
+  status?: CaseStatus;
 }): string {
+  /*
+   * ورسالةٌ تقول «موعد شدّ التقويم» لمريضٍ نُزع جهازه قبل شهور تُقرأ ارتباكًا —
+   * فيظنّ المركز خلط ملفّه بملفّ غيره. والمثبّت **يُراجَع** ولا يُشدّ.
+   */
+  const retention = input.status === "retention";
   const lines = [
     `السلام عليكم ${input.patientName}،`,
     ``,
-    `تذكير من ${input.clinicName} بموعد شدّ التقويم.`,
+    retention
+      ? `تذكير من ${input.clinicName} بموعد مراجعة المثبّت.`
+      : `تذكير من ${input.clinicName} بموعد شدّ التقويم.`,
   ];
   lines.push(
     input.lateDays > 0
-      ? `موعدك كان ${input.dueOn}. والجهاز يبقى يعمل بين الشدّات، وتأخّرها يُطيل مدّة العلاج وقد يُتعب الأسنان — فنرجو حجز موعدك قريبًا.`
+      ? retention
+        ? `موعد المراجعة كان ${input.dueOn}. والمثبّت يُفحص ليُطمأنّ أنه سليم وفي مكانه — فالأسنان ترتدّ بلا مثبّتٍ يعمل، وتضيع نتيجة سنتين. نرجو حجز موعدك.`
+        : `موعدك كان ${input.dueOn}. والجهاز يبقى يعمل بين الشدّات، وتأخّرها يُطيل مدّة العلاج وقد يُتعب الأسنان — فنرجو حجز موعدك قريبًا.`
       : `موعدك القادم ${input.dueOn}. نرجو تأكيد الحضور.`,
   );
   return lines.join("\n");
