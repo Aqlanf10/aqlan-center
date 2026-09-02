@@ -25,6 +25,8 @@ export type SettingKey =
   | "finance.rate.USD"
   | "finance.locked_before"
   | "lab.default_days"
+  | "ortho.adjust_weeks"
+  | "ortho.retention_weeks"
   | "recall.lapse_weeks"
   | "documents.max_megabytes";
 
@@ -52,6 +54,11 @@ export const SETTING_DEFAULTS: Record<SettingKey, string> = {
   // فارغ = لا قفل. يُملأ بتاريخ فيصير كل ما قبله مقفلًا لا يُعدَّل.
   "finance.locked_before": "",
   "lab.default_days": "7",
+  // مهلة الشدّ حين لا يحدّدها الطبيب في الزيارة: أربعة أسابيع هي الأشيع في التقويم
+  // الثابت، والانقطاع الأطول يُطيل العلاج ويفكّ ما أُنجز.
+  "ortho.adjust_weeks": "4",
+  // ومتابعة التثبيت أبعد: المثبّت يُراجَع لا يُشدّ.
+  "ortho.retention_weeks": "24",
   "recall.lapse_weeks": "6",
   // عشرون ميغابايت تكفي أشعةً بانورامية بجودةٍ عالية، وتردّ ملفًّا رُفع بالخطأ
   // — مقطعَ فيديو مثلًا — قبل أن يملأ القرص.
@@ -164,6 +171,10 @@ export function validateSetting(key: SettingKey, value: string): string | null {
     const days = Number(trimmed);
     if (!Number.isInteger(days) || days < 1 || days > 120) return "المهلة بين 1 و120 يومًا.";
   }
+  if (key === "ortho.adjust_weeks" || key === "ortho.retention_weeks") {
+    const weeks = Number(trimmed);
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 104) return "المدة بين 1 و104 أسابيع.";
+  }
   if (key === "recall.lapse_weeks") {
     const weeks = Number(trimmed);
     if (!Number.isInteger(weeks) || weeks < 1 || weeks > 104) return "المدة بين 1 و104 أسابيع.";
@@ -198,6 +209,8 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: "clinic.day_start", label: "بداية الدوام", kind: "time", group: "operations" },
   { key: "clinic.day_end", label: "نهاية الدوام", kind: "time", group: "operations" },
   { key: "lab.default_days", label: "مهلة المختبر الافتراضية (أيام)", kind: "number", group: "operations" },
+  { key: "ortho.adjust_weeks", label: "مهلة شدّ التقويم الافتراضية (أسابيع)", hint: "تُستعمل حين لا يحدّد الطبيب موعد الشدّ القادم", kind: "number", group: "operations" },
+  { key: "ortho.retention_weeks", label: "مهلة مراجعة التثبيت (أسابيع)", kind: "number", group: "operations" },
   { key: "recall.lapse_weeks", label: "مدة اعتبار المريض منقطعًا (أسابيع)", kind: "number", group: "operations" },
   { key: "documents.max_megabytes", label: "أقصى حجم لملف الأشعة (ميغابايت)", kind: "number", group: "operations" },
 ];

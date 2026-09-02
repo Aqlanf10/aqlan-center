@@ -144,6 +144,121 @@ try {
   check("والقديمة باقية في السجل",
     (await db.listPatientOrthoCases(patient.id, today)).length === 2);
 
+  console.log("\n  ── متابعة الشدّ: من انقطع يظهر، ومن شُدّ يختفي ──");
+
+  /*
+   * وهذا ما لا يُفحص باختبار وحدة: أن ما تراه الشاشة يوافق ما في القاعدة **بعد**
+   * أن تُسجَّل شدّةٌ فعلًا. فمريضٌ شُدّ اليوم يبقى في قائمة المتأخّرين خطأٌ يُتّصل
+   * به فيُسأل «لماذا لم تأتِ؟» وهو خارجٌ لتوّه من الكرسي.
+   */
+  const cadence = { adjustWeeks: 4, retentionWeeks: 24 };
+  const lateOne = await db.createPatient({
+    fullName: "مريضة انقطعت", phone: "770111222", altPhone: null, gender: "female",
+    birthYear: 2010, address: null, medicalAlert: null, note: null,
+  });
+  const lateCase = await db.createOrthoCase({
+    patientId: lateOne.id, appliance: "fixed_metal", arches: "both", slot: "022",
+    bracketSystem: null, startDate: "2026-01-01", plannedMonths: 18,
+    planId: null, note: null, createdBy: "فحص",
+  });
+  // شدّةٌ قبل ثلاثة أشهر ومهلتها أربعة أسابيع: تأخّرٌ حقيقي.
+  await db.recordAdjustment({
+    caseId: lateCase.id, visitId: null, doneOn: "2026-06-01", phase: "working",
+    upperWire: "016 SS", lowerWire: "016 SS", elastics: "none",
+    elasticNote: null, done: "شدّ", nextWeeks: 4, note: null, recordedBy: "فحص",
+  });
+
+  const followUp = await db.listOrthoFollowUp({ today, ...cadence });
+  const lagging = followUp.find((one) => one.id === lateCase.id);
+  check("المنقطعة تظهر في المتابعة", Boolean(late));
+  check("وموعدها من مهلة آخر شدّة لا من متوسّط", lagging?.dueOn === "2026-06-29", String(lagging?.dueOn));
+  check("وحالها «تأخّرت»", lagging?.due === "overdue", String(lagging?.due));
+  check("ومعها رقم جوالها — قائمةٌ بلا رقمٍ لا يُعمل بها",
+    (lagging?.patientPhone ?? "").endsWith("770111222"), String(lagging?.patientPhone));
+  check("والأطول انقطاعًا أوّل القائمة", followUp[0]?.id === lateCase.id,
+    `${followUp[0]?.patientName} · ${followUp[0]?.lateDays} يومًا`);
+
+  const counts = await db.orthoCounts({ today, ...cadence });
+  const { followUpSummary } = await import("../lib/ortho.ts");
+  check("والعدّاد يوافق القائمة نفسها",
+    JSON.stringify(counts) === JSON.stringify(followUpSummary(followUp)), JSON.stringify(counts));
+
+  // تُشدّ اليوم: يجب أن تخرج من المتأخّرين فورًا.
+  await db.recordAdjustment({
+    caseId: lateCase.id, visitId: null, doneOn: today, phase: "working",
+    upperWire: "018 SS", lowerWire: "018 SS", elastics: "none",
+    elasticNote: null, done: "شدّ", nextWeeks: 6, note: null, recordedBy: "فحص",
+  });
+  const afterAdjust = (await db.listOrthoFollowUp({ today, ...cadence }))
+    .find((one) => one.id === lateCase.id);
+  check("ومن شُدّ اليوم يخرج من المتأخّرين", afterAdjust?.due !== "overdue", String(afterAdjust?.due));
+  check("وموعده القادم بمهلته الجديدة", afterAdjust?.dueOn === "2026-10-13", String(afterAdjust?.dueOn));
+
+  console.log("\n  ── التثبيت يُقاس من تسليم مثبّته ──");
+
+  /*
+   * والعطل الذي يمنعه هذا: آخر شدّةٍ قبل نزع الجهاز قالت «بعد أربعة أسابيع»، ومضى
+   * على موعدها شهران قبل أن يُنزع الجهاز ويُسلَّم المثبّت. فلو حُسب التثبيت من تلك
+   * المهلة لظهرت الحالة **متأخّرةً في اليوم الذي أُغلقت فيه** — وقائمةٌ تُولد كاذبة
+   * يتجاوزها قارئها من أوّل يوم فلا يرى الصادق فيها أبدًا.
+   */
+  const held = await db.createPatient({
+    fullName: "مريضة التثبيت", phone: "770333444", altPhone: null, gender: "female",
+    birthYear: 2006, address: null, medicalAlert: null, note: null,
+  });
+  const heldCase = await db.createOrthoCase({
+    patientId: held.id, appliance: "fixed_metal", arches: "both", slot: "022",
+    bracketSystem: null, startDate: "2025-01-01", plannedMonths: 18,
+    planId: null, note: null, createdBy: "فحص",
+  });
+  await db.recordAdjustment({
+    caseId: heldCase.id, visitId: null, doneOn: "2026-06-20", phase: "finishing",
+    upperWire: "019x25 SS", lowerWire: "019x25 SS", elastics: "none",
+    elasticNote: null, done: "آخر شدّة قبل النزع", nextWeeks: 4, note: null, recordedBy: "فحص",
+  });
+  await db.setRetainer({ id: heldCase.id, retainer: "essix", deliveredOn: "2026-08-20" });
+
+  const retained = (await db.listOrthoFollowUp({ today, ...cadence }))
+    .find((one) => one.id === heldCase.id);
+  check("الحالة صارت تثبيتًا", retained?.status === "retention", String(retained?.status));
+  check("وموعد مراجعتها بعد ستة أشهر من تسليم المثبّت",
+    retained?.dueOn === "2027-02-04", String(retained?.dueOn));
+  check("ولا تُولد متأخّرةً بمهلة شدّةٍ سبقت نزع الجهاز",
+    retained?.due === "later", String(retained?.due));
+  const retainedCounts = await db.orthoCounts({ today, ...cadence });
+  check("ولا تُحسب في عدّاد المتأخّرين",
+    retainedCounts.overdue === 0, JSON.stringify(retainedCounts));
+
+  console.log("\n  ── لا يسقط أحدٌ من قائمة المتابعة بلا أن يُقال ──");
+
+  /*
+   * قائمةُ الحالات مقطوعةٌ بحدّ ثلاثمئة مرتَّبةً بتاريخ البدء تنازليًّا — أي أن
+   * **الأقدم هو أوّل من يسقط**، وهو أولى من يتأخّر عن شدّته. فقائمةُ المتأخّرين
+   * كانت ستُسقط أحقّ الناس بالظهور فيها، بلا أن تقول إنها أسقطت أحدًا.
+   *
+   * ويُصنع هنا ما يتجاوز الحدّ: حالةٌ قديمة تسبق الثلاثمئة كلَّها، فإن ظهرت ظهر
+   * معها أنّ القطع رُفع.
+   */
+  const bulk = 320;
+  await db.getPool().query(
+    `INSERT INTO patients (patient_number, full_name, gender)
+     SELECT 'P-BULK-' || g, 'مريض الحشد ' || g, 'unknown' FROM generate_series(1, $1) g`,
+    [bulk],
+  );
+  await db.getPool().query(
+    `INSERT INTO ortho_cases
+       (patient_id, appliance, arches, slot, status, phase, start_date, planned_months, created_by)
+     SELECT p.id, 'fixed_metal', 'both', '022', 'active', 'working',
+            DATE '2026-03-01' + (row_number() OVER (ORDER BY p.id))::int, 18, 'فحص'
+       FROM patients p WHERE p.patient_number LIKE 'P-BULK-%'`,
+  );
+
+  const crowded = await db.listOrthoFollowUp({ today, ...cadence });
+  check("القائمة تتجاوز حدّ الثلاثمئة", crowded.length > 300, `${crowded.length} حالة`);
+  check("والأقدم — أولى من يتأخّر — لم يسقط منها",
+    crowded.some((one) => one.id === lateCase.id),
+    crowded.some((one) => one.id === lateCase.id) ? "" : "سقطت الحالة الأقدم");
+
   await db.getPool().end();
 } catch (error) {
   console.error(`فشل: ${error.message}`);

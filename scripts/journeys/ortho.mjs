@@ -126,4 +126,64 @@ const close = await page.evaluate(async (base) => {
 console.log("9) إكمال بلا مثبّت:",
   close.status === 409 ? `مرفوض ✓ — ${close.body?.message ?? ""}` : `مقبول ✗ (${close.status})`);
 await releaseChair(page, name, BASE);
+
+/*
+ * شاشة المتابعة — ما لا يُفحص في القاعدة: أن الطبيب يصل إليها ويرى فيها مريضه.
+ *
+ * وتُصنع الحالةُ متأخّرةً بشدّةٍ قديمة عبر المسار، لا بانتظارِ شهرين: الرحلة تفحص
+ * أن الشاشة تعرض ما في القاعدة، لا أن الزمن يمرّ.
+ */
+const lateStamp = Date.now().toString();
+const lateName = "مريضة انقطعت " + lateStamp.slice(-4);
+// رقمٌ فريد لكل تشغيل: كاشفُ التكرار يردّ 409 على رقمٍ مسجَّل — وهو يعمل كما يجب،
+// والرحلة هي التي كانت تعيد رقمًا واحدًا كل مرّة.
+const latePhone = "77" + lateStamp.slice(-7);
+const seeded = await page.evaluate(async (patientName) => {
+  const madePatient = await fetch("/api/patients", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fullName: patientName.name, phone: patientName.phone, gender: "female" }),
+  });
+  if (!madePatient.ok) return { ok: false, step: "patient", status: madePatient.status };
+  const patient = await madePatient.json();
+  const madeCase = await fetch("/api/ortho", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      patientId: patient.id, appliance: "fixed_metal", arches: "both", slot: "022",
+      startDate: "2026-01-01", plannedMonths: 18,
+    }),
+  });
+  if (!madeCase.ok) return { ok: false, step: "case", status: madeCase.status };
+  const { id } = await madeCase.json();
+  // شدّةٌ قديمة بمهلة أربعة أسابيع — فموعدها مضى بكثير.
+  const madeAdjust = await fetch(`/api/ortho/${id}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      doneOn: "2026-05-01", phase: "working", upperWire: "016 SS", lowerWire: "016 SS",
+      elastics: "none", done: "شدّ", nextWeeks: 4,
+    }),
+  });
+  return { ok: madeAdjust.ok, step: "adjust", status: madeAdjust.status, id };
+}, { name: lateName, phone: latePhone });
+console.log("10) حالةٌ منقطعة مُهيَّأة:", seeded.ok ? "✓" : `✗ (${seeded.step} ${seeded.status})`);
+
+await page.getByRole("link", { name: "متابعة التقويم" }).first().click();
+await page.waitForURL((url) => url.pathname === "/ortho", { timeout: 20000 });
+await page.waitForTimeout(3000);
+const board = await page.locator("body").innerText();
+console.log("    الشاشة تفتح على المتأخّرين:", board.includes(lateName) ? "✓" : "✗");
+console.log("    وتقول كم تأخّر:", /متأخّر \d+ يومًا/.test(board) ? "✓" : "✗");
+console.log("    ومعه زرّ تذكيرٍ بواتساب:",
+  (await page.getByRole("link", { name: "ذكّره بواتساب" }).count()) > 0 ? "✓" : "✗");
+await page.screenshot({ path: OUT + "/ortho-4-followup.png", fullPage: true });
+
+const orthoBadge = await page.evaluate(async () =>
+  (await (await fetch("/api/ortho?summary=1", { cache: "no-store" })).json()).overdue);
+await page.goto(BASE + "/", { waitUntil: "networkidle" });
+await page.waitForTimeout(3000);
+const navText = (await page.getByRole("link", { name: /متابعة التقويم/ }).first().innerText())
+  .replace(/\s+/g, " ").trim();
+console.log("    والعدّاد على القشرة يوافق الخادم:",
+  orthoBadge > 0 && new RegExp(`\\b${orthoBadge}\\b`).test(navText)
+    ? `✓ ${navText}` : `✗ ${navText} · الخادم ${orthoBadge}`);
+
 await b.close();

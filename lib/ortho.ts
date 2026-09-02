@@ -244,7 +244,9 @@ export function isOverdueForAdjustment(input: {
 }): boolean {
   const since = input.lastAdjustmentDate ?? input.startDate;
   const due = nextAdjustmentDate(since, input.everyWeeks ?? 4);
-  return daysBetween(due, input.today) > (input.graceDays ?? 7);
+  // القاعدة واحدة لهذه الدالّة ولشاشة المتابعة: قاعدتان لمعنًى واحد تفترقان،
+  // فيقول ملفُّ المريض «في موعده» وتقول القائمة «تأخّر» — ولا يُعرف أيّهما يُصدَّق.
+  return daysBetween(due, input.today) > (input.graceDays ?? ORTHO_GRACE_DAYS);
 }
 
 /* ─────────────────────────── التثبيت ─────────────────────────── */
@@ -275,4 +277,208 @@ export function canComplete(input: {
     return { ok: false, message: "سجّل المثبّت قبل إغلاق الحالة — الارتداد يُضيع نتيجة سنتين." };
   }
   return { ok: true };
+}
+
+/* ------------------------------------------------------------------ *
+ * متابعة الشدّ — من انقطع عن موعده
+ * ------------------------------------------------------------------ */
+
+/**
+ * الحالة تُشدّ كل أربعة أسابيع تقريبًا، لا كل «متى تذكّر المريض».
+ *
+ * وهذا **تراكمُ التقويم**: مريضٌ يتأخّر شهرين عن شدّته لا يظهر في أي شاشة — لا هو
+ * في قائمة الانتظار، ولا له موعدٌ فائت يُنبَّه عليه، لأنه ببساطة لم يحجز. فيدرج
+ * الأمر: علاجُ ثمانية عشر شهرًا يصير ثلاثين، والمريض يلوم المركز بحق، والكرسي
+ * الذي كان له يُشغَل بغيره.
+ *
+ * ولا يُعرف اليوم إلا بفتح ملفّ كل مريضٍ على حدة. فتُشتقّ هنا من بياناتٍ مسجّلة
+ * أصلًا: آخر شدّة، والمهلة التي حدّدها الطبيب لها بنفسه (`nextWeeks`).
+ */
+
+export type OrthoDue = "overdue" | "due" | "soon" | "later";
+
+export const ORTHO_DUE_LABEL: Record<OrthoDue, string> = {
+  overdue: "تأخّر عن شدّته",
+  due: "يستحقّ الشدّ",
+  soon: "خلال أسبوع",
+  later: "في موعده",
+};
+
+/** «قريبًا» = خلال هذا العدد من الأيام — مهلةٌ تكفي الاتصال والحجز. */
+export const ORTHO_SOON_DAYS = 7;
+
+/** مهلةٌ بعد الموعد قبل أن يُقال «تأخّر» — تُشارِكها `isOverdueForAdjustment`. */
+export const ORTHO_GRACE_DAYS = 7;
+
+/**
+ * موعد الشدّة القادمة.
+ *
+ * وتُحسب من **مهلة آخر شدّة** لا من مهلةٍ عامة: الطبيب يقول «بعد ستة أسابيع» لحالةٍ
+ * ويقول «بعد ثلاثة» لأخرى، وقولُه أدقّ من أي متوسّط. فإن لم تُسجَّل مهلة — أو لم
+ * تكن هناك شدّةٌ بعد — رُجع إلى الافتراضي من الإعدادات.
+ *
+ * والحالةُ التي لم تُشدّ قطّ تُحسب من تاريخ بدئها: مريضٌ رُكّب له الجهاز ولم يعد
+ * أصلًا هو أولى من يُتابَع، لا من يُستثنى لعدم وجود سجلّ له.
+ */
+export function nextAdjustmentDue(input: {
+  startDate: string;
+  lastAdjustment: string | null;
+  lastNextWeeks: number | null;
+  defaultWeeks: number;
+}): string {
+  const weeks = input.lastNextWeeks && input.lastNextWeeks > 0
+    ? input.lastNextWeeks
+    : Math.max(1, input.defaultWeeks);
+  // نفس `nextAdjustmentDate` التي يعرضها ملفّ المريض — لا حسابٌ ثانٍ إلى جانبها.
+  return nextAdjustmentDate(input.lastAdjustment ?? input.startDate, weeks);
+}
+
+/**
+ * موعد المتابعة القادم — للحالة النشطة وللتثبيت معًا.
+ *
+ * **والتثبيت لا يُقاس بمهلة الشدّ.** الحالة التي انتقلت إلى التثبيت آخرُ شدّةٍ فيها
+ * قالت «بعد أربعة أسابيع» — لكن الجهاز نُزع بعدها، والمثبّت يُراجَع كل ستّة أشهر لا
+ * كل شهر. فلو حُسب من مهلة تلك الشدّة لظهرت **كلّ حالات التثبيت متأخّرةً في اليوم
+ * الذي تُغلق فيه** — وقائمةٌ تُولد كاذبة يتجاوزها قارئها من أوّل يوم.
+ *
+ * فالتثبيت يُقاس من **تاريخ تسليم المثبّت** (`retainerOn`) بمهلة التثبيت، والنشطة
+ * من مهلة آخر شدّةٍ كما حدّدها الطبيب.
+ */
+export function nextFollowUpDue(input: {
+  status: CaseStatus;
+  startDate: string;
+  retainerOn: string | null;
+  lastAdjustment: string | null;
+  lastNextWeeks: number | null;
+  adjustWeeks: number;
+  retentionWeeks: number;
+}): string {
+  if (input.status === "retention") {
+    return nextAdjustmentDate(
+      input.retainerOn ?? input.lastAdjustment ?? input.startDate,
+      Math.max(1, input.retentionWeeks),
+    );
+  }
+  return nextAdjustmentDue({
+    startDate: input.startDate,
+    lastAdjustment: input.lastAdjustment,
+    lastNextWeeks: input.lastNextWeeks,
+    defaultWeeks: input.adjustWeeks,
+  });
+}
+
+/**
+ * موضع الحالة من موعدها.
+ *
+ * ومهلةُ أسبوعٍ بعد الموعد قبل أن يُقال «تأخّر»: مريضٌ تأخّر ثلاثة أيام ليس منقطعًا،
+ * وقائمةٌ تصرخ عليه تُعلّم قارئها أن يتجاوزها — فلا يرى المنقطع شهرين حين يقع.
+ */
+export function dueState(dueOn: string, today: string): OrthoDue {
+  const late = daysBetween(dueOn, today);
+  if (late > ORTHO_GRACE_DAYS) return "overdue";
+  if (late >= 0) return "due";
+  return -late <= ORTHO_SOON_DAYS ? "soon" : "later";
+}
+
+/** أيام التأخّر بعد المهلة — صفرٌ لمن لم يتأخّر. وبها يُرتَّب لا بالاسم. */
+export function latenessDays(dueOn: string, today: string): number {
+  return Math.max(0, daysBetween(dueOn, today) - ORTHO_GRACE_DAYS);
+}
+
+export type OrthoFilter = "overdue" | "week" | "active" | "retention";
+
+export const ORTHO_FILTER_LABEL: Record<OrthoFilter, string> = {
+  overdue: "تأخّرت",
+  week: "هذا الأسبوع",
+  active: "الحالات النشطة",
+  retention: "التثبيت",
+};
+
+export interface FollowUpCase {
+  id: number;
+  patientName: string;
+  status: CaseStatus;
+  dueOn: string;
+  due: OrthoDue;
+  /** أيام التأخّر — موجبٌ للمتأخّر، وصفرٌ لغيره. فالترتيب به لا بالاسم. */
+  lateDays: number;
+}
+
+/**
+ * ترتيب المتابعة — الأطول انقطاعًا أولًا.
+ *
+ * وقائمةٌ بترتيب الاسم أو تاريخ البدء تُقرأ مرّةً ثم تُهجَر: من تأخّر شهرين يقع بين
+ * حرفين فلا يُرى، ومن تأخّر يومًا يتصدّرها بلا داعٍ.
+ */
+export function sortByLateness<T extends FollowUpCase>(cases: T[]): T[] {
+  return [...cases].sort((a, b) =>
+    b.lateDays - a.lateDays
+    || (a.dueOn < b.dueOn ? -1 : a.dueOn > b.dueOn ? 1 : 0)
+    || a.patientName.localeCompare(b.patientName, "ar"));
+}
+
+export function filterFollowUp<T extends FollowUpCase>(cases: T[], filter: OrthoFilter): T[] {
+  if (filter === "retention") return cases.filter((one) => one.status === "retention");
+  const active = cases.filter((one) => one.status === "active");
+  if (filter === "overdue") return active.filter((one) => one.due === "overdue");
+  if (filter === "week") {
+    return active.filter((one) => one.due !== "later");
+  }
+  return active;
+}
+
+/**
+ * أرقام الترويسة والعدّاد.
+ *
+ * والتثبيت يُعدّ على حدة: مراجعةُ مثبّتٍ متأخّرة ليست كشدّةٍ متأخّرة — الأولى تُتابَع
+ * والثانية تُوقف العلاج. وجمعُهما في رقمٍ واحد يجعل عشرين مثبّتًا يُخفون حالةً واحدة
+ * توقّف علاجها.
+ */
+export function followUpSummary(cases: FollowUpCase[]): {
+  overdue: number; dueThisWeek: number; retentionDue: number;
+} {
+  const active = cases.filter((one) => one.status === "active");
+  return {
+    overdue: active.filter((one) => one.due === "overdue").length,
+    dueThisWeek: active.filter((one) => one.due !== "later").length,
+    retentionDue: cases.filter(
+      (one) => one.status === "retention" && one.due !== "later").length,
+  };
+}
+
+/**
+ * رسالة استدعاء المريض إلى شدّته.
+ *
+ * ولا تُذكر فيها مدّة الانقطاع لومًا: من انقطع شهرين يعرف أنه انقطع، وتذكيرُه به
+ * يجعله يؤجّل أكثر حرجًا. تُذكر **لأنها سببٌ طبّي** — الجهاز يعمل بلا إشراف، وهذا
+ * ما يجهله المريض ويظنّ التأجيل بلا ثمن.
+ */
+export function adjustmentRecallText(input: {
+  patientName: string;
+  clinicName: string;
+  dueOn: string;
+  lateDays: number;
+  /** حالة التقويم — والتثبيت رسالته غير رسالة الشدّ. */
+  status?: CaseStatus;
+}): string {
+  /*
+   * ورسالةٌ تقول «موعد شدّ التقويم» لمريضٍ نُزع جهازه قبل شهور تُقرأ ارتباكًا —
+   * فيظنّ المركز خلط ملفّه بملفّ غيره. والمثبّت **يُراجَع** ولا يُشدّ.
+   */
+  const retention = input.status === "retention";
+  const lines = [
+    `السلام عليكم ${input.patientName}،`,
+    ``,
+    retention
+      ? `تذكير من ${input.clinicName} بموعد مراجعة المثبّت.`
+      : `تذكير من ${input.clinicName} بموعد شدّ التقويم.`,
+  ];
+  lines.push(
+    input.lateDays > 0
+      ? retention
+        ? `موعد المراجعة كان ${input.dueOn}. والمثبّت يُفحص ليُطمأنّ أنه سليم وفي مكانه — فالأسنان ترتدّ بلا مثبّتٍ يعمل، وتضيع نتيجة سنتين. نرجو حجز موعدك.`
+        : `موعدك كان ${input.dueOn}. والجهاز يبقى يعمل بين الشدّات، وتأخّرها يُطيل مدّة العلاج وقد يُتعب الأسنان — فنرجو حجز موعدك قريبًا.`
+      : `موعدك القادم ${input.dueOn}. نرجو تأكيد الحضور.`,
+  );
+  return lines.join("\n");
 }
