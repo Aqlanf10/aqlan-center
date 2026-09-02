@@ -144,6 +144,56 @@ try {
   check("والقديمة باقية في السجل",
     (await db.listPatientOrthoCases(patient.id, today)).length === 2);
 
+  console.log("\n  ── متابعة الشدّ: من انقطع يظهر، ومن شُدّ يختفي ──");
+
+  /*
+   * وهذا ما لا يُفحص باختبار وحدة: أن ما تراه الشاشة يوافق ما في القاعدة **بعد**
+   * أن تُسجَّل شدّةٌ فعلًا. فمريضٌ شُدّ اليوم يبقى في قائمة المتأخّرين خطأٌ يُتّصل
+   * به فيُسأل «لماذا لم تأتِ؟» وهو خارجٌ لتوّه من الكرسي.
+   */
+  const cadence = { adjustWeeks: 4, retentionWeeks: 24 };
+  const lateOne = await db.createPatient({
+    fullName: "مريضة انقطعت", phone: "770111222", altPhone: null, gender: "female",
+    birthYear: 2010, address: null, medicalAlert: null, note: null,
+  });
+  const lateCase = await db.createOrthoCase({
+    patientId: lateOne.id, appliance: "fixed_metal", arches: "both", slot: "022",
+    bracketSystem: null, startDate: "2026-01-01", plannedMonths: 18,
+    planId: null, note: null, createdBy: "فحص",
+  });
+  // شدّةٌ قبل ثلاثة أشهر ومهلتها أربعة أسابيع: تأخّرٌ حقيقي.
+  await db.recordAdjustment({
+    caseId: lateCase.id, visitId: null, doneOn: "2026-06-01", phase: "working",
+    upperWire: "016 SS", lowerWire: "016 SS", elastics: "none",
+    elasticNote: null, done: "شدّ", nextWeeks: 4, note: null, recordedBy: "فحص",
+  });
+
+  const followUp = await db.listOrthoFollowUp({ today, ...cadence });
+  const lagging = followUp.find((one) => one.id === lateCase.id);
+  check("المنقطعة تظهر في المتابعة", Boolean(late));
+  check("وموعدها من مهلة آخر شدّة لا من متوسّط", lagging?.dueOn === "2026-06-29", String(lagging?.dueOn));
+  check("وحالها «تأخّرت»", lagging?.due === "overdue", String(lagging?.due));
+  check("ومعها رقم جوالها — قائمةٌ بلا رقمٍ لا يُعمل بها",
+    (lagging?.patientPhone ?? "").endsWith("770111222"), String(lagging?.patientPhone));
+  check("والأطول انقطاعًا أوّل القائمة", followUp[0]?.id === lateCase.id,
+    `${followUp[0]?.patientName} · ${followUp[0]?.lateDays} يومًا`);
+
+  const counts = await db.orthoCounts({ today, ...cadence });
+  const { followUpSummary } = await import("../lib/ortho.ts");
+  check("والعدّاد يوافق القائمة نفسها",
+    JSON.stringify(counts) === JSON.stringify(followUpSummary(followUp)), JSON.stringify(counts));
+
+  // تُشدّ اليوم: يجب أن تخرج من المتأخّرين فورًا.
+  await db.recordAdjustment({
+    caseId: lateCase.id, visitId: null, doneOn: today, phase: "working",
+    upperWire: "018 SS", lowerWire: "018 SS", elastics: "none",
+    elasticNote: null, done: "شدّ", nextWeeks: 6, note: null, recordedBy: "فحص",
+  });
+  const afterAdjust = (await db.listOrthoFollowUp({ today, ...cadence }))
+    .find((one) => one.id === lateCase.id);
+  check("ومن شُدّ اليوم يخرج من المتأخّرين", afterAdjust?.due !== "overdue", String(afterAdjust?.due));
+  check("وموعده القادم بمهلته الجديدة", afterAdjust?.dueOn === "2026-10-13", String(afterAdjust?.dueOn));
+
   await db.getPool().end();
 } catch (error) {
   console.error(`فشل: ${error.message}`);

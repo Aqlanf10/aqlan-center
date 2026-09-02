@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
-  CLINIC_TIME_ZONE, createOrthoCase, listOrthoCases, listPatientOrthoCases,
+  CLINIC_TIME_ZONE, createOrthoCase, getSettings, listOrthoCases, listOrthoFollowUp,
+  listPatientOrthoCases, orthoCounts,
 } from "@/lib/db";
 import { clinicDateString } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
@@ -29,7 +30,24 @@ export async function GET(request: Request) {
   const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
   const patientId = Number(new URL(request.url).searchParams.get("patientId"));
 
+  const parameters = new URL(request.url).searchParams;
+  const cadence = async () => {
+    const settings = await getSettings();
+    return {
+      today,
+      adjustWeeks: Number(settings["ortho.adjust_weeks"]) || 4,
+      retentionWeeks: Number(settings["ortho.retention_weeks"]) || 24,
+    };
+  };
+
   try {
+    // القشرة تسأل عن الأرقام وحدها كل دقيقة — كالمختبر والمخزون.
+    if (parameters.get("summary") === "1") {
+      return NextResponse.json(await orthoCounts(await cadence()));
+    }
+    if (parameters.get("followup") === "1") {
+      return NextResponse.json({ cases: await listOrthoFollowUp(await cadence()), today });
+    }
     const cases = Number.isInteger(patientId) && patientId > 0
       ? await listPatientOrthoCases(patientId, today)
       : await listOrthoCases(today);

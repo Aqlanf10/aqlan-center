@@ -5,8 +5,14 @@ import {
   daysBetween,
   findWire,
   isElasticClass,
+  dueState,
+  filterFollowUp,
+  followUpSummary,
   isOverdueForAdjustment,
+  latenessDays,
   nextAdjustmentDate,
+  nextAdjustmentDue,
+  sortByLateness,
   nextWire,
   usesArchwires,
   wiresFor,
@@ -128,5 +134,100 @@ describe("الإغلاق", () => {
   it("صنف المطاطات قائمة مغلقة", () => {
     expect(isElasticClass("class_ii")).toBe(true);
     expect(isElasticClass("صنف ثانٍ")).toBe(false);
+  });
+});
+
+describe("متابعة الشدّ — من انقطع عن موعده", () => {
+  it("الموعد من مهلة آخر شدّة كما حدّدها الطبيب", () => {
+    expect(nextAdjustmentDue({
+      startDate: "2026-01-01", lastAdjustment: "2026-08-01",
+      lastNextWeeks: 6, defaultWeeks: 4,
+    })).toBe("2026-09-12");
+  });
+
+  it("وإن لم يحدّدها رُجع إلى الافتراضي من الإعدادات — لا إلى رقمٍ في الشيفرة", () => {
+    expect(nextAdjustmentDue({
+      startDate: "2026-01-01", lastAdjustment: "2026-08-01",
+      lastNextWeeks: null, defaultWeeks: 3,
+    })).toBe("2026-08-22");
+  });
+
+  it("ومن لم يُشدّ قطّ يُحسب من تركيب جهازه — وهو أولى من يُتابَع لا من يُستثنى", () => {
+    expect(nextAdjustmentDue({
+      startDate: "2026-08-01", lastAdjustment: null,
+      lastNextWeeks: null, defaultWeeks: 4,
+    })).toBe("2026-08-29");
+  });
+
+  it("ومهلةُ أسبوعٍ قبل «تأخّر»: ثلاثة أيام ليست انقطاعًا", () => {
+    expect(dueState("2026-08-29", "2026-08-20")).toBe("later");
+    expect(dueState("2026-08-29", "2026-08-25")).toBe("soon");
+    expect(dueState("2026-08-29", "2026-08-29")).toBe("due");
+    expect(dueState("2026-08-29", "2026-09-01")).toBe("due");
+    expect(dueState("2026-08-29", "2026-09-06")).toBe("overdue");
+  });
+
+  it("وأيام التأخّر تُحسب بعد المهلة لا من الموعد", () => {
+    expect(latenessDays("2026-08-29", "2026-09-01")).toBe(0);
+    expect(latenessDays("2026-08-29", "2026-09-10")).toBe(5);
+  });
+
+  /*
+   * الحارس الذي يمنع افتراق القاعدتين.
+   *
+   * `isOverdueForAdjustment` يستعملها ملفّ المريض، و`dueState` تستعملها شاشة
+   * المتابعة. ولو افترقتا لقال الملفُّ «في موعده» وقالت القائمة «تأخّر» — ولا
+   * يُعرف أيّهما يُصدَّق، فيُترك الاثنان.
+   */
+  it("و«تأخّر» في القائمة هي «تأخّر» في ملفّ المريض — يومًا بيوم", () => {
+    const start = "2026-01-01";
+    const last = "2026-08-01";
+    const due = nextAdjustmentDue({
+      startDate: start, lastAdjustment: last, lastNextWeeks: 4, defaultWeeks: 4,
+    });
+    for (let day = 20; day <= 60; day += 1) {
+      const today = day <= 31
+        ? `2026-08-${String(day).padStart(2, "0")}`
+        : `2026-09-${String(day - 31).padStart(2, "0")}`;
+      expect(dueState(due, today) === "overdue").toBe(isOverdueForAdjustment({
+        lastAdjustmentDate: last, startDate: start, today,
+      }));
+    }
+  });
+});
+
+describe("ترتيب المتابعة وتصفيتها", () => {
+  const one = (over: Partial<Parameters<typeof sortByLateness>[0][number]>) => ({
+    id: 1, patientName: "أ", status: "active" as const,
+    dueOn: "2026-08-29", due: "later" as const, lateDays: 0, ...over,
+  });
+
+  const cases = [
+    one({ id: 1, patientName: "سالم", due: "overdue", lateDays: 40, dueOn: "2026-07-01" }),
+    one({ id: 2, patientName: "هدى", due: "overdue", lateDays: 5, dueOn: "2026-08-20" }),
+    one({ id: 3, patientName: "ريم", due: "due", dueOn: "2026-08-29" }),
+    one({ id: 4, patientName: "بشرى", due: "later", dueOn: "2026-10-01" }),
+    one({ id: 5, patientName: "منى", status: "retention", due: "overdue", lateDays: 90 }),
+  ];
+
+  it("الأطول انقطاعًا أولًا — لا بالاسم ولا بتاريخ البدء", () => {
+    expect(sortByLateness(cases).map((c) => c.id)).toEqual([5, 1, 2, 3, 4]);
+  });
+
+  it("و«تأخّرت» تعرض النشطة المتأخّرة وحدها", () => {
+    expect(filterFollowUp(cases, "overdue").map((c) => c.id)).toEqual([1, 2]);
+  });
+
+  it("و«هذا الأسبوع» تضمّ المتأخّر والمستحقّ والقريب لا البعيد", () => {
+    expect(filterFollowUp(cases, "week").map((c) => c.id)).toEqual([1, 2, 3]);
+  });
+
+  it("والتثبيت قائمةٌ على حدة — مراجعةُ مثبّتٍ ليست شدّةً موقوفة", () => {
+    expect(filterFollowUp(cases, "retention").map((c) => c.id)).toEqual([5]);
+    expect(filterFollowUp(cases, "active").map((c) => c.id)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("والأرقام تفصل النشط عن التثبيت — وإلا أخفى عشرون مثبّتًا حالةً توقّفت", () => {
+    expect(followUpSummary(cases)).toEqual({ overdue: 2, dueThisWeek: 3, retentionDue: 1 });
   });
 });

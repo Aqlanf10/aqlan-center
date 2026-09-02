@@ -174,7 +174,22 @@ const badgeState = async () => {
     .replace(/\s+/g, " ").trim();
   // العدد إن وُجد، وإلا فالرابط بلا رقم.
   const badge = Number((link.match(/\d+/) ?? [0])[0]);
-  return { attention, badge, link };
+
+  /*
+   * وزرّ «المزيد» على الهاتف يجمع **كل** ما خلفه — المخزون والمختبر والتقويم
+   * والطلبات. فلا يُقابَل برقم المخزون وحده: قابلَه أوّلَ مرّة فمرّ، ثم أُضيفت
+   * متابعة التقويم فصار الزرّ يقول ٢ ويقول الفحص «خطأ» — **وفحصٌ يسقط لأن ميزةً
+   * أُضيفت يُعلَّم من يقرأه أن يتجاهله.** فيُقاس **الفرق**: بندٌ ينفد يرفع الزرّ
+   * بواحد مهما كان تحته.
+   */
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(1200);
+  const moreText = (await page.getByRole("button", { name: /المزيد/ }).first().innerText())
+    .replace(/\s+/g, " ").trim();
+  const more = Number((moreText.match(/\d+/) ?? [0])[0]);
+  await page.setViewportSize({ width: 1280, height: 1100 });
+
+  return { attention, badge, link, more, moreText };
 };
 
 const quiet = await badgeState();
@@ -200,14 +215,8 @@ say("ويظهر الرقم على الرابط", alerted.badge === alerted.atten
  * والاستقبال على هاتفٍ طول اليوم — فتنبيهٌ لا يظهر إلا بفتح القائمة ليس تنبيهًا،
  * وهذا هو الجهاز الذي يُنظر إليه فعلًا.
  */
-await page.setViewportSize({ width: 390, height: 844 });
-await page.goto(BASE + "/", { waitUntil: "networkidle" });
-await page.waitForTimeout(3000);
-const more = (await page.getByRole("button", { name: /المزيد/ }).first().innerText())
-  .replace(/\s+/g, " ").trim();
-say("وعلى الهاتف يظهر على «المزيد» — لا يُخفى خلف القائمة",
-  new RegExp(`\\b${alerted.attention}\\b`).test(more), `«${more}»`);
-await page.setViewportSize({ width: 1280, height: 1100 });
+say("وعلى الهاتف يرتفع «المزيد» بواحد — لا يُخفى خلف القائمة",
+  alerted.more === quiet.more + 1, `${quiet.moreText} ← ${alerted.moreText}`);
 
 console.log("7) القشرة تنادي على المخزون بلا أن يُفتح");
 

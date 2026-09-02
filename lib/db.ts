@@ -5668,15 +5668,18 @@ export async function documentsForArchive(): Promise<{
 // ─── التقويم ─────────────────────────────────────────────────────────────────
 
 import {
-  canComplete, caseProgress, nextWire,
+  canComplete, caseProgress, dueState, followUpSummary, latenessDays,
+  nextAdjustmentDue, nextWire, sortByLateness,
   type Appliance, type Arches, type CaseProgress, type CaseStatus,
-  type ElasticClass, type OrthoPhase, type RetainerType, type SlotSize,
+  type ElasticClass, type FollowUpCase, type OrthoPhase, type RetainerType, type SlotSize,
 } from "./ortho";
 
 export interface OrthoCase {
   id: number;
   patientId: number;
   patientName: string;
+  /** للمتابعة: قائمةُ من انقطع بلا رقمٍ يُتّصل به قائمةٌ تُقرأ ولا تُنفَّذ. */
+  patientPhone: string | null;
   appliance: Appliance;
   arches: Arches;
   slot: SlotSize;
@@ -5714,7 +5717,8 @@ export interface OrthoAdjustment {
 }
 
 interface CaseRow {
-  id: number; patient_id: number; full_name: string; appliance: string; arches: string;
+  id: number; patient_id: number; full_name: string; phone: string | null;
+  appliance: string; arches: string;
   slot: string; bracket_system: string | null; status: string; phase: string;
   start_date: Date; planned_months: number; upper_wire: string | null;
   lower_wire: string | null; plan_id: number | null; retainer: string | null;
@@ -5730,7 +5734,7 @@ interface AdjustmentRow {
 }
 
 const CASE_SELECT = `
-  SELECT c.id, c.patient_id, p.full_name, c.appliance, c.arches, c.slot, c.bracket_system,
+  SELECT c.id, c.patient_id, p.full_name, p.phone, c.appliance, c.arches, c.slot, c.bracket_system,
          c.status, c.phase, c.start_date, c.planned_months, c.upper_wire, c.lower_wire,
          c.plan_id, c.retainer, c.retainer_on, c.note, c.closed_at, c.closed_by, c.closed_note
     FROM ortho_cases c JOIN patients p ON p.id = c.patient_id`;
@@ -5772,6 +5776,7 @@ async function hydrateCases(rows: CaseRow[], today: string): Promise<OrthoCase[]
       id: row.id,
       patientId: row.patient_id,
       patientName: row.full_name,
+      patientPhone: row.phone,
       appliance: row.appliance as Appliance,
       arches: row.arches as Arches,
       slot: row.slot as SlotSize,
@@ -5807,6 +5812,65 @@ export async function listPatientOrthoCases(patientId: number, today: string): P
     `${CASE_SELECT} WHERE c.patient_id = $1 ORDER BY c.created_at DESC`, [patientId],
   );
   return hydrateCases(rows, today);
+}
+
+export interface OrthoFollowUp extends FollowUpCase {
+  patientId: number;
+  patientPhone: string | null;
+  phase: OrthoPhase;
+  lastAdjustment: string | null;
+  daysSinceLast: number | null;
+  upperWire: string | null;
+  lowerWire: string | null;
+}
+
+/**
+ * حالات التقويم مرتَّبةً بالانقطاع — ومن يُشتقّ منها العدّاد.
+ *
+ * وتُبنى على `listOrthoCases` نفسها لا باستعلامٍ ثانٍ: القائمة هنا والقائمة في
+ * ملفّ المريض يجب أن تقولا الشيء نفسه عن الحالة نفسها. والحالات مئاتٌ في مركزٍ
+ * بكرسيين — لا تنمو مع الأيام كما تنمو الفواتير — فقراءتها كاملةً أرخص من قاعدةٍ
+ * ثانية تفترق عن الأولى بصمت.
+ *
+ * والموعد من **مهلة آخر شدّة كما حدّدها الطبيب** (`nextWeeks`)، لا من متوسّطٍ عام:
+ * قولُه لحالته أدقّ من أي رقمٍ نضعه له. والافتراضي من الإعدادات حين لا يقول.
+ */
+export async function listOrthoFollowUp(input: {
+  today: string; adjustWeeks: number; retentionWeeks: number;
+}): Promise<OrthoFollowUp[]> {
+  const cases = await listOrthoCases(input.today);
+  return sortByLateness(cases.map((one) => {
+    const last = one.adjustments[0] ?? null;
+    const dueOn = nextAdjustmentDue({
+      startDate: one.startDate,
+      lastAdjustment: last?.doneOn ?? null,
+      lastNextWeeks: last?.nextWeeks ?? null,
+      // التثبيت يُراجَع ولا يُشدّ، فمهلته أبعد ومن إعدادٍ آخر.
+      defaultWeeks: one.status === "retention" ? input.retentionWeeks : input.adjustWeeks,
+    });
+    return {
+      id: one.id,
+      patientId: one.patientId,
+      patientName: one.patientName,
+      patientPhone: one.patientPhone,
+      status: one.status,
+      phase: one.phase,
+      dueOn,
+      due: dueState(dueOn, input.today),
+      lateDays: latenessDays(dueOn, input.today),
+      lastAdjustment: one.progress.lastAdjustment,
+      daysSinceLast: one.progress.daysSinceLast,
+      upperWire: one.upperWire,
+      lowerWire: one.lowerWire,
+    };
+  }));
+}
+
+/** أرقام العدّاد — من القائمة نفسها التي تُعرض، لا من عدٍّ ثانٍ. */
+export async function orthoCounts(input: {
+  today: string; adjustWeeks: number; retentionWeeks: number;
+}): Promise<{ overdue: number; dueThisWeek: number; retentionDue: number }> {
+  return followUpSummary(await listOrthoFollowUp(input));
 }
 
 export async function getOrthoCase(id: number, today: string): Promise<OrthoCase | null> {
