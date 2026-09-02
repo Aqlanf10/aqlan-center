@@ -86,6 +86,9 @@ try {
   check("intake never writes the clinical alert — the patient's word is not the doctor's",!alertAfter.medicalAlert);
   check('unknown condition keys are refused, not silently dropped',(await request('/api/portal/intake',portalCookie,{conditions:['not-a-key']},{origin:base})).status===400);
   check("confirming another patient's appointment is refused",(await request('/api/portal/appointments/confirm',portalCookie,{appointmentId:otherAppointment.id},{origin:base})).status===404);
+  check('doctor cannot open the command room',(await request('/api/executive',d)).status===403);
+  check('reception cannot open the command room either',(await request('/api/executive',reception)).status===403);
+  check('and admin can',(await request('/api/executive',a)).status===200);
   for(let i=0;i<10;i++)await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   const limited=await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   check('HTTP login rate limit with Retry-After',limited.status===429&&Number(limited.headers.get('retry-after'))>0);

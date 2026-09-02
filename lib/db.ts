@@ -1578,6 +1578,82 @@ export async function listAppointmentsByDate(date: string): Promise<Appointment[
   return rows.map(toAppointment);
 }
 
+/**
+ * أرقام التشغيل لغرفة القيادة.
+ *
+ * وكلُّها تُعدّ في القاعدة بجملةٍ واحدة لا بجرّ الصفوف ثم عدّها في التطبيق: الفترة
+ * قد تكون سنةً كاملة، وجرُّ زياراتِ سنةٍ لعدّها يكبر مع كل يوم عمل.
+ *
+ * والتنبيهات الثلاثة — التقويم والمخزون والمختبر — تُقرأ من **الدوالّ نفسها** التي
+ * تُغذّي عدّادات القشرة، فلا تقول اللوحة رقمًا ويقول الشريطُ آخر.
+ */
+export async function executiveOperational(input: {
+  from: string; to: string; today: string; adjustWeeks: number; retentionWeeks: number;
+}): Promise<import("./executive").ExecutiveOperational> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    arrived: string; done: string; still_open: string; no_show: string; new_patients: string;
+    ortho_active: string;
+  }>(
+    `SELECT
+       (SELECT COUNT(*) FROM visits
+         WHERE arrived_at::date BETWEEN $1 AND $2)                              AS arrived,
+       (SELECT COUNT(*) FROM visits
+         WHERE arrived_at::date BETWEEN $1 AND $2 AND status = 'done')          AS done,
+       (SELECT COUNT(*) FROM visits
+         WHERE arrived_at::date BETWEEN $1 AND $2
+           AND status NOT IN ('done', 'cancelled'))                             AS still_open,
+       (SELECT COUNT(*) FROM appointments
+         WHERE scheduled_date BETWEEN $1 AND $2 AND status = 'no_show')         AS no_show,
+       (SELECT COUNT(*) FROM patients
+         WHERE created_at::date BETWEEN $1 AND $2)                              AS new_patients,
+       (SELECT COUNT(*) FROM ortho_cases WHERE status = 'active')               AS ortho_active`,
+    [input.from, input.to],
+  );
+  const row = rows[0];
+
+  const [ortho, inventory, lab] = await Promise.all([
+    orthoCounts({ today: input.today, adjustWeeks: input.adjustWeeks, retentionWeeks: input.retentionWeeks }),
+    inventoryCounts(input.today),
+    labCounts(),
+  ]);
+
+  return {
+    arrived: Number(row.arrived),
+    done: Number(row.done),
+    stillOpen: Number(row.still_open),
+    noShow: Number(row.no_show),
+    newPatients: Number(row.new_patients),
+    orthoActive: Number(row.ortho_active),
+    orthoOverdue: ortho.overdue,
+    inventoryAlerts: inventory.attention,
+    labLate: lab.late,
+  };
+}
+
+/**
+ * دقائق شغل الكراسي وأيام العمل الفعلية.
+ *
+ * والدقائق من **جلوس المريض إلى انتهاء زيارته** لا من موعده المحجوز: الموعد نيّة،
+ * والجلوس واقع. ومن حجز ولم يأتِ لا يشغل كرسيًا.
+ */
+export async function chairMinutes(from: string, to: string): Promise<{
+  occupiedMinutes: number; activeDays: number;
+}> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ minutes: string; days: string }>(
+    `SELECT
+       COALESCE(SUM(EXTRACT(EPOCH FROM (finished_at - seated_at)) / 60), 0)::int AS minutes,
+       COUNT(DISTINCT arrived_at::date)                                          AS days
+       FROM visits
+      WHERE arrived_at::date BETWEEN $1 AND $2
+        AND seated_at IS NOT NULL AND finished_at IS NOT NULL
+        AND finished_at > seated_at`,
+    [from, to],
+  );
+  return { occupiedMinutes: Number(rows[0].minutes), activeDays: Number(rows[0].days) };
+}
+
 /* ── بوابة المريض ─────────────────────────────────────────────────────────── */
 
 export interface PatientIntake extends IntakeAnswers {

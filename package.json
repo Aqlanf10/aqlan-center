@@ -36,7 +36,8 @@
     "verify:treatment": "tsx scripts/verify-treatment.mjs",
     "verify:inventory": "tsx scripts/verify-inventory.mjs",
     "journey:inventory": "node scripts/journeys/inventory.mjs",
-    "journey:portal": "node scripts/journeys/portal.mjs"
+    "journey:portal": "node scripts/journeys/portal.mjs",
+    "verify:executive": "tsx scripts/verify-executive.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
