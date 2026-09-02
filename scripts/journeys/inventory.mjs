@@ -126,6 +126,42 @@ const parked = await page.locator("body").innerText();
 say("ويظهر في «الموقوفة» بسجلّه — الإيقاف لا يحذف", parked.includes(name));
 console.log("6) أُوقف البند وبقي سجلّه");
 
+/*
+ * العدّاد على القشرة: الوحدة تُنادي صاحبها ولا تنتظر أن يُفتَح لها.
+ *
+ * ويُقابَل الرقمُ المعروض بما يقوله الخادم في الحالتين — عدّادٌ يقول رقمًا والشاشةُ
+ * تقول غيره أسوأ من لا عدّاد: يُتعلَّم أن العدّاد لا يُصدَّق، ثم لا يُصدَّق حين يصدق.
+ */
+const badgeState = async () => {
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(3000);
+  const attention = await page.evaluate(async () =>
+    (await (await fetch("/api/inventory?summary=1", { cache: "no-store" })).json()).attention);
+  const link = (await page.getByRole("link", { name: /المخزون/ }).first().innerText())
+    .replace(/\s+/g, " ").trim();
+  // العدد إن وُجد، وإلا فالرابط بلا رقم.
+  const badge = Number((link.match(/\d+/) ?? [0])[0]);
+  return { attention, badge, link };
+};
+
+const quiet = await badgeState();
+say("العدّاد يوافق الخادم بعد إيقاف البند", quiet.badge === quiet.attention,
+  `الشاشة ${quiet.badge} · الخادم ${quiet.attention}`);
+
+// بندٌ جديد بلا رصيد = «نفد» = تصرّفٌ اليوم. فيجب أن يرتفع العدّاد بواحد.
+const fresh = "بندُ العدّاد " + Date.now().toString().slice(-5);
+await page.evaluate(async (itemName) => {
+  await fetch("/api/inventory", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: itemName, category: "consumable", unit: "علبة", minLevel: 2 }),
+  });
+}, fresh);
+const alerted = await badgeState();
+say("وبندٌ نفد يرفعه بواحد", alerted.attention === quiet.attention + 1,
+  `${quiet.attention} ← ${alerted.attention}`);
+say("ويظهر الرقم على الرابط", alerted.badge === alerted.attention, alerted.link);
+console.log("7) القشرة تنادي على المخزون بلا أن يُفتح");
+
 console.log(failed ? "\nسقطت رحلة المخزون." : "\nرحلة المخزون تامّة.");
 await b.close();
 process.exit(failed ? 1 : 0);

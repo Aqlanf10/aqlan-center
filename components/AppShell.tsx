@@ -22,7 +22,7 @@ interface NavItem {
   href: string;
   label: string;
   icon: IconName;
-  badge?: "requests" | "lab";
+  badge?: "requests" | "lab" | "inventory";
   /** من يرى هذا الرابط. الغياب يعني الجميع. */
   needs?: "money" | "admin";
 }
@@ -33,7 +33,7 @@ const NAV: NavItem[] = [
   { href: "/patients", label: "المرضى", icon: "user" },
   { href: "/finance", label: "الصندوق", icon: "wallet", needs: "money" },
   { href: "/lab", label: "المختبر", icon: "flask", badge: "lab" },
-  { href: "/inventory", label: "المخزون", icon: "box" },
+  { href: "/inventory", label: "المخزون", icon: "box", badge: "inventory" },
   { href: "/recall", label: "المتابعة", icon: "phone" },
   { href: "/requests", label: "الطلبات", icon: "inbox", badge: "requests" },
   { href: "/report", label: "التقرير", icon: "chart" },
@@ -58,20 +58,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     item.needs === "admin" ? isAdmin(session?.role)
       : item.needs === "money" ? canHandleMoney(session?.role)
       : true);
-  const [badges, setBadges] = useState<{ requests: number; lab: number }>({ requests: 0, lab: 0 });
+  const [badges, setBadges] = useState<{ requests: number; lab: number; inventory: number }>(
+    { requests: 0, lab: 0, inventory: 0 },
+  );
   const [moreOpen, setMoreOpen] = useState(false);
 
   const bare = BARE_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 
   const loadBadges = useCallback(async () => {
     try {
-      const [requests, lab] = await Promise.all([
+      const [requests, lab, inventory] = await Promise.all([
         fetch("/api/booking-requests?status=new", { cache: "no-store" }),
         fetch("/api/lab?summary=1", { cache: "no-store" }),
+        fetch("/api/inventory?summary=1", { cache: "no-store" }),
       ]);
-      const next = { requests: 0, lab: 0 };
+      const next = { requests: 0, lab: 0, inventory: 0 };
       if (requests.ok) next.requests = ((await requests.json()) as unknown[]).length;
       if (lab.ok) next.lab = Number(((await lab.json()) as { late?: number }).late ?? 0);
+      // بندٌ نفد أو قارب حدّه أو قاربت صلاحيته: كلّها «تصرّفٌ اليوم» وعددٌ واحد
+      // يكفي. وثلاثة أعداد على أيقونةٍ واحدة تُقرأ ولا تُفهم.
+      if (inventory.ok) {
+        next.inventory = Number(((await inventory.json()) as { attention?: number }).attention ?? 0);
+      }
       setBadges(next);
     } catch {
       // العدّادان يبقيان على آخر قيمة: رقمٌ قديم أنفع من اختفاء التنبيه.
@@ -258,7 +266,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
 function Badge({ item, badges, floating = false }: {
   item: NavItem;
-  badges: { requests: number; lab: number };
+  badges: { requests: number; lab: number; inventory: number };
   floating?: boolean;
 }) {
   if (!item.badge) return null;
