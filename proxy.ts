@@ -22,6 +22,9 @@ const PUBLIC_PATHS = new Set([
   // صفحة طلب الموعد: مفتوحة للمرضى بالتعريف. لا تكتب في المواعيد — تكتب طلبًا
   // تؤكّده الاستقبال — فأسوأ ما يستطيعه العابث بها ملء قائمة طلبات.
   "/book",
+  // بوابة المريض: شاشةٌ يفتحها المريض على هاتفه، وحارسُها جلستها هي لا جلسة
+  // الطاقم. والصفحة نفسها لا تعرض شيئًا قبل الدخول — تعرض نموذج الدخول.
+  "/portal",
 ]);
 const PUBLIC_API = new Set([
   "/api/auth/login",
@@ -39,6 +42,20 @@ const PUBLIC_API = new Set([
   "/api/book",
 ]);
 
+/**
+ * مسارات بوابة المريض.
+ *
+ * وهي «مفتوحة» من هذا الحارس لأنها لا تُحرَس بجلسة الطاقم — بل **بجلسة البوابة
+ * التي يفحصها كلُّ مسارٍ منها بنفسه** (`requirePortalSession`). والفرق جوهري:
+ * لو أُلحقت بجلسة الطاقم لما استطاع مريضٌ فتحها أصلًا؛ ولو تُركت بلا فحصٍ داخلي
+ * لفُتح حساب أيّ مريضٍ لمن يعرف رقمه.
+ *
+ * ولذلك يفحص `verify:http` كلَّ مسارٍ منها بلا كوكي ويشترط 401 — والبادئة هنا
+ * تعني أن مسارًا جديدًا يُضاف غدًا يمرّ من الحارس، فوجودُ ذلك الفحص هو ما يمنع
+ * أن يُنسى `requirePortalSession` فيه.
+ */
+const PORTAL_API_PREFIX = "/api/portal/";
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   let hasSession = false;
@@ -54,7 +71,9 @@ export async function proxy(request: NextRequest) {
       return NextResponse.json({ message: "مصدر الطلب غير مسموح." }, { status: 403 });
     }
   }
-  if (PUBLIC_API.has(pathname)) return NextResponse.next();
+  if (PUBLIC_API.has(pathname) || pathname.startsWith(PORTAL_API_PREFIX)) {
+    return NextResponse.next();
+  }
 
   if (pathname.startsWith("/api/")) {
     if (hasSession) return NextResponse.next();

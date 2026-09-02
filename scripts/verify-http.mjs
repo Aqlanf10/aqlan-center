@@ -59,6 +59,23 @@ try {
   check('doctor cannot adjust stock without a written reason',(await request(`/api/inventory/${inventoryId}/movements`,d,{kind:'adjust',qty:-1},{origin:base})).status===409);
   const stop=await fetch(base+`/api/inventory/${inventoryId}`,{method:'PATCH',headers:{cookie:d,'content-type':'application/json',origin:base},body:JSON.stringify({isActive:false})});
   check('doctor cannot deactivate an inventory item',stop.status===403);
+  // ── بوابة المريض: معزولة في الاتجاهين ──
+  const portalPatient=await db.createPatient({fullName:'مريضة البوابة',phone:'770445566',altPhone:null,gender:'female',birthYear:2000,address:null,medicalAlert:null,note:null});
+  for(const path of ['/api/portal/me','/api/portal/appointments','/api/portal/statement'])
+    check(`portal ${path} denied without a portal session`,(await request(path)).status===401);
+  check('portal statement rejects a staff cookie — one session never opens the other',(await request('/api/portal/statement',a)).status===401);
+  check('portal login rejects a wrong file number',(await request('/api/portal/login','',{phone:'770445566',patientNumber:'P-NOPE'},{origin:base})).status===401);
+  check('portal login rejects a wrong phone for a real file',(await request('/api/portal/login','',{phone:'770000000',patientNumber:portalPatient.patientNumber},{origin:base})).status===401);
+  const portalIn=await request('/api/portal/login','',{phone:'770445566',patientNumber:portalPatient.patientNumber},{origin:base});
+  check('portal login accepts the pair the patient owns',portalIn.status===200);
+  const portalCookie=portalIn.headers.getSetCookie()[0].split(';')[0];
+  check('portal cookie has its own name — not the staff cookie',portalCookie.startsWith('aqlan_portal_session='));
+  check('portal reads its own statement',(await request('/api/portal/statement',portalCookie)).status===200);
+  check('but a portal cookie opens no staff route',(await request('/api/patients',portalCookie)).status===401);
+  check('and cannot read another patient ledger',(await request(`/api/patients/${owner.id}/ledger`,portalCookie)).status===401);
+  const otherPatient=await db.createPatient({fullName:'مريض آخر',phone:'770777888',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:null,note:null});
+  const otherAppointment=await db.createAppointment({patientId:otherPatient.id,date:new Date(Date.now()+86400000).toISOString().slice(0,10),time:'10:00',durationMinutes:30,note:null});
+  check("confirming another patient's appointment is refused",(await request('/api/portal/appointments/confirm',portalCookie,{appointmentId:otherAppointment.id},{origin:base})).status===404);
   for(let i=0;i<10;i++)await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   const limited=await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   check('HTTP login rate limit with Retry-After',limited.status===429&&Number(limited.headers.get('retry-after'))>0);
