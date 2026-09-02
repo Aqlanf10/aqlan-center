@@ -75,6 +75,16 @@ try {
   check('and cannot read another patient ledger',(await request(`/api/patients/${owner.id}/ledger`,portalCookie)).status===401);
   const otherPatient=await db.createPatient({fullName:'مريض آخر',phone:'770777888',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:null,note:null});
   const otherAppointment=await db.createAppointment({patientId:otherPatient.id,date:new Date(Date.now()+86400000).toISOString().slice(0,10),time:'10:00',durationMinutes:30,note:null});
+  check('portal intake denied without a portal session',(await request('/api/portal/intake')).status===401);
+  const firstIntake=await request('/api/portal/intake',portalCookie,{conditions:['diabetes'],allergies:'البنسلين'},{origin:base});
+  check('patient submits an intake form',firstIntake.status===201);
+  await request('/api/portal/intake',portalCookie,{conditions:['diabetes','bleeding']},{origin:base});
+  const history=await (await request(`/api/patients/${portalPatient.id}/intake`,a)).json();
+  check('every submission is kept — health changes over time and when it changed is the question',history.intake.length===2);
+  check('and the newest is first',history.intake[0].conditions.length===2);
+  const alertAfter=await db.getPatient(portalPatient.id);
+  check("intake never writes the clinical alert — the patient's word is not the doctor's",!alertAfter.medicalAlert);
+  check('unknown condition keys are refused, not silently dropped',(await request('/api/portal/intake',portalCookie,{conditions:['not-a-key']},{origin:base})).status===400);
   check("confirming another patient's appointment is refused",(await request('/api/portal/appointments/confirm',portalCookie,{appointmentId:otherAppointment.id},{origin:base})).status===404);
   for(let i=0;i<10;i++)await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   const limited=await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});

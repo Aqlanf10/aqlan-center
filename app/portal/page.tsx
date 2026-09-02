@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatMoney, type Currency } from "@/lib/money";
+import { INTAKE_CONDITIONS, type IntakeAnswers } from "@/lib/intake";
 import { friendlyDateLong } from "@/lib/reminders";
 
 /**
@@ -47,17 +48,21 @@ export default function PortalPage() {
   const [busy, setBusy] = useState(false);
   const [appointments, setAppointments] = useState<AppointmentView[]>([]);
   const [statement, setStatement] = useState<Statement | null>(null);
+  const [intake, setIntake] = useState<(IntakeAnswers & { submittedAt: string }) | null>(null);
+  const [editingIntake, setEditingIntake] = useState(false);
 
   const loadMine = useCallback(async () => {
     try {
-      const [appointmentsResponse, statementResponse] = await Promise.all([
+      const [appointmentsResponse, statementResponse, intakeResponse] = await Promise.all([
         fetch("/api/portal/appointments", { cache: "no-store" }),
         fetch("/api/portal/statement", { cache: "no-store" }),
+        fetch("/api/portal/intake", { cache: "no-store" }),
       ]);
       if (appointmentsResponse.ok) {
         setAppointments((await appointmentsResponse.json()).appointments as AppointmentView[]);
       }
       if (statementResponse.ok) setStatement(await statementResponse.json());
+      if (intakeResponse.ok) setIntake((await intakeResponse.json()).intake);
     } catch {
       setError("تعذّر الاتصال. تحقّق من الشبكة.");
     }
@@ -102,6 +107,7 @@ export default function PortalPage() {
     setMe(null);
     setAppointments([]);
     setStatement(null);
+    setIntake(null);
   };
 
   const confirm = async (appointmentId: number) => {
@@ -244,6 +250,18 @@ export default function PortalPage() {
         )}
       </section>
 
+      <IntakeSection
+        intake={intake}
+        editing={editingIntake}
+        onEdit={() => setEditingIntake(true)}
+        onSaved={async (saved) => {
+          setIntake(saved);
+          setEditingIntake(false);
+          await loadMine();
+        }}
+        onError={setError}
+      />
+
       {statement ? (
         <section aria-label="تفصيل الحساب">
           <h2 className="mb-2 text-sm font-bold text-navy-900">تفصيل الحساب</h2>
@@ -273,5 +291,167 @@ export default function PortalPage() {
         </section>
       ) : null}
     </main>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * الاستمارة الصحّية.
+ *
+ * وتُملأ في البيت لا على الطاولة: التاريخ الطبي يُملأ اليوم والمريض واقف والاستقبال
+ * تكتب عنه — دقائقُ لكل مريضٍ جديد وطابورٌ خلفه. وأخطر من ذلك أنه يُملأ على عجل:
+ * يُسأل «عندك شيء؟» فيقول «لا» وهو على مميّع دم.
+ *
+ * وتُعرض آخرُ إجابةٍ ليُحدّثها لا ليعيدها من الصفر: من ملأها مرّةً ثم طُلب منه أن
+ * يبدأ من جديد لا يملؤها ثانية.
+ */
+function IntakeSection({ intake, editing, onEdit, onSaved, onError }: {
+  intake: (IntakeAnswers & { submittedAt: string }) | null;
+  editing: boolean;
+  onEdit: () => void;
+  onSaved: (saved: IntakeAnswers & { submittedAt: string }) => Promise<void>;
+  onError: (message: string | null) => void;
+}) {
+  const [conditions, setConditions] = useState<string[]>(intake?.conditions ?? []);
+  const [allergies, setAllergies] = useState(intake?.allergies ?? "");
+  const [medications, setMedications] = useState(intake?.medications ?? "");
+  const [emergencyName, setEmergencyName] = useState(intake?.emergencyName ?? "");
+  const [emergencyPhone, setEmergencyPhone] = useState(intake?.emergencyPhone ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const toggle = (key: string) =>
+    setConditions((current) =>
+      current.includes(key) ? current.filter((one) => one !== key) : [...current, key]);
+
+  const send = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const response = await fetch("/api/portal/intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conditions, allergies, medications, emergencyName, emergencyPhone }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) { onError(payload?.message ?? "تعذّر حفظ استمارتك."); return; }
+      onError(null);
+      await onSaved(payload.intake);
+    } catch {
+      onError("تعذّر الاتصال. تحقّق من الشبكة.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4" aria-label="استمارتي الصحّية">
+        <h2 className="mb-1 text-sm font-bold text-navy-900">استمارتي الصحّية</h2>
+        {intake ? (
+          <>
+            <p className="text-[11px] font-semibold text-slate-500">
+              أرسلتَها {friendlyDateLong(intake.submittedAt.slice(0, 10))}
+            </p>
+            <p className="mt-2 text-xs font-bold text-navy-900">
+              {intake.conditions.length > 0
+                ? intake.conditions
+                    .map((key) => INTAKE_CONDITIONS.find((one) => one.key === key)?.label ?? key)
+                    .join(" · ")
+                : "لم تذكر حالاتٍ مزمنة"}
+            </p>
+            {intake.allergies ? (
+              <p className="mt-1 text-[11px] text-slate-600">حساسية: {intake.allergies}</p>
+            ) : null}
+          </>
+        ) : (
+          <p className="text-[11px] leading-5 text-slate-500">
+            املأها قبل زيارتك — يعرفها الطبيب قبل أن يبدأ، ولا تُملأ على الطاولة والباب مزدحم.
+          </p>
+        )}
+        <button
+          onClick={onEdit}
+          className="mt-3 w-full rounded-xl border border-navy-900 py-2.5 text-xs font-extrabold text-navy-900"
+        >
+          {intake ? "تحديث استمارتي" : "املأ الاستمارة"}
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <form onSubmit={send} className="mb-4 rounded-2xl border border-slate-200 bg-white p-4" aria-label="الاستمارة الصحّية">
+      <h2 className="mb-1 text-sm font-bold text-navy-900">استمارتي الصحّية</h2>
+      <p className="mb-3 text-[11px] leading-5 text-slate-500">
+        أشِّر على ما ينطبق عليك. ما تكتبه هنا يقرؤه طبيبك قبل زيارتك.
+      </p>
+
+      <fieldset className="mb-3">
+        <legend className="mb-2 text-[11px] font-bold text-slate-500">هل لديك شيء من هذه؟</legend>
+        <div className="flex flex-wrap gap-1.5">
+          {INTAKE_CONDITIONS.map((condition) => (
+            <button
+              key={condition.key}
+              type="button"
+              onClick={() => toggle(condition.key)}
+              aria-pressed={conditions.includes(condition.key)}
+              className={`rounded-lg px-3 py-2 text-xs font-semibold ${
+                conditions.includes(condition.key)
+                  ? "bg-navy-900 text-white"
+                  : "border border-slate-200 bg-white text-navy-800"
+              }`}
+            >
+              {condition.label}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <label className="mb-1 block text-[11px] font-bold text-slate-500">حساسية من دواء أو مادّة</label>
+      <input
+        value={allergies}
+        onChange={(event) => setAllergies(event.target.value)}
+        aria-label="الحساسية"
+        placeholder="مثل: البنسلين"
+        className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm"
+      />
+
+      <label className="mb-1 block text-[11px] font-bold text-slate-500">أدوية تأخذها الآن</label>
+      <input
+        value={medications}
+        onChange={(event) => setMedications(event.target.value)}
+        aria-label="الأدوية"
+        className="mb-3 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm"
+      />
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input
+          value={emergencyName}
+          onChange={(event) => setEmergencyName(event.target.value)}
+          aria-label="اسم من يُتّصل به عند الطوارئ"
+          placeholder="من يُتّصل به عند الطوارئ"
+          className="min-w-[8rem] flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm"
+        />
+        <input
+          value={emergencyPhone}
+          onChange={(event) => setEmergencyPhone(event.target.value)}
+          aria-label="جوال الطوارئ"
+          inputMode="tel"
+          dir="ltr"
+          className="min-w-[8rem] flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm"
+        />
+      </div>
+
+      <button
+        type="submit"
+        disabled={saving}
+        className="w-full rounded-xl bg-navy-900 py-3 text-sm font-extrabold text-white disabled:opacity-40"
+      >
+        إرسال الاستمارة
+      </button>
+      <p className="mt-2 text-[10px] leading-4 text-slate-400">
+        كل إرسالٍ يُحفظ نسخةً جديدة ولا يمحو ما قبله — فتبقى معروفةً متى تغيّرت.
+      </p>
+    </form>
   );
 }

@@ -122,6 +122,27 @@ export function ensureSchema(): Promise<void> {
       -- للموعد بل صفةٌ عليه — والحالة تبقى بيد الاستقبال وحدها.
       ALTER TABLE appointments ADD COLUMN IF NOT EXISTS patient_confirmed_at TIMESTAMPTZ;
 
+      -- استمارة التاريخ الطبي التي يملؤها المريض في بوابته.
+      --
+      -- **يُضاف إليها ولا تُستبدل**: كل إرسالٍ صفٌّ جديد. فتاريخُ الصحة يتغيّر مع
+      -- الزمن — من صار مريض سكّرٍ هذا العام لم يكن كذلك في استمارة أمس — ومحوُ
+      -- القديمة يمحو **متى** تغيّر، وهو ما يُسأل عنه حين يقع ما يُسأل عنه.
+      --
+      -- ولا تكتب في patients.medical_alert: ذاك حقلُ الطبيب، وهذا قولُ المريض.
+      CREATE TABLE IF NOT EXISTS patient_intake (
+        id              SERIAL PRIMARY KEY,
+        patient_id      INTEGER     NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+        conditions      JSONB       NOT NULL DEFAULT '[]'::jsonb,
+        allergies       TEXT,
+        medications     TEXT,
+        emergency_name  TEXT,
+        emergency_phone TEXT,
+        note            TEXT,
+        submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS patient_intake_patient_idx
+        ON patient_intake (patient_id, submitted_at DESC);
+
       -- الزيارة تعرف موعدها ومريضها حين يأتي من حجز، وتبقى مستقلة للمريض المشي.
       ALTER TABLE visits ADD COLUMN IF NOT EXISTS patient_id INTEGER REFERENCES patients(id);
       ALTER TABLE visits ADD COLUMN IF NOT EXISTS appointment_id INTEGER REFERENCES appointments(id);
@@ -1290,6 +1311,7 @@ export async function createStaffUser(input: {
 // ─── المرضى والمواعيد ────────────────────────────────────────────────────────
 
 import { clinicDateString } from "./schedule";
+import { type IntakeAnswers } from "./intake";
 import { CONFIRM_REFUSAL, confirmVerdict } from "./portal";
 import type { Appointment, AppointmentStatus } from "./schedule";
 
@@ -1557,6 +1579,71 @@ export async function listAppointmentsByDate(date: string): Promise<Appointment[
 }
 
 /* ── بوابة المريض ─────────────────────────────────────────────────────────── */
+
+export interface PatientIntake extends IntakeAnswers {
+  id: number;
+  patientId: number;
+  submittedAt: string;
+}
+
+const toIntake = (row: Record<string, unknown>): PatientIntake => ({
+  id: row.id as number,
+  patientId: row.patient_id as number,
+  conditions: Array.isArray(row.conditions) ? (row.conditions as string[]) : [],
+  allergies: (row.allergies as string | null) ?? null,
+  medications: (row.medications as string | null) ?? null,
+  emergencyName: (row.emergency_name as string | null) ?? null,
+  emergencyPhone: (row.emergency_phone as string | null) ?? null,
+  note: (row.note as string | null) ?? null,
+  submittedAt: (row.submitted_at as Date).toISOString(),
+});
+
+/** استمارةٌ جديدة — تُضاف ولا تُستبدل. */
+export async function submitIntake(
+  patientId: number, answers: IntakeAnswers,
+): Promise<PatientIntake> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `INSERT INTO patient_intake
+       (patient_id, conditions, allergies, medications, emergency_name, emergency_phone, note)
+     VALUES ($1, $2::jsonb, $3, $4, $5, $6, $7)
+     RETURNING id, patient_id, conditions, allergies, medications,
+               emergency_name, emergency_phone, note, submitted_at`,
+    [
+      patientId, JSON.stringify(answers.conditions), answers.allergies, answers.medications,
+      answers.emergencyName, answers.emergencyPhone, answers.note,
+    ],
+  );
+  return toIntake(rows[0]);
+}
+
+/** آخر استمارةٍ أرسلها المريض — وهي التي تُقرأ على الكرسي. */
+export async function latestIntake(patientId: number): Promise<PatientIntake | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT id, patient_id, conditions, allergies, medications,
+            emergency_name, emergency_phone, note, submitted_at
+       FROM patient_intake WHERE patient_id = $1
+      ORDER BY submitted_at DESC, id DESC LIMIT 1`,
+    [patientId],
+  );
+  return rows[0] ? toIntake(rows[0]) : null;
+}
+
+/** كل ما أرسله — والفرق بين استمارتين هو متى تغيّرت صحّته. */
+export async function intakeHistory(patientId: number, limit = 12): Promise<PatientIntake[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT id, patient_id, conditions, allergies, medications,
+            emergency_name, emergency_phone, note, submitted_at
+       FROM patient_intake WHERE patient_id = $1
+      ORDER BY submitted_at DESC, id DESC LIMIT $2`,
+    [patientId, Math.min(50, Math.max(1, limit))],
+  );
+  return rows.map(toIntake);
+}
+
+
 
 /**
  * الملف المطابق لرقمه — للدخول إلى البوابة.
