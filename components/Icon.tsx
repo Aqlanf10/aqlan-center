@@ -15,7 +15,7 @@ export type IconName =
   | "tooth" | "calendar" | "user" | "wallet" | "flask" | "phone" | "inbox"
   | "chart" | "settings" | "menu" | "logout" | "screen" | "link" | "print"
   | "download" | "plus" | "check" | "clock" | "alert" | "search" | "back"
-  | "box";
+  | "box" | "chat" | "mic";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // سنّ: رمز المركز نفسه — تاجٌ وجذران.
@@ -43,6 +43,10 @@ const PATHS: Record<IconName, React.ReactNode> = {
   alert: <><path d="M12 3.6 21.6 20H2.4z" /><path d="M12 9.6v4.4M12 17.2h.01" /></>,
   search: <><circle cx="10.8" cy="10.8" r="6.4" /><path d="M15.6 15.6 20.4 20.4" /></>,
   back: <path d="M14.4 5.6 8 12l6.4 6.4" />,
+  // فقاعة كلام: الرسائل الداخلية.
+  chat: <path d="M20.4 12.4c0 3.8-3.8 6.8-8.4 6.8-1 0-2-.15-2.9-.4l-4.5 1.6 1.5-3.7c-1.5-1.2-2.5-2.9-2.5-4.9 0-3.8 3.8-6.8 8.4-6.8s8.4 3 8.4 7Z" />,
+  // ميكروفون: الملاحظة الصوتية — الطبيب لا يكتب ويداه في فم مريض.
+  mic: <><path d="M12 3.6a2.6 2.6 0 0 1 2.6 2.6v5.6a2.6 2.6 0 1 1-5.2 0V6.2A2.6 2.6 0 0 1 12 3.6Z" /><path d="M6.4 11.2a5.6 5.6 0 0 0 11.2 0M12 16.8v3.6" /></>,
 };
 
 export function Icon({ name, className = "h-5 w-5" }: { name: IconName; className?: string }) {

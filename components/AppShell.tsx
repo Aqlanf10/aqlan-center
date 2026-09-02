@@ -23,7 +23,7 @@ interface NavItem {
   href: string;
   label: string;
   icon: IconName;
-  badge?: "requests" | "lab" | "inventory" | "ortho";
+  badge?: "requests" | "lab" | "inventory" | "ortho" | "messages";
   /** من يرى هذا الرابط. الغياب يعني الجميع. */
   needs?: "money" | "admin";
 }
@@ -36,6 +36,7 @@ const NAV: NavItem[] = [
   { href: "/ortho", label: "متابعة التقويم", icon: "tooth", badge: "ortho" },
   { href: "/lab", label: "المختبر", icon: "flask", badge: "lab" },
   { href: "/inventory", label: "المخزون", icon: "box", badge: "inventory" },
+  { href: "/messages", label: "الرسائل", icon: "chat", badge: "messages" },
   { href: "/recall", label: "المتابعة", icon: "phone" },
   { href: "/requests", label: "الطلبات", icon: "inbox", badge: "requests" },
   { href: "/report", label: "التقرير", icon: "chart" },
@@ -62,21 +63,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       : item.needs === "money" ? canHandleMoney(session?.role)
       : true);
   const [badges, setBadges] = useState<
-    { requests: number; lab: number; inventory: number; ortho: number }
-  >({ requests: 0, lab: 0, inventory: 0, ortho: 0 });
+    { requests: number; lab: number; inventory: number; ortho: number; messages: number }
+  >({ requests: 0, lab: 0, inventory: 0, ortho: 0, messages: 0 });
   const [moreOpen, setMoreOpen] = useState(false);
 
   const bare = BARE_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 
   const loadBadges = useCallback(async () => {
     try {
-      const [requests, lab, inventory, ortho] = await Promise.all([
+      const [requests, lab, inventory, ortho, messages] = await Promise.all([
         fetch("/api/booking-requests?status=new", { cache: "no-store" }),
         fetch("/api/lab?summary=1", { cache: "no-store" }),
         fetch("/api/inventory?summary=1", { cache: "no-store" }),
         fetch("/api/ortho?summary=1", { cache: "no-store" }),
+        fetch("/api/messages?unread=1", { cache: "no-store" }),
       ]);
-      const next = { requests: 0, lab: 0, inventory: 0, ortho: 0 };
+      const next = { requests: 0, lab: 0, inventory: 0, ortho: 0, messages: 0 };
       if (requests.ok) next.requests = ((await requests.json()) as unknown[]).length;
       if (lab.ok) next.lab = Number(((await lab.json()) as { late?: number }).late ?? 0);
       // بندٌ نفد أو قارب حدّه أو قاربت صلاحيته: كلّها «تصرّفٌ اليوم» وعددٌ واحد
@@ -88,6 +90,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       // متأخّرًا يبقى مضاءً دائمًا فيصير جزءًا من الأثاث لا تنبيهًا.
       if (ortho.ok) {
         next.ortho = Number(((await ortho.json()) as { overdue?: number }).overdue ?? 0);
+      }
+      // رسالةٌ لزميلٍ تنتظر جوابًا: العدّاد هو ما يجعل الشاشة تُفتح أصلًا، وبلاه
+      // تبقى المراسلة صندوقًا لا يفتحه أحد فيعود النداء من الباب.
+      if (messages.ok) {
+        next.messages = Number(((await messages.json()) as { unread?: number }).unread ?? 0);
       }
       setBadges(next);
     } catch {
@@ -292,7 +299,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
 function Badge({ item, badges, floating = false }: {
   item: NavItem;
-  badges: { requests: number; lab: number; inventory: number; ortho: number };
+  badges: { requests: number; lab: number; inventory: number; ortho: number; messages: number };
   floating?: boolean;
 }) {
   if (!item.badge) return null;

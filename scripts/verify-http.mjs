@@ -89,6 +89,33 @@ try {
   check('doctor cannot open the command room',(await request('/api/executive',d)).status===403);
   check('reception cannot open the command room either',(await request('/api/executive',reception)).status===403);
   check('and admin can',(await request('/api/executive',a)).status===200);
+  // ── الرسائل الداخلية: خيطُ اثنين لا يُفتح لثالث ──
+  check('messages denied without a session',(await request('/api/messages?conversations=1')).status===401);
+  check('a portal cookie opens no staff message',(await request('/api/messages?conversations=1',portalCookie)).status===401);
+  const adminList=await (await request('/api/messages?conversations=1',a)).json();
+  const doctorId=adminList.conversations.find(row=>row.role==='doctor').userId;
+  check('the conversation list carries every active colleague and the team box',
+    adminList.conversations.length===3&&adminList.conversations.some(row=>row.userId===null));
+  const sent=await request('/api/messages',a,{to:{kind:'user',userId:doctorId},kind:'text',body:'الطبيب مطلوب على الكرسي الثاني.'},{origin:base});
+  check('admin sends a direct message',sent.status===201);
+  const sentId=(await sent.json()).id;
+  // من جهة الطبيب، الطرف الآخر هو المرسِل — لا نفسه.
+  check('the doctor reads it',(await (await request(`/api/messages?withUser=${owner.id}`,d)).json()).messages.some(m=>m.id===sentId));
+  // والاستقبال تفتح خيطها هي مع المرسِل نفسه: الخيط زوجٌ لا شخص.
+  const thirdParty=await (await request(`/api/messages?withUser=${owner.id}`,reception)).json();
+  check('but reception opening the same thread sees nothing of it — a thread is the pair, not the person',
+    !thirdParty.messages.some(m=>m.id===sentId));
+  check('and opening the thread cleared the unread count for the reader',
+    (await (await request('/api/messages?unread=1',d)).json()).unread===0);
+  check('a message to a colleague who does not exist is refused',
+    (await request('/api/messages',a,{to:{kind:'user',userId:9999999},kind:'text',body:'x'},{origin:base})).status===404);
+  check('an empty message is refused with an Arabic reason',
+    (await (await request('/api/messages',a,{to:'broadcast',kind:'text',body:'   '},{origin:base})).json()).message==='اكتب نصّ الرسالة.');
+  check('a voice note that is not audio is refused',
+    (await request('/api/messages',a,{to:'broadcast',kind:'voice',voiceMime:'text/html',voiceData:'AAAA',voiceMs:1000},{origin:base})).status===400);
+  check('a voice link the listener does not own returns 404, not 403 — 403 would say it exists',
+    (await request('/api/messages/voice/999999',reception)).status===404);
+
   // ── التثبيت على الجهاز: ملفاته تُطلب قبل الدخول وبلا كوكي ──
   const manifest=await request('/manifest.webmanifest');
   check('manifest served without a session — the browser asks for it before anyone logs in',manifest.status===200);
