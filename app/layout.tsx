@@ -7,6 +7,7 @@ import { SettingsProvider } from "@/components/SettingsProvider";
 import { SessionProvider } from "@/components/SessionProvider";
 import { requireSession } from "@/lib/session";
 import { AppShell } from "@/components/AppShell";
+import { ServiceWorker } from "@/components/ServiceWorker";
 
 /**
  * خط الواجهة — مُستضاف معنا لا مطلوب من خادم بعيد.
@@ -39,7 +40,9 @@ export const metadata: Metadata = {
 
 // اللوحة تُفتح على شاشة الاستقبال وعلى الهاتف معًا، فالتكبير يبقى متاحًا عمدًا:
 // منعه يجعل الأرقام الصغيرة غير مقروءة لمن يحتاج تكبيرها.
-export const viewport: Viewport = { width: "device-width", initialScale: 1 };
+// و`themeColor` يلوّن شريط الحالة حين يُفتح البرنامج مثبَّتًا بشاشةٍ كاملة: بلا
+// لونٍ صريح يظهر شريطٌ أبيض فوق الترويسة الكحلية فتبدو الشاشة مقطوعة من أعلاها.
+export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#0d2137" };
 
 /**
  * التخطيط الجذري يقرأ الإعدادات مرة لكل طلب ويمرّرها إلى الشجرة كلها.
@@ -64,6 +67,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <AppShell>{children}</AppShell>
           </SessionProvider>
         </SettingsProvider>
+        <ServiceWorker />
       </body>
     </html>
   );

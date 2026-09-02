@@ -6,6 +6,7 @@ import { useClinicName } from "./SettingsProvider";
 import { useSession } from "./SessionProvider";
 import { canHandleMoney, isAdmin, ROLE_LABEL, type Role } from "@/lib/roles";
 import { Icon, Logo, type IconName } from "./Icon";
+import { InstallApp } from "./InstallApp";
 
 /**
  * قشرة البرنامج — تنقّل واحد لكل الشاشات.
@@ -173,6 +174,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50">
             <Icon name="link" className="h-4 w-4 shrink-0" /> صفحة حجز المرضى
           </a>
+          <InstallApp />
         </div>
 
         {/* من يستعمل البرنامج الآن: يظهر أسفل القائمة لا فوقها — الشاشة للعمل،
@@ -248,6 +250,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-500">
               <Icon name="link" className="h-[18px] w-[18px] shrink-0" /> صفحة حجز المرضى
             </a>
+            <InstallApp variant="sheet" />
           </div>
         ) : null}
 
