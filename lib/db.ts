@@ -856,6 +856,46 @@ export function ensureSchema(): Promise<void> {
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 1;
+
+      -- الرسائل الداخلية بين الطاقم.
+      --
+      -- العيادة تعمل بالنداء من الباب، فيُنسى ما قيل ولا يُعرف غدًا من قاله ولا
+      -- متى. وهذا سجلٌّ للعمل لا دردشة.
+      --
+      -- والمستقبِل NULL يعني الفريق كلّه: صفٌّ واحد يراه الجميع، لا نسخةٌ لكل
+      -- زميل. ونسخةٌ لكل زميل تعني تسجيلًا صوتيًا واحدًا مكتوبًا خمس مرات، ثم
+      -- تُقرأ إحداها فتبقى الأربع «غير مقروءة» إلى الأبد.
+      --
+      -- والصوت هنا **وصفُه لا جسمُه**: المفتاح على القرص والمدّة والحجم. المحظور
+      -- الثامن — لا Blobs في القاعدة، لأن نسخةً احتياطية تستغرق ساعة نسخةٌ لا
+      -- تُؤخذ.
+      CREATE TABLE IF NOT EXISTS staff_messages (
+        id           SERIAL PRIMARY KEY,
+        sender_id    INTEGER     NOT NULL REFERENCES users(id),
+        recipient_id INTEGER              REFERENCES users(id),
+        kind         TEXT        NOT NULL DEFAULT 'text',
+        body         TEXT,
+        voice_key    TEXT,
+        voice_mime   TEXT,
+        voice_ms     INTEGER,
+        voice_bytes  INTEGER,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS staff_messages_pair_idx
+        ON staff_messages (sender_id, recipient_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS staff_messages_inbox_idx
+        ON staff_messages (recipient_id, created_at DESC);
+
+      -- من قرأ ماذا. جدولٌ منفصل لا عمود: رسالة الفريق يقرؤها خمسة في أوقات
+      -- خمسة، وعمودٌ واحد لا يسع إلا واحدًا منهم.
+      CREATE TABLE IF NOT EXISTS staff_message_reads (
+        message_id INTEGER     NOT NULL REFERENCES staff_messages(id) ON DELETE CASCADE,
+        user_id    INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        read_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (message_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS staff_message_reads_user_idx
+        ON staff_message_reads (user_id, message_id);
       CREATE OR REPLACE FUNCTION revoke_changed_user_sessions() RETURNS TRIGGER AS $sessions$
       BEGIN
         IF NEW.password_hash IS DISTINCT FROM OLD.password_hash
@@ -7111,4 +7151,228 @@ export async function listVisitMaterials(visitId: number): Promise<VisitMaterial
 export async function inventoryBalance(itemId: number): Promise<number> {
   const movements = await listMovements(itemId, 500);
   return deriveBalance(movements);
+}
+
+// ─── الرسائل الداخلية ────────────────────────────────────────────────────────
+
+export interface StaffMessage {
+  id: number;
+  senderId: number;
+  senderName: string;
+  recipientId: number | null;
+  kind: "text" | "voice";
+  body: string | null;
+  voiceMs: number | null;
+  createdAt: string;
+}
+
+const MESSAGE_SELECT = `
+  SELECT m.id, m.sender_id, u.display_name AS sender_name, m.recipient_id,
+         m.kind, m.body, m.voice_ms, m.created_at
+    FROM staff_messages m
+    JOIN users u ON u.id = m.sender_id`;
+
+function toStaffMessage(row: Record<string, unknown>): StaffMessage {
+  return {
+    id: row.id as number,
+    senderId: row.sender_id as number,
+    senderName: row.sender_name as string,
+    recipientId: (row.recipient_id as number | null) ?? null,
+    kind: row.kind as "text" | "voice",
+    body: (row.body as string | null) ?? null,
+    voiceMs: row.voice_ms === null || row.voice_ms === undefined ? null : Number(row.voice_ms),
+    createdAt: (row.created_at as Date).toISOString(),
+  };
+}
+
+/**
+ * إرسال رسالة.
+ *
+ * جسم التسجيل لا يمرّ من هنا — يُكتب على القرص في المسار ويصل مفتاحُه. وترتيب
+ * ذلك مقصود: ملفٌّ بلا صفٍّ نفايةٌ صامتة، وصفٌّ بلا ملفّ رسالةٌ تُفتح فلا يُسمع
+ * منها شيء — والثاني أسوأ لأن أحدًا انتظر جوابها.
+ */
+export async function sendStaffMessage(input: {
+  senderId: number;
+  recipientId: number | null;
+  kind: "text" | "voice";
+  body: string | null;
+  voiceKey: string | null;
+  voiceMime: string | null;
+  voiceMs: number | null;
+  voiceBytes: number | null;
+}): Promise<StaffMessage> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO staff_messages
+       (sender_id, recipient_id, kind, body, voice_key, voice_mime, voice_ms, voice_bytes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [input.senderId, input.recipientId, input.kind, input.body,
+      input.voiceKey, input.voiceMime, input.voiceMs, input.voiceBytes],
+  );
+  const { rows: full } = await getPool().query(`${MESSAGE_SELECT} WHERE m.id = $1`, [rows[0].id]);
+  return toStaffMessage(full[0]);
+}
+
+/**
+ * محادثةٌ بين اثنين — بالاتجاهين.
+ *
+ * والشرط على الزوج لا على «مُرسِلي أو مُستقبِلي»: بلا ذلك تظهر في محادثتي مع
+ * زميلٍ رسائلي إلى زميلٍ آخر.
+ */
+export async function directMessages(
+  userId: number, otherId: number, limit = 200,
+): Promise<StaffMessage[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `${MESSAGE_SELECT}
+      WHERE (m.sender_id = $1 AND m.recipient_id = $2)
+         OR (m.sender_id = $2 AND m.recipient_id = $1)
+      ORDER BY m.id DESC LIMIT $3`,
+    [userId, otherId, limit],
+  );
+  return rows.map(toStaffMessage).reverse();
+}
+
+/** رسائل الفريق — صفوفٌ مستقبِلُها فارغ، يراها الجميع. */
+export async function broadcastMessages(limit = 200): Promise<StaffMessage[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `${MESSAGE_SELECT} WHERE m.recipient_id IS NULL ORDER BY m.id DESC LIMIT $1`,
+    [limit],
+  );
+  return rows.map(toStaffMessage).reverse();
+}
+
+export interface StaffConversation {
+  userId: number | null;
+  displayName: string;
+  role: string | null;
+  lastAt: string | null;
+  lastKind: "text" | "voice" | null;
+  lastBody: string | null;
+  lastVoiceMs: number | null;
+  unread: number;
+}
+
+/**
+ * قائمة المحادثات — كلّ زميلٍ نشط، ومعهم صندوق الفريق.
+ *
+ * وتُعرض المحادثات التي لم تبدأ بعد أيضًا: قائمةٌ لا تُظهر إلا من سبقت مراسلتُه
+ * تجعل أول رسالةٍ إلى زميلٍ جديد بحثًا عن زرٍّ لا يوجد.
+ *
+ * وغيرُ المقروء يُشتقّ من غياب صفٍّ في `staff_message_reads` — لا من عمودٍ يُحدَّث
+ * مع كل قراءة فيفترق عن سجلّه.
+ */
+export async function staffConversations(userId: number): Promise<StaffConversation[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `WITH visible AS (
+       SELECT m.*,
+              CASE WHEN m.recipient_id IS NULL THEN NULL
+                   WHEN m.sender_id = $1 THEN m.recipient_id
+                   ELSE m.sender_id END AS peer_id
+         FROM staff_messages m
+        WHERE m.recipient_id IS NULL OR m.sender_id = $1 OR m.recipient_id = $1
+     ),
+     latest AS (
+       SELECT DISTINCT ON (peer_id) peer_id, kind, body, voice_ms, created_at
+         FROM visible ORDER BY peer_id, id DESC
+     ),
+     unread AS (
+       SELECT v.peer_id, COUNT(*)::int AS n
+         FROM visible v
+        WHERE v.sender_id <> $1
+          AND NOT EXISTS (
+                SELECT 1 FROM staff_message_reads r
+                 WHERE r.message_id = v.id AND r.user_id = $1)
+        GROUP BY v.peer_id
+     )
+     SELECT u.id AS user_id, u.display_name, u.role,
+            l.created_at, l.kind, l.body, l.voice_ms,
+            COALESCE(n.n, 0) AS unread
+       FROM users u
+       LEFT JOIN latest l ON l.peer_id = u.id
+       LEFT JOIN unread n ON n.peer_id = u.id
+      WHERE u.is_active AND u.id <> $1
+      UNION ALL
+     SELECT NULL AS user_id, 'الفريق كلّه' AS display_name, NULL AS role,
+            l.created_at, l.kind, l.body, l.voice_ms,
+            COALESCE(n.n, 0) AS unread
+       FROM (SELECT 1) AS one
+       LEFT JOIN latest l ON l.peer_id IS NULL
+       LEFT JOIN unread n ON n.peer_id IS NULL`,
+    [userId],
+  );
+  return rows.map((row) => ({
+    userId: (row.user_id as number | null) ?? null,
+    displayName: row.display_name as string,
+    role: (row.role as string | null) ?? null,
+    lastAt: row.created_at ? (row.created_at as Date).toISOString() : null,
+    lastKind: (row.kind as "text" | "voice" | null) ?? null,
+    lastBody: (row.body as string | null) ?? null,
+    lastVoiceMs: row.voice_ms === null || row.voice_ms === undefined ? null : Number(row.voice_ms),
+    unread: Number(row.unread),
+  }));
+}
+
+/** عدد ما لم يُقرأ — عدّاد القشرة. رسائلي إليّ لا تُعدّ. */
+export async function unreadStaffMessages(userId: number): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n
+       FROM staff_messages m
+      WHERE m.sender_id <> $1
+        AND (m.recipient_id = $1 OR m.recipient_id IS NULL)
+        AND NOT EXISTS (
+              SELECT 1 FROM staff_message_reads r
+               WHERE r.message_id = m.id AND r.user_id = $1)`,
+    [userId],
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * تعليم محادثةٍ مقروءة.
+ *
+ * `ON CONFLICT DO NOTHING` يحفظ **أول** قراءة: إعادةُ فتح المحادثة لا تزيح وقت
+ * القراءة الأولى إلى الآن، ومن يسأل «متى رآها» يسأل عن الأولى.
+ */
+export async function markConversationRead(
+  userId: number, scope: { withUserId: number } | { broadcast: true },
+): Promise<number> {
+  await ensureSchema();
+  const broadcast = "broadcast" in scope;
+  const { rowCount } = await getPool().query(
+    `INSERT INTO staff_message_reads (message_id, user_id)
+     SELECT m.id, $1 FROM staff_messages m
+      WHERE m.sender_id <> $1
+        AND (($2::boolean AND m.recipient_id IS NULL)
+          OR (NOT $2::boolean AND m.sender_id = $3 AND m.recipient_id = $1))
+     ON CONFLICT DO NOTHING`,
+    [userId, broadcast, broadcast ? null : scope.withUserId],
+  );
+  return rowCount ?? 0;
+}
+
+/**
+ * مفتاح التسجيل على القرص — بعد التثبّت من حقّ القارئ.
+ *
+ * والحارس هنا لا في الواجهة: رابط التشغيل رقمٌ متسلسل، ومن يبدّله برقمٍ آخر
+ * يسمع رسالةً ليست له. فيُشترط أن يكون المستمع مُرسِلَها أو مُستقبِلَها أو أن
+ * تكون رسالةَ فريق.
+ */
+export async function staffMessageVoice(
+  messageId: number, userId: number,
+): Promise<{ key: string; mime: string } | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ voice_key: string | null; voice_mime: string | null }>(
+    `SELECT voice_key, voice_mime FROM staff_messages
+      WHERE id = $1 AND kind = 'voice'
+        AND (recipient_id IS NULL OR sender_id = $2 OR recipient_id = $2)`,
+    [messageId, userId],
+  );
+  const row = rows[0];
+  if (!row?.voice_key) return null;
+  return { key: row.voice_key, mime: row.voice_mime ?? "application/octet-stream" };
 }

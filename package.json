@@ -38,6 +38,8 @@
     "journey:inventory": "node scripts/journeys/inventory.mjs",
     "journey:portal": "node scripts/journeys/portal.mjs",
     "verify:executive": "tsx scripts/verify-executive.mjs",
+    "verify:messages": "tsx scripts/verify-messages.mjs",
+    "journey:messages": "node scripts/journeys/messages.mjs",
     "journey:pwa": "node scripts/journeys/pwa.mjs",
     "icons": "node scripts/make-icons.mjs"
   },
