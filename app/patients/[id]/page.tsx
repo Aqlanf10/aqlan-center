@@ -11,6 +11,7 @@ import { PatientPlans } from "@/components/PatientPlans";
 import { shortMinutes } from "@/lib/report";
 import { DentalChart } from "@/components/DentalChart";
 import { PatientDocuments } from "@/components/PatientDocuments";
+import { PatientIntake } from "@/components/PatientIntake";
 import { PatientOrtho } from "@/components/PatientOrtho";
 
 /**
@@ -137,6 +138,9 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
           ⚠ {patient.medicalAlert}
         </p>
       ) : null}
+
+      {/* ما قاله المريض في بوابته — تحت تنبيه الطبيب لا مكانه. */}
+      <PatientIntake patientId={patient.id} />
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>

@@ -44,10 +44,17 @@ const seeded = await staff.evaluate(async ({ patientName, patientPhone, date }) 
   });
   if (!made.ok) return { ok: false, step: "patient", status: made.status };
   const patient = await made.json();
-  const booked = await fetch("/api/appointments", {
+  // ولو كان الوقت مشغولًا فالبرنامج يقترح البديل — والرحلة تأخذه بدل أن تسقط
+  // على تعارضٍ هو ميزةٌ لا عطل.
+  const book = async (time) => fetch("/api/appointments", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ patientId: patient.id, date, time: "10:00", durationMinutes: 30 }),
+    body: JSON.stringify({ patientId: patient.id, date, time, durationMinutes: 30 }),
   });
+  let booked = await book("10:00");
+  if (booked.status === 409) {
+    const { suggestion } = await booked.json();
+    if (suggestion) booked = await book(suggestion);
+  }
   return {
     ok: booked.ok, step: "appointment", status: booked.status,
     patientNumber: patient.patientNumber, patientId: patient.id,
@@ -104,6 +111,32 @@ console.log("3) أُكّد الحضور ووصل إلى المركز");
 await patientPage.screenshot({ path: OUT + "/portal-2-confirmed.png", fullPage: true });
 
 // ٤) العزل: جلسة البوابة لا تفتح شيئًا من المركز.
+/*
+ * الاستمارة الصحّية — تُملأ في البيت لا على الطاولة.
+ *
+ * ويُفحص أنها تصل إلى **من يحتاجها**: الطبيب يفتح ملف المريض فيقرأ ما قاله قبل أن
+ * يلمس الكرسي. واستمارةٌ تُملأ ولا تُقرأ ورقةٌ في درج.
+ */
+await patientPage.getByRole("button", { name: /املأ الاستمارة|تحديث استمارتي/ }).click();
+await patientPage.waitForTimeout(1200);
+await patientPage.getByRole("button", { name: "اضطراب نزف أو مميّع دم" }).click();
+await patientPage.getByLabel("الحساسية").fill("البنسلين");
+await patientPage.getByRole("button", { name: "إرسال الاستمارة" }).click();
+await patientPage.waitForTimeout(2500);
+const afterIntake = (await patientPage.locator("body").innerText()).replace(/\s+/g, " ");
+say("الاستمارة تُحفظ ويراها المريض", /اضطراب نزف/.test(afterIntake), afterIntake.slice(0, 60));
+
+await staff.goto(BASE + `/patients/${seeded.patientId}`, { waitUntil: "networkidle" });
+await staff.waitForTimeout(2500);
+const chart = (await staff.locator("body").innerText()).replace(/\s+/g, " ");
+say("والطبيب يقرأها في ملف المريض", /ما قاله المريض عن صحّته/.test(chart));
+say("ومعها ما أشّر عليه", /اضطراب نزف/.test(chart) && /البنسلين/.test(chart));
+// وقولُ المريض لا يصير تنبيهًا سريريًّا أحمر بلا مراجعة الطبيب.
+say("ولا تُكتب في التنبيه الطبي — قولُ المريض ليس تشخيص الطبيب",
+  !/⚠ .*البنسلين/.test(chart));
+await staff.screenshot({ path: OUT + "/portal-3-intake-staff.png", fullPage: true });
+console.log("5) الاستمارة وصلت من البيت إلى الكرسي");
+
 const leakStatus = await patientPage.evaluate(async () =>
   (await fetch("/api/patients", { cache: "no-store" })).status);
 say("وجلسة البوابة لا تفتح مسار طاقم", leakStatus === 401, `الحالة ${leakStatus}`);
@@ -120,7 +153,7 @@ await patientPage.goto(BASE + "/portal", { waitUntil: "networkidle" });
 await patientPage.waitForTimeout(2000);
 say("وبوابته تبقى مفتوحة له بعد ذلك",
   (await patientPage.locator("body").innerText()).includes(name));
-console.log("4) العزل قائم في الاتجاهين");
+console.log("6) العزل قائم في الاتجاهين");
 
 console.log(failed ? "\nسقطت رحلة البوابة." : "\nرحلة البوابة تامّة.");
 await b.close();

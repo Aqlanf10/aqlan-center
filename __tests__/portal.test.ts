@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createSessionToken, readSessionToken } from "../lib/auth";
@@ -10,6 +11,7 @@ import {
   toPortalAppointment,
   validatePortalLogin,
 } from "../lib/portal";
+import { intakeSummary, validateIntake } from "../lib/intake";
 
 beforeAll(() => {
   process.env.SESSION_SECRET = "portal-test-only-secret-not-for-production-2026";
@@ -151,5 +153,65 @@ describe("تأكيد الحضور", () => {
     };
     expect(toPortalAppointment(one, null, today).confirmable).toBe(true);
     expect(toPortalAppointment(one, "2026-09-01T08:00:00.000Z", today).confirmable).toBe(false);
+  });
+});
+
+describe("الاستمارة الصحّية", () => {
+  it("الحالات المعروفة تُقبل وتُنقّى من التكرار", () => {
+    const result = validateIntake({ conditions: ["diabetes", "diabetes", "asthma"] });
+    expect(result.ok && result.value.conditions).toEqual(["diabetes", "asthma"]);
+  });
+
+  it("ومفتاحٌ لا نعرفه يُردّ ولا يُتجاهَل — الاستمارة الناقصة بصمت أسوأ من المرفوضة", () => {
+    const result = validateIntake({ conditions: ["diabetes", "ما-ليس-منها"] });
+    expect(result.ok).toBe(false);
+  });
+
+  it("والنصّ يُشذَّب ويُقصّ ولا يُترك فارغًا نصًّا", () => {
+    const result = validateIntake({ conditions: [], allergies: "   ", medications: "  بنسلين  " });
+    expect(result.ok && result.value.allergies).toBeNull();
+    expect(result.ok && result.value.medications).toBe("بنسلين");
+  });
+
+  it("ورقم طوارئ قصير مرفوض — رقمٌ لا يُتّصل به أسوأ من لا رقم", () => {
+    expect(validateIntake({ conditions: [], emergencyPhone: "12" }).ok).toBe(false);
+    expect(validateIntake({ conditions: [], emergencyPhone: "770123456" }).ok).toBe(true);
+  });
+
+  it("واستمارةٌ فارغة مقبولة — «لا شيء عندي» جوابٌ يُسجَّل", () => {
+    const result = validateIntake({ conditions: [] });
+    expect(result.ok).toBe(true);
+    expect(result.ok && intakeSummary(result.value)).toBe("لا شيء مذكور");
+  });
+
+  it("والملخّص يبدأ بالحالات — الطبيب الواقف يقرأ أوّل ثلاث كلمات", () => {
+    expect(intakeSummary({
+      conditions: ["bleeding"], allergies: "البنسلين", medications: null,
+      emergencyName: null, emergencyPhone: null, note: null,
+    })).toBe("اضطراب نزف أو مميّع دم — حساسية: البنسلين");
+  });
+});
+
+/*
+ * حارسٌ على البناء لا على المنطق.
+ *
+ * شاشة المريض تستورد قائمة الحالات؛ ولو كانت في `lib/portal.ts` لسحب الاستيرادُ
+ * مكتبةَ التعمية إلى المتصفّح **فسقط البناء كلّه** — وقد سقط فعلًا. و`tsc` لا يراه:
+ * الأنواع صحيحة والحزم هي التي تُرفض. فيُثبَّت الفصل هنا كي لا يعود أحدٌ يجمعهما.
+ */
+describe("الفصل الذي يجعل شاشة المريض تُبنى", () => {
+  const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+  it("وحدة الاستمارة بلا استيرادٍ من وحدات Node", () => {
+    const source = read("lib/intake.ts");
+    expect(/^import[^\n]*from\s+["']node:/m.test(source)).toBe(false);
+  });
+
+  it("وشاشة المريض ومكوّن الطاقم يستوردان منها لا من وحدة الجلسة", () => {
+    for (const path of ["app/portal/page.tsx", "components/PatientIntake.tsx"]) {
+      const source = read(path);
+      expect(source).toContain('from "@/lib/intake"');
+      expect(/^import[^\n]*from\s+["']@\/lib\/portal["']/m.test(source)).toBe(false);
+    }
   });
 });
