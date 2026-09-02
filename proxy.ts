@@ -25,6 +25,16 @@ const PUBLIC_PATHS = new Set([
   // بوابة المريض: شاشةٌ يفتحها المريض على هاتفه، وحارسُها جلستها هي لا جلسة
   // الطاقم. والصفحة نفسها لا تعرض شيئًا قبل الدخول — تعرض نموذج الدخول.
   "/portal",
+  /*
+   * ملفّا التثبيت. المتصفّح يطلبهما **قبل الدخول وبلا كوكي** — ولو رُدّا بتحويلٍ
+   * إلى شاشة الدخول لما ظهر عرض التثبيت أصلًا، ولخُزّنت صفحةُ الدخول مكان صفحة
+   * الانقطاع. وما فيهما لا يخصّ مريضًا: اسمُ المركز المعلن، وصفحةُ «لا اتصال».
+   */
+  "/manifest.webmanifest",
+  "/sw.js",
+  "/offline.html",
+  // أيقونة التبويب. كانت تُردّ بتحويلٍ إلى الدخول، فتبويب شاشة الدخول بلا أيقونة.
+  "/icon.svg",
 ]);
 const PUBLIC_API = new Set([
   "/api/auth/login",
@@ -56,6 +66,14 @@ const PUBLIC_API = new Set([
  */
 const PORTAL_API_PREFIX = "/api/portal/";
 
+/**
+ * أيقونات التثبيت.
+ *
+ * يطلبها النظام لا الصفحة — أندرويد يجلبها وقت التثبيت وبعده لرسم الأيقونة على
+ * الشاشة الرئيسة، بلا كوكي ولا جلسة. وهي صورٌ للشعار لا غير.
+ */
+const PUBLIC_ICON_PREFIX = "/icons/";
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   let hasSession = false;
@@ -81,7 +99,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
 
-  if (PUBLIC_PATHS.has(pathname)) {
+  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith(PUBLIC_ICON_PREFIX)) {
     // من يملك جلسة لا يرى شاشة الدخول من جديد.
     if (hasSession && pathname === "/login") {
       return NextResponse.redirect(new URL("/", request.url));

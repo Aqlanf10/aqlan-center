@@ -89,6 +89,28 @@ try {
   check('doctor cannot open the command room',(await request('/api/executive',d)).status===403);
   check('reception cannot open the command room either',(await request('/api/executive',reception)).status===403);
   check('and admin can',(await request('/api/executive',a)).status===200);
+  // ── التثبيت على الجهاز: ملفاته تُطلب قبل الدخول وبلا كوكي ──
+  const manifest=await request('/manifest.webmanifest');
+  check('manifest served without a session — the browser asks for it before anyone logs in',manifest.status===200);
+  const manifestBody=await manifest.json();
+  check('manifest names the icons Android asks for',['192x192','512x512'].every(size=>manifestBody.icons.some(icon=>icon.sizes===size))&&manifestBody.icons.some(icon=>icon.purpose==='maskable'));
+  check('manifest opens the app full screen at the day screen',manifestBody.display==='standalone'&&manifestBody.start_url==='/'&&manifestBody.dir==='rtl');
+  await db.saveSettings({'clinic.name':'مركز التجربة للتقويم'});
+  // ذاكرة الإعدادات تعيش خمس ثوانٍ داخل عملية الخادم — وهي عملية أخرى لا يُبطلها
+  // حفظُنا هنا. فيُنتظر انقضاؤها لا أكثر: الاسم يتغيّر بلا نشرة جديدة، وهذا المقصود.
+  let renamed=null;
+  for(let i=0;i<40;i++){renamed=await (await request('/manifest.webmanifest')).json();if(renamed.name==='مركز التجربة للتقويم')break;await new Promise(r=>setTimeout(r,250));}
+  check('the installed name follows the settings screen, not the build',renamed.name==='مركز التجربة للتقويم');
+  await db.saveSettings({'clinic.name':'مركز الدكتور عقلان الكامل لتقويم وزراعة وتجميل الأسنان'});
+  const worker=await request('/sw.js');
+  const workerBody=await worker.text();
+  check('service worker served from the root — its scope is the whole app',worker.status===200&&(worker.headers.get('content-type')??'').includes('javascript'));
+  check('and it is the reviewed policy, not a redirect page',workerBody.includes('function shouldCache(pathname)'));
+  check('offline page reachable without a session — it is precached before anyone logs in',(await request('/offline.html')).status===200);
+  const iconResponse=await request('/icons/icon-192.png');
+  check('install icon served without a session',iconResponse.status===200);
+  check('and it is a real PNG',Buffer.from(await iconResponse.arrayBuffer()).subarray(0,8).toString('hex')==='89504e470d0a1a0a');
+  check('opening the install files opened nothing else — a patient page still redirects',(await request('/patients')).status===307);
   for(let i=0;i<10;i++)await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   const limited=await request('/api/auth/login','',{username:'unknown-test',password:'wrong'});
   check('HTTP login rate limit with Retry-After',limited.status===429&&Number(limited.headers.get('retry-after'))>0);
