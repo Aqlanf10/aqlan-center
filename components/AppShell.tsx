@@ -109,7 +109,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
   // شاشة من الشاشات المخفية خلف «المزيد» مفتوحة الآن — فيُضاء الزر.
-  const restActive = nav.slice(4).some((item) => isActive(item.href));
+  const rest = nav.slice(4);
+  const restActive = rest.some((item) => isActive(item.href));
+
+  /*
+   * تنبيهات ما خلف «المزيد» تظهر على الزرّ نفسه.
+   *
+   * والاستقبال على هاتفٍ طول اليوم، والشريط السفلي لا يسع إلا أربعة — فما بعدها
+   * مخفيّ. وكان الزرّ يعدّ الطلبات وحدها، فبندٌ نفد أو تراكيبُ تأخّرت لا تُرى على
+   * الجهاز الذي يُنظر إليه فعلًا. **وتنبيهٌ لا يصل إلى الشاشة التي بيد صاحبه ليس
+   * تنبيهًا** — والوحدة تعود إلى ما بُني العدّاد ليمنعه: تُفتح متى تُذكر.
+   *
+   * ويُجمع من القائمة نفسها لا بعدٍّ يدوي: القائمة تتغيّر بالدور — الطبيب لا يرى
+   * الصندوق فينزاح المخفيّ — وعدٌّ مكتوبٌ بالاسم يتخلّف عن أول تغيير.
+   */
+  const restBadges = rest.reduce(
+    (sum, item) => sum + (item.badge ? badges[item.badge] : 0), 0);
 
   return (
     <div className="min-h-full lg:flex">
@@ -206,7 +221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur lg:hidden">
         {moreOpen ? (
           <div className="border-b border-slate-100 p-2">
-            {nav.slice(4).map((item) => (
+            {rest.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
@@ -252,9 +267,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Icon name="menu" className="h-5 w-5" />
             المزيد
-            {!moreOpen && badges.requests > 0 ? (
+            {!moreOpen && restBadges > 0 ? (
               <span className="absolute -top-0.5 left-1/4 rounded-full bg-accent-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
-                {badges.requests}
+                {restBadges}
               </span>
             ) : null}
           </button>
