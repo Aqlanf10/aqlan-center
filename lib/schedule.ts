@@ -20,9 +20,12 @@ export interface Appointment {
   scheduledDate: string;   // YYYY-MM-DD بتوقيت العيادة
   scheduledTime: string;   // HH:MM
   durationMinutes: number;
+  appointmentType?: string | null;
   note: string | null;
   status: AppointmentStatus;
   reminderSentAt?: string | null;
+  /** متى أكّد المريض حضوره من البوابة — ولا يُغيّر حالة الموعد، تلك بيد الاستقبال. */
+  patientConfirmedAt?: string | null;
 }
 
 /** المواعيد التي ما زالت تشغل مكانًا في اليوم. الملغى ومن لم يحضر لا يشغلان كرسيًا. */

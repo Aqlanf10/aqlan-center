@@ -118,6 +118,9 @@ export function ensureSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS appointments_date_idx ON appointments (scheduled_date);
       ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
+      -- تأكيدُ المريض حضوره من البوابة. عمودٌ لا حالة: «مؤكَّد» ليس حالةً ثالثة
+      -- للموعد بل صفةٌ عليه — والحالة تبقى بيد الاستقبال وحدها.
+      ALTER TABLE appointments ADD COLUMN IF NOT EXISTS patient_confirmed_at TIMESTAMPTZ;
 
       -- الزيارة تعرف موعدها ومريضها حين يأتي من حجز، وتبقى مستقلة للمريض المشي.
       ALTER TABLE visits ADD COLUMN IF NOT EXISTS patient_id INTEGER REFERENCES patients(id);
@@ -1287,6 +1290,7 @@ export async function createStaffUser(input: {
 // ─── المرضى والمواعيد ────────────────────────────────────────────────────────
 
 import { clinicDateString } from "./schedule";
+import { CONFIRM_REFUSAL, confirmVerdict } from "./portal";
 import type { Appointment, AppointmentStatus } from "./schedule";
 
 import type { Gender, Patient, PatientInput } from "./patient";
@@ -1514,6 +1518,7 @@ interface AppointmentRow {
   note: string | null;
   status: string;
   reminder_sent_at: Date | null;
+  patient_confirmed_at: Date | null;
 }
 
 function toAppointment(row: AppointmentRow): Appointment {
@@ -1528,15 +1533,18 @@ function toAppointment(row: AppointmentRow): Appointment {
     scheduledDate: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
     scheduledTime: String(row.scheduled_time).slice(0, 5),
     durationMinutes: row.duration_minutes,
+    appointmentType: row.appointment_type,
     note: row.note,
     status: row.status as AppointmentStatus,
     reminderSentAt: row.reminder_sent_at ? row.reminder_sent_at.toISOString() : null,
+    patientConfirmedAt: row.patient_confirmed_at ? row.patient_confirmed_at.toISOString() : null,
   };
 }
 
 const APPOINTMENT_SELECT = `
   SELECT a.id, a.patient_id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time,
-         a.duration_minutes, a.appointment_type, a.note, a.status, a.reminder_sent_at
+         a.duration_minutes, a.appointment_type, a.note, a.status, a.reminder_sent_at,
+         a.patient_confirmed_at
     FROM appointments a JOIN patients p ON p.id = a.patient_id`;
 
 export async function listAppointmentsByDate(date: string): Promise<Appointment[]> {
@@ -1546,6 +1554,110 @@ export async function listAppointmentsByDate(date: string): Promise<Appointment[
     [date],
   );
   return rows.map(toAppointment);
+}
+
+/* ── بوابة المريض ─────────────────────────────────────────────────────────── */
+
+/**
+ * الملف المطابق لرقمه — للدخول إلى البوابة.
+ *
+ * ويُعاد الملف ولو لم يطابق هاتفه: **المطابقة تقع في `portalCredentialsMatch`**
+ * وحدها، فلا يُقسَّم قرار الهوية بين استعلامٍ ودالّة. واستعلامٌ يطابق الهاتف بنفسه
+ * كان سيقارنه نصًّا، فيمنع صاحب الملف من الدخول برقمه هو مكتوبًا بصيغةٍ أخرى.
+ */
+export async function patientForPortal(patientNumber: string): Promise<{
+  id: number; patientNumber: string; fullName: string;
+  phone: string | null; altPhone: string | null;
+} | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT id, patient_number, full_name, phone, alt_phone
+       FROM patients WHERE upper(btrim(patient_number)) = upper(btrim($1)) LIMIT 1`,
+    [patientNumber],
+  );
+  const row = rows[0];
+  return row ? {
+    id: row.id as number,
+    patientNumber: row.patient_number as string,
+    fullName: row.full_name as string,
+    phone: (row.phone as string | null) ?? null,
+    altPhone: (row.alt_phone as string | null) ?? null,
+  } : null;
+}
+
+/**
+ * مواعيد المريض للبوابة — القادمة أوّلًا ثم القريبة الماضية.
+ *
+ * والماضية تُعرض لأن أوّل ما يسأل عنه المريض «متى كانت زيارتي؟» — لكنها محدودة
+ * بشهرين: بوابةٌ تعرض تاريخه كلّه تصير سجلًّا طبّيًا يُقرأ على هاتفٍ مفقود.
+ */
+export async function portalAppointments(patientId: number): Promise<Appointment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<AppointmentRow>(
+    `${APPOINTMENT_SELECT}
+      WHERE a.patient_id = $1 AND a.scheduled_date >= CURRENT_DATE - INTERVAL '60 days'
+      ORDER BY a.scheduled_date, a.scheduled_time`,
+    [patientId],
+  );
+  return rows.map(toAppointment);
+}
+
+/**
+ * تأكيد المريض حضوره.
+ *
+ * ويُقفل صفّ الموعد ويُعاد فحصُه داخل المعاملة: الاستقبال قد تُلغيه أو تنقله بينما
+ * البوابة مفتوحة على شاشة المريض — فيؤكّد موعدًا لم يعد قائمًا، ويأتي فلا يجد له
+ * مكانًا. **وشاشةٌ حمّلت الحالة قبل دقيقة ليست حارسًا.**
+ *
+ * ويُشترط أن يكون الموعد **لهذا المريض**: رقمُ موعدٍ عددٌ متسلسل، ومن يبدّله في
+ * الطلب يؤكّد موعد غيره لولا هذا الشرط.
+ */
+export async function confirmAppointmentByPatient(input: {
+  appointmentId: number; patientId: number; today: string;
+}): Promise<{ ok: true; confirmedAt: string } | { ok: false; reason: string; message: string }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{
+      status: string; scheduled_date: Date; patient_id: number; patient_confirmed_at: Date | null;
+    }>(
+      `SELECT status, scheduled_date, patient_id, patient_confirmed_at
+         FROM appointments WHERE id = $1 FOR UPDATE`,
+      [input.appointmentId],
+    );
+    const row = rows[0];
+    if (!row || row.patient_id !== input.patientId) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "not_found", message: "لم نجد هذا الموعد في ملفّك." };
+    }
+    if (row.patient_confirmed_at) {
+      await client.query("ROLLBACK");
+      return {
+        ok: false, reason: "already",
+        message: "الموعد مؤكَّد سلفًا — لا حاجة لتأكيده مرّة أخرى.",
+      };
+    }
+    const date = row.scheduled_date;
+    const scheduledDate =
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const verdict = confirmVerdict({ status: row.status, scheduledDate }, input.today);
+    if (!verdict.ok) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: verdict.reason, message: CONFIRM_REFUSAL[verdict.reason] };
+    }
+    const { rows: saved } = await client.query<{ at: Date }>(
+      `UPDATE appointments SET patient_confirmed_at = NOW() WHERE id = $1 RETURNING patient_confirmed_at AS at`,
+      [input.appointmentId],
+    );
+    await client.query("COMMIT");
+    return { ok: true, confirmedAt: saved[0].at.toISOString() };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function createAppointment(input: {
