@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyDate,
+import { dateLong, friendlyDate,
   friendlyDateLong, friendlyTime, reminderText, toWhatsAppNumber, whatsAppLink } from "../lib/reminders";
 import type { Appointment } from "../lib/schedule";
 
@@ -74,5 +74,43 @@ describe("تاريخ الملف", () => {
   it("يحمل السنة — ملف مريض تقويم فيه زيارات من سنتين", () => {
     expect(friendlyDateLong("2026-08-27")).toBe("الخميس 27/08/2026");
     expect(friendlyDateLong("2024-08-27")).toBe("الثلاثاء 27/08/2024");
+  });
+});
+
+/*
+ * التاريخ بلغة الورقة.
+ *
+ * وورقةٌ إنجليزية عليها يوم أسبوعٍ عربي ليست إنجليزية: تخرج إلى زميلٍ لا يقرأ
+ * العربية — وهو أوّل من تُكتب له الورقة الإنجليزية أصلًا.
+ */
+describe("التاريخ الطويل بلغة الورقة", () => {
+  it("عربيٌّ في العربية وإنجليزيٌّ في الإنجليزية", () => {
+    expect(dateLong("2026-09-03", "ar")).toBe("الخميس 03/09/2026");
+    expect(dateLong("2026-09-03", "en")).toBe("Thursday 03/09/2026");
+  });
+
+  it("ولا حرفَ عربيًّا في الإنجليزية", () => {
+    // الحارس على المخرج نفسه لا على يومٍ بعينه: أيّ يومٍ يتسرّب يُمسك.
+    for (let day = 1; day <= 28; day += 1) {
+      const text = dateLong(`2026-02-${String(day).padStart(2, "0")}`, "en");
+      expect(/[\u0600-\u06FF]/.test(text), text).toBe(false);
+    }
+  });
+
+  it("والترقيم واحدٌ في اللغتين — يوم/شهر/سنة", () => {
+    // وإلّا قُرئ ٠٣/٠٩ سبتمبرَ الثالثَ في ورقةٍ وآذارَ التاسعَ في أخرى.
+    expect(dateLong("2026-09-03", "ar")).toContain("03/09/2026");
+    expect(dateLong("2026-09-03", "en")).toContain("03/09/2026");
+  });
+
+  it("وتاريخٌ فاسد يُعاد كما هو في اللغتين", () => {
+    expect(dateLong("ليس تاريخًا", "en")).toBe("ليس تاريخًا");
+    expect(dateLong("", "ar")).toBe("");
+  });
+
+  it("والعربية هي `friendlyDateLong` نفسها — لا صيغةٌ ثانية تفترق عنها", () => {
+    for (const date of ["2026-01-01", "2026-06-15", "2026-12-31"]) {
+      expect(dateLong(date, "ar")).toBe(friendlyDateLong(date));
+    }
   });
 });

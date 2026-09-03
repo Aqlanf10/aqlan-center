@@ -206,6 +206,17 @@ try {
     english.includes("Pre-treatment") && english.includes("Approved")
       && !english.includes("ما قبل العلاج") && !english.includes("معتمدة"));
 
+  /*
+   * **والتاريخ منها.**
+   *
+   * وهذا ما فات الفحص أوّلَ مرّة: كان ينظر إلى المرحلة والحالة ولا ينظر إلى
+   * التاريخ، وكانت الورقة الإنجليزية تحمل «الخميس ٠٣/٠٩/٢٠٢٦» بيوم أسبوعٍ
+   * عربي. وفحصٌ ينظر إلى بعض الورقة يشهد لكلّها.
+   */
+  say("**وتاريخها إنجليزيٌّ أيضًا — لا يومَ أسبوعٍ عربيًّا**",
+    /Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday/.test(english)
+      && !/الأحد|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت/.test(english));
+
   const reprint = await page.evaluate(async ([document, study]) => {
     // العلامة تُقرأ من الصنف لا من النصّ: «نسخة معاد طباعتها» مكتوبةٌ دائمًا
     // في الورقة، و`reprint-mark-on` وحده هو ما يُظهرها.

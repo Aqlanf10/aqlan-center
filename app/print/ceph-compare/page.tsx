@@ -6,7 +6,7 @@ import {
 } from "@/lib/cephCompare";
 import { superimposeOnSN } from "@/lib/cephSuperimpose";
 import { formatMeasurement, referenceLines, say, type Lang } from "@/lib/ceph";
-import { friendlyDateLong } from "@/lib/reminders";
+import { dateLong } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
 import { PrintButton, ReprintMark } from "@/components/PrintButton";
 import { isAdmin } from "@/lib/roles";
@@ -123,7 +123,7 @@ export default async function CephComparePage({
       {say(STUDY_PHASE_TEXT[study.phase], lang)}
       {" · "}{say(STUDY_STATUS_TEXT[study.status], lang)}
       {" · "}{say(T.revision, lang)} {study.revision}
-      {study.takenOn ? ` · ${friendlyDateLong(study.takenOn)}` : ""}
+      {study.takenOn ? ` · ${dateLong(study.takenOn, lang)}` : ""}
       {study.approvedBy ? ` · ${say(T.approvedBy, lang)} ${study.approvedBy}` : ""}
     </>
   );
@@ -207,7 +207,7 @@ export default async function CephComparePage({
            * وهو لم يُحسب أصلًا. والرسالة تقول ما ينقص وما يُفعل.
            */
           <p className="doc-meta">
-            <strong>{say(T.noSuperimposition, lang)}</strong> — {placed.message}
+            <strong>{say(T.noSuperimposition, lang)}</strong> — {say(placed.message, lang)}
           </p>
         )}
 
