@@ -30,7 +30,8 @@ export type AuditAction =
   | "backup.download" | "export.download"
   | "document.reprint"
   | "chart.record" | "visit.sign" | "visit.addendum"
-  | "document.upload" | "document.remove";
+  | "document.upload" | "document.remove"
+  | "ceph.study.create" | "ceph.study.approve" | "ceph.study.archive";
 
 export const AUDIT_LABEL: Record<AuditAction, string> = {
   "invoice.create": "إنشاء فاتورة",
@@ -62,6 +63,10 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "chart.record": "تثبيت حالة سن",
   "visit.sign": "توقيع زيارة",
   "visit.addendum": "ملحق على زيارة",
+  "ceph.study.create": "إنشاء دراسة سيفالومترية",
+  // الاعتماد توقيعٌ لا حفظ: من يُسأل بعد سنتين «من اعتمد هذه الأرقام» يجد الجواب هنا.
+  "ceph.study.approve": "اعتماد دراسة سيفالومترية",
+  "ceph.study.archive": "أرشفة دراسة سيفالومترية",
   "document.upload": "رفع مستند",
   "document.remove": "إخفاء مستند",
 };

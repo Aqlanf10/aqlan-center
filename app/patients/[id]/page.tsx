@@ -11,6 +11,7 @@ import { PatientPlans } from "@/components/PatientPlans";
 import { shortMinutes } from "@/lib/report";
 import { DentalChart } from "@/components/DentalChart";
 import { PatientDocuments } from "@/components/PatientDocuments";
+import { CephStudies } from "@/components/CephStudies";
 import { PatientIntake } from "@/components/PatientIntake";
 import { PatientOrtho } from "@/components/PatientOrtho";
 
@@ -37,13 +38,15 @@ function dateOnly(iso: string): string {
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 }
 
-type Tab = "overview" | "chart" | "ortho" | "plans" | "documents" | "ledger" | "appointments" | "visits";
+type Tab = "overview" | "chart" | "ortho" | "ceph" | "plans" | "documents" | "ledger" | "appointments" | "visits";
 
 /** التبويبات بترتيبها — مصدرٌ واحد للأزرار ولقراءة التبويب من الرابط. */
 const TABS: [Tab, string][] = [
   ["overview", "نظرة عامة"],
   ["chart", "المخطط السني"],
   ["ortho", "التقويم"],
+  // بعد التقويم مباشرةً: الدراسة تخدم حالةً، وقراءتُها بعيدةً عنها تفصل السببَ عن أثره.
+  ["ceph", "السيفالو"],
   ["plans", "خطة العلاج"],
   ["documents", "الأشعة"],
   ["ledger", "الحساب"],
@@ -200,6 +203,8 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
         <DentalChart patientId={file.patient.id} />
       ) : tab === "ortho" ? (
         <PatientOrtho patientId={patient.id} />
+      ) : tab === "ceph" ? (
+        <CephStudies patientId={patient.id} />
       ) : tab === "plans" ? (
         <PatientPlans patientId={patient.id} />
       ) : tab === "documents" ? (
