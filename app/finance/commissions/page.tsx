@@ -22,7 +22,10 @@ import { addDays, clinicDateString } from "@/lib/schedule";
 
 interface CommissionRow {
   doctorId: number; doctorName: string; commissionPercent: number;
-  accruedMinor: number; earnedMinor: number; paidMinor: number; dueMinor: number;
+  accruedMinor: number; earnedMinor: number;
+  labCostMinor: number; labShareMinor: number;
+  netEarnedMinor: number; uncoveredLabCostMinor: number;
+  paidMinor: number; dueMinor: number;
 }
 
 export default function CommissionsPage() {
@@ -34,6 +37,8 @@ export default function CommissionsPage() {
   const [from, setFrom] = useState(monthStart);
   const [to, setTo] = useState(today);
   const [rows, setRows] = useState<CommissionRow[]>([]);
+  const [deductsLabCost, setDeductsLabCost] = useState(false);
+  const [unattributed, setUnattributed] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +49,8 @@ export default function CommissionsPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
       setRows(payload.rows as CommissionRow[]);
+      setDeductsLabCost(Boolean(payload.deductsLabCost));
+      setUnattributed(Number(payload.unattributedLabCostMinor) || 0);
       if (isCurrency(payload.baseCurrency)) setBase(payload.baseCurrency);
       setError(null);
     } catch (loadError) {
@@ -128,7 +135,9 @@ export default function CommissionsPage() {
                   <p className="text-[11px] text-slate-500">على الفواتير</p>
                 </div>
                 <div className="rounded-xl bg-emerald-50 p-2">
-                  <p className="text-sm font-extrabold text-emerald-800">{formatMoney(row.earnedMinor, base)}</p>
+                  <p className="text-sm font-extrabold text-emerald-800">
+                    {formatMoney(deductsLabCost ? row.netEarnedMinor : row.earnedMinor, base)}
+                  </p>
                   <p className="text-[11px] text-emerald-700">المستحق</p>
                 </div>
                 <div className="rounded-xl bg-slate-50 p-2">
@@ -136,6 +145,29 @@ export default function CommissionsPage() {
                   <p className="text-[11px] text-slate-500">صُرف</p>
                 </div>
               </div>
+              {/*
+                * الخصم يُعرض سطرًا لا يُطرح صامتًا.
+                *
+                * فالطبيب يسأل «لماذا نقص عمّا حسبتُه؟» — والجواب يجب أن يكون
+                * على الشاشة نفسها: هذا المكتسب، وهذه تكلفة مختبره، وهذا الصافي.
+                */}
+              {deductsLabCost && row.labCostMinor > 0 ? (
+                <p className="mt-2 rounded-xl bg-amber-50 px-2.5 py-1.5 text-center text-[11px] font-bold text-amber-900">
+                  المكتسب {formatMoney(row.earnedMinor, base)} − حصّته من تكلفة مختبره{" "}
+                  {formatMoney(row.labShareMinor, base)}{" "}
+                  <span className="font-normal">
+                    ({row.commissionPercent}% من {formatMoney(row.labCostMinor, base)})
+                  </span>{" "}
+                  = {formatMoney(row.netEarnedMinor, base)}
+                  {row.uncoveredLabCostMinor > 0 ? (
+                    <>
+                      <br />
+                      وتبقّى من التكلفة {formatMoney(row.uncoveredLabCostMinor, base)} لم تُخصم —
+                      لا تُرحَّل ولا تُجعل العمولة دَينًا عليه، فقرّر فيها.
+                    </>
+                  ) : null}
+                </p>
+              ) : null}
               <p className={`mt-2 text-center text-sm font-extrabold ${
                 row.dueMinor > 0 ? "text-brand-blue" : row.dueMinor < 0 ? "text-red-700" : "text-slate-400"
               }`}>
@@ -154,6 +186,19 @@ export default function CommissionsPage() {
           ))}
         </ul>
       )}
+
+      {/*
+        * تكلفةٌ في المدّة لا طبيب مكتوبٌ عليها.
+        *
+        * ولا تُوزَّع بالتساوي ولا بالنسبة: توزيعٌ بلا سجلّ يخصم من طبيبٍ مالًا
+        * لم يثبت أنّه عمله. فتُعرض ليُنسبها المالك في شاشة المختبر.
+        */}
+      {deductsLabCost && unattributed > 0 ? (
+        <p className="mt-3 rounded-2xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+          تكلفة مختبرٍ في هذه المدّة بلا طبيبٍ مكتوب عليها: {formatMoney(unattributed, base)} —
+          لم تُخصم من أحد. اكتب الطبيب على أوامر المختبر لتُنسب إليه.
+        </p>
+      ) : null}
 
       <p className="mt-4 text-center text-[11px] leading-relaxed text-slate-400">
         الفرق بين «على الفواتير» و«المستحق» هو المرضى الذين لم يدفعوا. الصرف يكون على

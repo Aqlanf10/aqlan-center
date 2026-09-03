@@ -5,6 +5,8 @@ import { useClinicName, useSetting } from "@/components/SettingsProvider";
 import { CURRENCIES, CURRENCY_LABEL, isCurrency, type Currency } from "@/lib/money";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
+import { isAdmin } from "@/lib/roles";
+import { useSession } from "@/components/SessionProvider";
 import {
   LAB_FILTER_LABEL,
   LAB_STATUS_LABEL,
@@ -59,6 +61,9 @@ export default function LabPage() {
   const [labPhone, setLabPhone] = useState("");
   const [labParties, setLabParties] = useState<{ id: number; name: string }[]>([]);
   const [partyId, setPartyId] = useState("");
+  const session = useSession();
+  const [doctorId, setDoctorId] = useState("");
+  const [doctorParties, setDoctorParties] = useState<{ id: number; name: string }[]>([]);
   const [cost, setCost] = useState("");
   const [costCurrency, setCostCurrency] = useState<Currency>(
     isCurrency(baseSettingValue) ? baseSettingValue : "YER",
@@ -93,6 +98,16 @@ export default function LabPage() {
         const response = await fetch("/api/parties?kind=lab", { cache: "no-store" });
         if (response.ok) setLabParties(await response.json());
       } catch { /* القائمة تبقى فارغة والتكلفة تبقى اختيارية */ }
+    })();
+  }, []);
+
+  // والأطباء: على من كتب اسمه هنا تُخصم تكلفة العمل من عمولته.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/parties?kind=doctor", { cache: "no-store" });
+        if (response.ok) setDoctorParties(await response.json());
+      } catch { /* تبقى القائمة فارغة والحقل اختياريًّا */ }
     })();
   }, []);
 
@@ -135,7 +150,7 @@ export default function LabPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         patientId: patient.id, labName, labPhone, workType, details, sentDate, dueDate,
-        partyId: partyId || undefined, cost, costCurrency,
+        partyId: partyId || undefined, doctorId: doctorId || undefined, cost, costCurrency,
       }),
     }));
     if (ok) {
@@ -144,7 +159,7 @@ export default function LabPage() {
       setAdding(false);
       setFilter("outstanding");
     }
-  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, cost, costCurrency]);
+  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, doctorId, cost, costCurrency]);
 
   const summary = useMemo(() => labSummary(feed.orders, today), [feed.orders, today]);
   const visible = useMemo(
@@ -265,6 +280,25 @@ export default function LabPage() {
             ))}
           </select>
 
+          {/*
+            * الطبيب الآمر بالعمل.
+            *
+            * وتكلفة التركيبة تُخصم من عمولته — قرار المالك. وتركُه فارغًا يترك
+            * التكلفة بلا نسبة: تظهر في شاشة العمولات «بلا طبيب» ولا تُخصم من
+            * أحد، ولا تُوزَّع بالحدس على من لم يثبت أنّه عملها.
+            */}
+          <label className="mb-1 block text-[11px] font-bold text-slate-500">الطبيب الآمر بالعمل (تُخصم تكلفته من عمولته)</label>
+          <select
+            value={doctorId}
+            onChange={(event) => setDoctorId(event.target.value)}
+            className="mb-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="">— بلا طبيب —</option>
+            {doctorParties.map((party) => (
+              <option key={party.id} value={party.id}>{party.name}</option>
+            ))}
+          </select>
+
           {partyId ? (
             <div className="mb-3 flex flex-wrap gap-2">
               <input
@@ -353,7 +387,8 @@ export default function LabPage() {
         <ul className="space-y-2">
           {visible.map((order) => (
             <OrderCard key={order.id} order={order} today={today} busy={busy} act={act}
-              clinicName={clinicName} clinicPhone={clinicPhone} />
+              clinicName={clinicName} clinicPhone={clinicPhone}
+              doctors={doctorParties} canAssign={isAdmin(session?.role)} />
           ))}
         </ul>
       )}
@@ -361,13 +396,15 @@ export default function LabPage() {
   );
 }
 
-function OrderCard({ order, today, busy, act, clinicName, clinicPhone }: {
+function OrderCard({ order, today, busy, act, clinicName, clinicPhone, doctors, canAssign }: {
   order: LabOrder;
   today: string;
   busy: boolean;
   act: (run: () => Promise<Response>) => Promise<boolean>;
   clinicName: string;
   clinicPhone: string;
+  doctors: { id: number; name: string }[];
+  canAssign: boolean;
 }) {
   const late = daysLate(order, today);
   const labNumber = toWhatsAppNumber(order.labPhone);
@@ -402,6 +439,34 @@ function OrderCard({ order, today, busy, act, clinicName, clinicPhone }: {
           <p className="text-xs text-slate-500">
             {order.labName} · التسليم {friendlyDateLong(order.dueDate)} · {LAB_STATUS_LABEL[order.status]}
           </p>
+          {/*
+            * الطبيب الآمر — ويُنسب هنا للأوامر التي بلا طبيب.
+            *
+            * فشاشة العمولات تعرض «تكلفةٌ بلا طبيب» وتطلب نسبتها، وتنبيهٌ لا
+            * سبيل إلى إغلاقه تنبيهٌ يُهمَل بعد أسبوع ويبقى المال بلا نسبة.
+            */}
+          {canAssign ? (
+            <label className="mt-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+              الطبيب:
+              <select
+                value={order.doctorId ?? ""}
+                onChange={(event) => void act(() => fetch(`/api/lab/${order.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ doctorId: event.target.value || null }),
+                }))}
+                disabled={busy}
+                className={`rounded-lg border px-1.5 py-0.5 text-[11px] ${
+                  order.doctorId ? "border-slate-300 bg-white" : "border-amber-400 bg-amber-50"
+                }`}
+              >
+                <option value="">— بلا طبيب —</option>
+                {doctors.map((one) => <option key={one.id} value={one.id}>{one.name}</option>)}
+              </select>
+            </label>
+          ) : order.doctorName ? (
+            <p className="text-[11px] text-slate-500">الطبيب: {order.doctorName}</p>
+          ) : null}
         </div>
         {late > 0 ? (
           <span className="shrink-0 rounded-full bg-red-500 px-2.5 py-1 text-xs font-extrabold text-white">

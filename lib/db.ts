@@ -356,6 +356,17 @@ export function ensureSchema(): Promise<void> {
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS party_id   INTEGER REFERENCES parties(id);
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_minor BIGINT;
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_currency TEXT;
+      /*
+       * الطبيب الذي أمر بالعمل — وعليه تُخصم تكلفته من عمولته.
+       *
+       * ويقبل الفراغ: أوامرُ ما قبل هذا العمود لا طبيب لها، وتخمينُه عليها
+       * يخصم من طبيبٍ مالًا بحدسٍ لا بسجلّ. فتبقى بلا نسبة وتُعرض في الشاشة
+       * «تكلفةٌ بلا طبيب» ليُنسبها المالك بنفسه.
+       */
+      ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS doctor_party_id INTEGER
+        REFERENCES parties(id);
+      CREATE INDEX IF NOT EXISTS lab_orders_doctor_idx
+        ON lab_orders (doctor_party_id, sent_date) WHERE doctor_party_id IS NOT NULL;
 
       -- القيود اليدوية: التسويات وإعادة تقييم العملات والأرصدة الافتتاحية. قيود
       -- المستندات تُشتقّ من المستندات نفسها ولا تُخزَّن — فلا مصدرين للحقيقة.
@@ -2322,6 +2333,8 @@ interface LabOrderRow {
   received_at: Date | null;
   delivered_at: Date | null;
   note: string | null;
+  doctor_party_id: number | null;
+  doctor_name: string | null;
 }
 
 /** التاريخ من مكوّناته المحلية لا بـ toISOString — نفس فخ اليوم السابق. */
@@ -2345,13 +2358,18 @@ function toLabOrder(row: LabOrderRow): LabOrder {
     receivedAt: row.received_at ? row.received_at.toISOString() : null,
     deliveredAt: row.delivered_at ? row.delivered_at.toISOString() : null,
     note: row.note,
+    doctorId: (row.doctor_party_id as number | null) ?? null,
+    doctorName: (row.doctor_name as string | null) ?? null,
   };
 }
 
 const LAB_SELECT = `
   SELECT l.id, l.patient_id, p.full_name, p.phone, l.lab_name, l.lab_phone, l.work_type,
-         l.details, l.sent_date, l.due_date, l.status, l.received_at, l.delivered_at, l.note
-    FROM lab_orders l JOIN patients p ON p.id = l.patient_id`;
+         l.details, l.sent_date, l.due_date, l.status, l.received_at, l.delivered_at, l.note,
+         l.doctor_party_id, doc.name AS doctor_name
+    FROM lab_orders l
+    JOIN patients p ON p.id = l.patient_id
+    LEFT JOIN parties doc ON doc.id = l.doctor_party_id`;
 
 /**
  * الأعمال المفتوحة وما أُنجز حديثًا.
@@ -2387,6 +2405,8 @@ export async function createLabOrder(input: {
   dueDate: string;
   note: string | null;
   partyId: number | null;
+  /** الطبيب الذي أمر بالعمل — تُخصم تكلفته من عمولته. */
+  doctorPartyId: number | null;
   costMinor: number | null;
   costCurrency: Currency | null;
   baseCurrency: Currency;
@@ -2399,13 +2419,15 @@ export async function createLabOrder(input: {
     await client.query("BEGIN");
     const { rows } = await client.query<{ id: number }>(
       `INSERT INTO lab_orders (patient_id, lab_name, lab_phone, work_type, details, sent_date,
-                               due_date, note, party_id, cost_minor, cost_currency)
-       VALUES ($1, $2, $3::text, $4, $5::text, $6::date, $7::date, $8::text, $9::int, $10::bigint, $11::text)
+                               due_date, note, party_id, cost_minor, cost_currency,
+                               doctor_party_id)
+       VALUES ($1, $2, $3::text, $4, $5::text, $6::date, $7::date, $8::text, $9::int, $10::bigint,
+               $11::text, $12::int)
        RETURNING id`,
       [
         input.patientId, input.labName, input.labPhone, input.workType,
         input.details, input.sentDate, input.dueDate, input.note,
-        input.partyId, input.costMinor, input.costCurrency,
+        input.partyId, input.costMinor, input.costCurrency, input.doctorPartyId,
       ],
     );
     const orderId = rows[0].id;
@@ -2641,6 +2663,7 @@ import {
   ALL_SETTING_KEYS,
   SETTING_DEFAULTS,
   rateFromSettings,
+  settingIsYes,
   withDefaults,
   type SettingKey,
   type SettingsMap,
@@ -3491,9 +3514,32 @@ export interface CommissionRow {
   doctorName: string;
   commissionPercent: number;
   accruedMinor: number;
+  /** المكتسب قبل الخصم. */
   earnedMinor: number;
+  /** تكلفة أعمال المختبر التي أمر بها في المدّة — كاملةً، بالعملة الأساسية. */
+  labCostMinor: number;
+  /** حصّته منها بنسبته — وهي المخصومة. */
+  labShareMinor: number;
+  /** المكتسب بعد الخصم — وهو المستحق. */
+  netEarnedMinor: number;
+  /** ما فاض من التكلفة عن عمولته، فلم يُخصم ولم يُرحَّل. */
+  uncoveredLabCostMinor: number;
   paidMinor: number;
   dueMinor: number;
+}
+
+/** حصيلةُ العمولات ومعها ما لا يُنسب إلى طبيب. */
+export interface CommissionReport {
+  rows: CommissionRow[];
+  /** أمفعَّلٌ الخصم؟ — الشاشة تقول للقارئ على أيّ قاعدةٍ حُسب ما يراه. */
+  deductsLabCost: boolean;
+  /**
+   * تكلفةُ مختبرٍ في المدّة بلا طبيبٍ مكتوب عليها.
+   *
+   * ولا تُوزَّع على الأطباء بالتساوي ولا بالنسبة: توزيعٌ بلا سجلّ يخصم من
+   * طبيبٍ مالًا لم يثبت أنّه عمله. فتُعرض رقمًا ظاهرًا ليُنسبها المالك.
+   */
+  unattributedLabCostMinor: number;
 }
 
 /**
@@ -3503,7 +3549,7 @@ export interface CommissionRow {
  * فواتير المدى. لو قُصر التوزيع على المدى لبدت دفعةٌ قديمة كأنها تغطّي فاتورة الشهر
  * الحالي، فتُصرف عمولة مرتين على مالٍ واحد.
  */
-export async function commissionReport(from: string, to: string): Promise<CommissionRow[]> {
+export async function commissionReport(from: string, to: string): Promise<CommissionReport> {
   await ensureSchema();
   const pool = getPool();
 
@@ -3607,15 +3653,53 @@ export async function commissionReport(from: string, to: string): Promise<Commis
 
   const paidByDoctor = new Map(paidRows.map((row) => [row.party_id, toMinor(row.paid)]));
 
-  return summarizeCommissions(perPatient, paidByDoctor).map((row) => ({
-    doctorId: row.doctorId,
-    doctorName: nameByDoctor.get(row.doctorId) ?? "—",
-    commissionPercent: percentByDoctor.get(row.doctorId) ?? 0,
-    accruedMinor: row.accruedMinor,
-    earnedMinor: row.earnedMinor,
-    paidMinor: row.paidMinor,
-    dueMinor: row.dueMinor,
-  }));
+  /*
+   * تكلفة المختبر بالعملة الأساسية — من `payables` لا من `lab_orders`.
+   *
+   * فالتكلفة تُكتب على الأمر بعملتها، و`payables` تحمل مقابلها بالأساسية
+   * **بسعر يوم الأمر**. وضربُها بسعر اليوم يجعل عمولة شهرٍ مضى تتغيّر كلّما
+   * تحرّك الصرف — وقد صُرفت.
+   *
+   * والمُلغى لا يُخصم: عملٌ أُلغي لا تكلفة له.
+   */
+  const labCostRows = await pool.query<{ doctor_id: number | null; cost: string }>(
+    `SELECT lo.doctor_party_id AS doctor_id,
+            COALESCE(SUM(pay.base_amount_minor), 0) AS cost
+       FROM lab_orders lo
+       JOIN payables pay ON pay.lab_order_id = lo.id
+      WHERE lo.status <> 'cancelled'
+        AND lo.sent_date >= $1::date AND lo.sent_date <= $2::date
+      GROUP BY lo.doctor_party_id`,
+    [from, to],
+  );
+  const labCostByDoctor = new Map<number, number>();
+  let unattributedLabCostMinor = 0;
+  for (const row of labCostRows.rows) {
+    if (row.doctor_id === null) unattributedLabCostMinor += toMinor(row.cost);
+    else labCostByDoctor.set(row.doctor_id, toMinor(row.cost));
+  }
+
+  const settings = await getSettingsSafe();
+  const deductsLabCost = settingIsYes(settings, "finance.commission_deducts_lab_cost");
+
+  const rows = summarizeCommissions(
+    perPatient, paidByDoctor, labCostByDoctor, percentByDoctor, deductsLabCost,
+  )
+    .map((row) => ({
+      doctorId: row.doctorId,
+      doctorName: nameByDoctor.get(row.doctorId) ?? "—",
+      commissionPercent: percentByDoctor.get(row.doctorId) ?? 0,
+      accruedMinor: row.accruedMinor,
+      earnedMinor: row.earnedMinor,
+      labCostMinor: row.labCostMinor,
+      labShareMinor: row.labShareMinor,
+      netEarnedMinor: row.netEarnedMinor,
+      uncoveredLabCostMinor: row.uncoveredLabCostMinor,
+      paidMinor: row.paidMinor,
+      dueMinor: row.dueMinor,
+    }));
+
+  return { rows, deductsLabCost, unattributedLabCostMinor };
 }
 
 /** يُبقي `invoiceNet` مستعملًا في هذا الملف — يُستخدم في تقرير المديونية أدناه. */
@@ -7996,4 +8080,27 @@ export async function prescribedBefore(limit = 60): Promise<RxItem[]> {
     }
   }
   return [...seen.values()];
+}
+
+/**
+ * ينسب أمر مختبرٍ إلى طبيب — أو يرفع النسبة.
+ *
+ * وهو المخرج من «تكلفةٌ بلا طبيب»: أوامرُ ما قبل هذا الحقل لا طبيب لها،
+ * وتنبيهٌ يطلب نسبتها بلا سبيلٍ إلى ذلك تنبيهٌ لا يُغلق أبدًا.
+ *
+ * ويُتحقّق أنّه طبيبٌ مسجَّل: رقمُ جهةٍ أخرى يخصم تكلفةً من عمولة من ليس طبيبًا.
+ */
+export async function setLabOrderDoctor(
+  id: number, doctorPartyId: number | null,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  if (doctorPartyId !== null) {
+    const { rows } = await getPool().query<{ id: number }>(
+      `SELECT id FROM parties WHERE id = $1 AND kind = 'doctor'`, [doctorPartyId]);
+    if (!rows[0]) return { ok: false, message: "اختر الطبيب من قائمة الأطباء." };
+  }
+  const { rowCount } = await getPool().query(
+    `UPDATE lab_orders SET doctor_party_id = $2 WHERE id = $1`, [id, doctorPartyId]);
+  if (!rowCount) return { ok: false, message: "العمل غير موجود." };
+  return { ok: true };
 }

@@ -3,8 +3,7 @@ import {
   allocateFifo,
   commissionForPatient,
   summarizeCommissions,
-  type CommissionInvoice,
-} from "../lib/commission";
+  type CommissionInvoice, deductLabCost,} from "../lib/commission";
 
 describe("توزيع الدفعات على الفواتير", () => {
   const invoices = [
@@ -106,5 +105,111 @@ describe("ملخص العمولات", () => {
     const nine = summary.find((row) => row.doctorId === 9)!;
     expect(nine.earnedMinor).toBe(0);
     expect(nine.dueMinor).toBe(-5000);
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * خصم تكلفة المختبر
+ *
+ * قرارُ المالك، ومكتوبٌ في ذاكرة المشروع: **العمولة المكتسبة من التحصيل الفعلي
+ * مع خصم تكاليف المختبر**. وبلا الخصم تُدفع النسبة على مالٍ خرج أكثرُه إلى
+ * المختبر: تاجٌ بستّين ألفًا تكلفة تركيبه عشرون، ونسبة الطبيب أربعون بالمئة —
+ * فيُصرف له أربعةٌ وعشرون ألفًا من أربعين هي كلُّ ما بقي للمركز، بدل ستّة عشر.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("خصم تكلفة المختبر من العمولة", () => {
+  const row = (over: Partial<{ doctorId: number; accruedMinor: number; earnedMinor: number; paidMinor: number }> = {}) => ({
+    doctorId: 1, accruedMinor: 24_000, earnedMinor: 24_000, paidMinor: 0, ...over,
+  });
+  /*
+   * والتكلفة هنا **كاملةً كما يدفعها المركز** — ٢٠٬٠٠٠ — لا حصّةَ الطبيب منها.
+   *
+   * وهذا ما أخطأتُ فيه أوّل مرّة: كتبتُ في الفحص ٨٬٠٠٠ (وهي الحصّة الصحيحة)
+   * بينما يمرّر الاستعلام ٢٠٬٠٠٠، فمرّ الفحص وفي الوصل عطبٌ يدفع للطبيب
+   * ٤٬٠٠٠ بدل ١٦٬٠٠٠. فالفحص يجب أن يُطعَم ما يُطعَمه الكود لا ما يُنتجه.
+   */
+  const FULL_LAB_COST = 20_000;
+  const forty = new Map([[1, 40]]);
+
+  it("**مثال المالك** — تاجٌ بستّين، ومختبرٌ بعشرين، ونسبةٌ أربعون بالمئة", () => {
+    const [result] = deductLabCost([row()], new Map([[1, FULL_LAB_COST]]), forty, true);
+    expect(result.earnedMinor).toBe(24_000);        // ٤٠٪ × ٦٠٬٠٠٠
+    expect(result.labCostMinor).toBe(20_000);       // ما دفعه المركز للمختبر
+    expect(result.labShareMinor).toBe(8_000);       // ٤٠٪ × ٢٠٬٠٠٠
+    expect(result.netEarnedMinor).toBe(16_000);     // ٤٠٪ × (٦٠٬٠٠٠ − ٢٠٬٠٠٠)
+    expect(result.dueMinor).toBe(16_000);
+  });
+
+  it("**والمعادلة تصدق لأيّ نسبة** — نسبة × (المحصّل − التكلفة)", () => {
+    // حارسٌ على القاعدة نفسها لا على رقمٍ واحد: أيّ خللٍ في القياس يُمسك.
+    for (const percent of [10, 25, 40, 50, 75, 100]) {
+      const collected = 60_000;
+      const lab = 20_000;
+      const earned = Math.round((collected * percent) / 100);
+      const [result] = deductLabCost(
+        [row({ earnedMinor: earned, accruedMinor: earned })],
+        new Map([[1, lab]]), new Map([[1, percent]]), true,
+      );
+      expect(result.netEarnedMinor, `${percent}%`)
+        .toBe(Math.round(((collected - lab) * percent) / 100));
+    }
+  });
+
+  it("ومُطفَأً لا يُخصم شيء — والرقم هو رقم اليوم", () => {
+    const [result] = deductLabCost([row()], new Map([[1, FULL_LAB_COST]]), forty, false);
+    expect(result.labCostMinor).toBe(0);
+    expect(result.labShareMinor).toBe(0);
+    expect(result.netEarnedMinor).toBe(24_000);
+  });
+
+  it("**ولا ينزل الصافي تحت الصفر** — العمولة لا تصير دَينًا على الطبيب", () => {
+    const [result] = deductLabCost([row({ earnedMinor: 5_000 })], new Map([[1, 30_000]]), forty, true);
+    expect(result.labShareMinor).toBe(12_000);
+    expect(result.netEarnedMinor).toBe(0);
+    expect(result.uncoveredLabCostMinor).toBe(7_000);
+    expect(result.dueMinor).toBe(0);
+  });
+
+  it("والفائض يُقاس على الحصّة لا على التكلفة كاملةً", () => {
+    // وإلّا بدا على الطبيب فائضٌ ضِعفَ ما عليه فعلًا.
+    const [result] = deductLabCost([row({ earnedMinor: 0 })], new Map([[1, 20_000]]), forty, true);
+    expect(result.uncoveredLabCostMinor).toBe(8_000);
+  });
+
+  it("وما صُرف يُطرح من الصافي لا من المكتسب", () => {
+    const [result] = deductLabCost([row({ paidMinor: 10_000 })], new Map([[1, FULL_LAB_COST]]), forty, true);
+    expect(result.netEarnedMinor).toBe(16_000);
+    expect(result.dueMinor).toBe(6_000);
+  });
+
+  it("وطبيبٌ بلا تكلفة لا يتغيّر حسابه", () => {
+    const [result] = deductLabCost([row()], new Map(), forty, true);
+    expect(result.labShareMinor).toBe(0);
+    expect(result.netEarnedMinor).toBe(24_000);
+  });
+
+  it("وتكلفةٌ سالبة — بيانٌ فاسد — لا تزيد عمولة أحد", () => {
+    const [result] = deductLabCost([row()], new Map([[1, -5_000]]), forty, true);
+    expect(result.labCostMinor).toBe(0);
+    expect(result.netEarnedMinor).toBe(24_000);
+  });
+
+  it("وطبيبٌ بلا نسبة مسجّلة لا يُخصم منه — نسبتُه صفر فحصّته صفر", () => {
+    const [result] = deductLabCost([row()], new Map([[1, FULL_LAB_COST]]), new Map(), true);
+    expect(result.labShareMinor).toBe(0);
+    expect(result.netEarnedMinor).toBe(24_000);
+  });
+
+  it("والحصيلة تُظهر طبيبًا عليه تكلفة ولا عمولة له في المدّة", () => {
+    const rows = summarizeCommissions([], new Map(), new Map([[9, 10_000]]), new Map([[9, 30]]), true);
+    expect(rows.map((one) => one.doctorId)).toContain(9);
+    const nine = rows.find((one) => one.doctorId === 9)!;
+    expect(nine.labShareMinor).toBe(3_000);
+    expect(nine.uncoveredLabCostMinor).toBe(3_000);
+  });
+
+  it("ومُطفَأً لا يظهر — فلا يُعرض صفٌّ لا معنى له", () => {
+    expect(summarizeCommissions([], new Map(), new Map([[9, 3_000]]), new Map([[9, 30]]), false)).toEqual([]);
   });
 });
