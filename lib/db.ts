@@ -1505,6 +1505,7 @@ export async function createStaffUser(input: {
 // ─── المرضى والمواعيد ────────────────────────────────────────────────────────
 
 import { clinicDateString } from "./schedule";
+import { setupTokenIsLive, type ReadinessFacts } from "./readiness";
 import { type IntakeAnswers } from "./intake";
 import { CONFIRM_REFUSAL, confirmVerdict } from "./portal";
 import type { Appointment, AppointmentStatus } from "./schedule";
@@ -8455,4 +8456,70 @@ export async function agreedLabPrice(
   partyId: number, serviceId: number, onDate: string,
 ): Promise<LabPrice | null> {
   return priceOn(await listLabPrices(partyId), partyId, serviceId, onDate);
+}
+
+/**
+ * وقائع الجاهزية — تُقرأ كلُّها من مصدرها لا من ظنّ.
+ *
+ * والحكم عليها في `lib/readiness.ts` وحده: هنا القراءة، وهناك القول أيهما يمنع
+ * وأيهما يُنبَّه عليه. وخلطُ الاثنين يجعل تغيير حدٍّ يمرّ بلا اختبار.
+ *
+ * وسعرُ الصرف يُؤرَّخ بـ`settings.updated_at` لمفتاحَي السعرين وحدهما: تعديلُ
+ * اسم المركز لا يجعل السعر حديثًا.
+ */
+export async function readinessFacts(): Promise<ReadinessFacts> {
+  await ensureSchema();
+  const settings = await getSettingsSafe();
+  const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
+  const zone = CLINIC_TIME_ZONE;
+
+  const { rows } = await getPool().query<{
+    rates_on: string | null;
+    users_by_role: Record<string, number> | null;
+    doctors: string;
+    doctors_no_percent: string;
+    labs: string;
+    services: string;
+    backup_on: string | null;
+    open_shift_days: string | null;
+    lab_orders_no_doctor: string;
+  }>(
+    `SELECT
+       (SELECT MAX((updated_at AT TIME ZONE $1)::date)::text FROM settings
+         WHERE key IN ('finance.rate.SAR', 'finance.rate.USD'))            AS rates_on,
+       (SELECT jsonb_object_agg(role, n) FROM
+          (SELECT role, COUNT(*)::int AS n FROM users WHERE is_active GROUP BY role) r)
+                                                                          AS users_by_role,
+       (SELECT COUNT(*) FROM parties WHERE kind = 'doctor' AND is_active)  AS doctors,
+       (SELECT COUNT(*) FROM parties
+         WHERE kind = 'doctor' AND is_active AND commission_percent <= 0)  AS doctors_no_percent,
+       (SELECT COUNT(*) FROM parties WHERE kind = 'lab' AND is_active)     AS labs,
+       (SELECT COUNT(*) FROM services WHERE is_active)                     AS services,
+       (SELECT MAX((created_at AT TIME ZONE $1)::date)::text FROM audit_log
+         WHERE action = 'backup.download')                                 AS backup_on,
+       (SELECT FLOOR(EXTRACT(EPOCH FROM (NOW() - opened_at)) / 86400)::text
+          FROM cashier_shifts WHERE status = 'open' LIMIT 1)               AS open_shift_days,
+       (SELECT COUNT(*) FROM lab_orders
+         WHERE doctor_party_id IS NULL AND COALESCE(cost_minor, 0) > 0)    AS lab_orders_no_doctor`,
+    [zone],
+  );
+  const row = rows[0];
+
+  return {
+    clinicName: settings["clinic.name"] ?? "",
+    clinicPhone: settings["clinic.phone"] ?? "",
+    baseCurrency: settings["finance.base_currency"] ?? "",
+    ratesUpdatedOn: row?.rates_on ?? null,
+    activeUsersByRole: row?.users_by_role ?? {},
+    doctorCount: Number(row?.doctors ?? 0),
+    doctorsWithoutPercent: Number(row?.doctors_no_percent ?? 0),
+    labPartyCount: Number(row?.labs ?? 0),
+    serviceCount: Number(row?.services ?? 0),
+    lastBackupOn: row?.backup_on ?? null,
+    setupTokenLive: setupTokenIsLive(process.env.SETUP_TOKEN),
+    openShiftAgeDays: row?.open_shift_days === null || row?.open_shift_days === undefined
+      ? null : Number(row.open_shift_days),
+    labOrdersWithoutDoctor: Number(row?.lab_orders_no_doctor ?? 0),
+    today,
+  };
 }

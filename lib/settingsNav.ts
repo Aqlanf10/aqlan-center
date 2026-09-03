@@ -12,6 +12,8 @@ export interface SettingsTab {
 
 const TABS: SettingsTab[] = [
   { href: "/settings", label: "عام" },
+  // الجاهزية أوّل ما يُفتح عند بدء التشغيل: تقول ما بقي قبل أن يُبدأ العمل.
+  { href: "/settings/readiness", label: "جاهزية النظام" },
   { href: "/settings/users", label: "المستخدمون والصلاحيات" },
   { href: "/settings/lab", label: "أعمال المختبر وأسعارها" },
   { href: "/settings/ceph", label: "المعايير السيفالومترية" },

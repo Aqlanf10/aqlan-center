@@ -339,6 +339,33 @@ try {
   check('and yes — the owner decided the deduction',
     (await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'yes'})).status===200);
 
+  // ── جاهزية النظام: خارطةُ ما ينقص، وهي للمدير وحده ──
+  check('readiness denied without a session',(await request('/api/settings/readiness')).status===401);
+  // فالبنود تقول كم حسابًا في النظام ومتى آخر نسخة احتياطية وأرمزُ التنصيب حيّ —
+  // وهي بعينها ما يحتاجه من أراد الدخول، فلا تُعطى لكل من يملك جلسة.
+  check('reception cannot read readiness — it maps what is missing',(await request('/api/settings/readiness',reception)).status===403);
+  check('doctor cannot read readiness either',(await request('/api/settings/readiness',d)).status===403);
+  const readiness=await (await request('/api/settings/readiness',a)).json();
+  check('admin reads readiness',Array.isArray(readiness.checks)&&readiness.checks.length>0);
+  check('every readiness item says what it is, why it matters, and how bad it is',
+    readiness.checks.every(c=>c.key&&c.title&&c.detail&&c.why&&['blocked','warn','ok'].includes(c.level)));
+  // والحاجز فوق التحذير: من يفتح الشاشة يجد ما يوقفه في أعلاها لا بعد تمريرة.
+  const order={blocked:0,warn:1,ok:2};
+  check('blocking items come first',readiness.checks.every((c,i)=>i===0||order[readiness.checks[i-1].level]<=order[c.level]));
+  // ولا يُقال «جاهز» ما دام بندٌ حاجز مفتوحًا — وهذه قاعدةٌ بلا نسخة احتياطية بعد.
+  check('the verdict follows the items, it is not a separate opinion',
+    readiness.verdict.blocked===readiness.checks.filter(c=>c.level==='blocked').length
+    &&readiness.verdict.warnings===readiness.checks.filter(c=>c.level==='warn').length
+    &&readiness.verdict.ready===(readiness.verdict.blocked===0));
+  // والنسخة الاحتياطية تُقرأ من سجلّ التدقيق لا من ظنّ: هذه الرحلة نزّلت نسخةً
+  // كاملة أعلاه، فلا بدّ أن تراها الجاهزيةُ نسخةَ اليوم. ولو كانت تقرأ من مفتاحٍ
+  // يُكتب بيد أو من افتراض، لبقيت «لم تُؤخذ نسخة بعد» بعد نسخةٍ أُخذت فعلًا.
+  check('readiness sees the backup this run actually downloaded',
+    readiness.checks.find(c=>c.key==='backup').level==='ok');
+  // والوقائع من مصادرها لا من ظنّ: ثلاثة مستخدمين أُنشئوا في أعلى هذا الملف.
+  const users=readiness.checks.find(c=>c.key==='users');
+  check('readiness counts the real users, not a guess',users.detail.includes('admin')&&users.detail.includes('doctor'));
+
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
   const rxPath=`/api/patients/${rxPatient.id}/prescriptions`;

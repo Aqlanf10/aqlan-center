@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { connectionStringFromEnv, countUsers } from "@/lib/db";
 import { storageStatus } from "@/lib/files";
+import { setupTokenIsLive } from "@/lib/readiness";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,7 @@ export async function GET() {
   const hasDatabase = Boolean(connectionStringFromEnv());
   const secret = process.env.SESSION_SECRET ?? "";
   const hasSessionSecret = secret.length >= 32;
-  const setupToken = process.env.SETUP_TOKEN ?? "";
+  const setupTokenLive = setupTokenIsLive(process.env.SETUP_TOKEN);
 
   let databaseReachable: boolean | null = null;
   let adminExists: boolean | null = null;
@@ -53,7 +54,7 @@ export async function GET() {
     قاعدة_البيانات: hasDatabase ? (databaseReachable ? "متصلة" : "مضبوطة لكن لا تستجيب") : "غير مضبوطة",
     تخزين_الملفات: storage.ready ? "جاهز" : storage.message,
     سر_الجلسات: hasSessionSecret ? "مضبوط" : "ناقص أو قصير",
-    الإعداد_الأول: setupToken.length >= 16
+    الإعداد_الأول: setupTokenLive
       ? (adminExists ? "مفعّل — لكن يوجد حساب، احذف SETUP_TOKEN" : "جاهز: افتح /setup")
       : (adminExists ? "منتهٍ" : "أضف SETUP_TOKEN لإنشاء أول حساب"),
   });
