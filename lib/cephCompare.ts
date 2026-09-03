@@ -142,3 +142,35 @@ export function comparisonSummary(comparison: Comparison): { ar: string; en: str
     en: `${improved} measurements moved toward norm, ${worsened} away, ${steady} unchanged.`,
   };
 }
+
+export interface OrderableStudy {
+  id: number;
+  revision: number;
+  takenOn: string | null;
+  createdAt: string;
+}
+
+/**
+ * أيّهما «قبل» وأيّهما «بعد» — بترتيبٍ حاسمٍ لا يتبع من نادى.
+ *
+ * والتاريخ وحده لا يكفي: **إصدارا دراسةٍ على أشعّةٍ واحدة يرثان تاريخ تصويرها
+ * نفسه**، فيتساويان. وحينها كان الترتيب يتبع ترتيب المعاملين في الطلب — فقلبُ
+ * المعاملين يقلب كل فرقٍ وكل حكم، ويصير التحسّن تراجعًا. وهذا يقع في أشيع
+ * الحالات لا في أندرها.
+ *
+ * فالترتيب: تاريخ التصوير، ثم وقت الإنشاء، ثم رقم الإصدار، ثم المعرّف. وآخرُها
+ * لا يتساوى أبدًا — فالترتيب حاسمٌ دائمًا، ولا يبقى شيءٌ لمن نادى.
+ */
+export function chronologicalOrder<T extends OrderableStudy>(one: T, two: T): [T, T] {
+  // تاريخ التصوير أوّلًا — وإلى يومٍ واحد، فوقتُ الإنشاء مقياسٌ آخر يليه.
+  const day = (study: T) => (study.takenOn ?? study.createdAt.slice(0, 10));
+  const keys = (study: T): [string, string, number, number] =>
+    [day(study), study.createdAt, study.revision, study.id];
+
+  const [a, b] = [keys(one), keys(two)];
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] === b[index]) continue;
+    return a[index] < b[index] ? [one, two] : [two, one];
+  }
+  return [one, two];
+}

@@ -328,6 +328,41 @@ try {
   say("واختيارُ ثالثةٍ يُبقي اثنتين لا ثلاثًا",
     (await page.locator("body").innerText()).includes("للمقارنة: 2 من 2"));
 
+  /*
+   * وقلبُ المعاملين لا يقلب الحكم.
+   *
+   * وإصدارا دراسةٍ على أشعّةٍ واحدة **يرثان تاريخ تصويرها نفسه** فيتساويان —
+   * فكان الترتيب يتبع ترتيب المعاملين في الطلب، وقلبُهما يقلب كل فرقٍ وكل حكم
+   * فيصير التحسّن تراجعًا. وهذه أشيع الحالات لا أندرها.
+   */
+  const swapped = await page.evaluate(async (id) => {
+    const body = await (await fetch(`/api/patients/${id}/ceph-studies`)).json();
+    const sameImage = body.studies.filter((row) => row.revision === 1 || row.revision === 2)
+      .filter((row, _, all) => all.filter((one) => one.documentId === row.documentId).length > 1);
+    const [one, two] = sameImage.slice(0, 2);
+    const read = async (first, second) => {
+      const result = await (await fetch(`/api/ceph/compare?first=${first}&second=${second}`)).json();
+      return {
+        before: result.before.id, after: result.after.id,
+        deltas: result.comparison.measurements.map((m) => m.delta.toFixed(3)).join(","),
+      };
+    };
+    return {
+      pair: [one?.id, two?.id],
+      sameDate: one?.takenOn === two?.takenOn,
+      forward: await read(one.id, two.id),
+      backward: await read(two.id, one.id),
+    };
+  }, patientId);
+
+  say("إصدارا أشعّةٍ واحدة يتساوى تاريخهما — وهنا كان يقع العطل",
+    swapped.sameDate === true, `${swapped.pair.join(" و ")}`);
+  say("وقلبُ المعاملين لا يقلب «قبل» و«بعد»",
+    swapped.forward.before === swapped.backward.before
+      && swapped.forward.after === swapped.backward.after,
+    `${swapped.forward.before}→${swapped.forward.after} مقابل ${swapped.backward.before}→${swapped.backward.after}`);
+  say("ولا يقلب فرقًا واحدًا", swapped.forward.deltas === swapped.backward.deltas);
+
   console.log(failed ? "\nسقطت الرحلة." : "\nرحلة الدراسة اكتملت.");
 } finally {
   await context.close();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  CHANGE_LABEL, NOISE_FLOOR, compareAnalyses, comparisonSummary, directionOf,
+  CHANGE_LABEL, NOISE_FLOOR, chronologicalOrder, compareAnalyses, comparisonSummary,
+  directionOf, type OrderableStudy,
 } from "../lib/cephCompare";
 import type { Analysis, Measurement } from "../lib/ceph";
 
@@ -137,5 +138,67 @@ describe("مقارنة تحليلين", () => {
     expect(flipped.measurements.find((item) => item.key === "SNA")!.direction).toBe("worsened");
     expect(flipped.improved).toBe(0);
     expect(flipped.worsened).toBe(3);
+  });
+});
+
+describe("أيّهما «قبل» — ترتيبٌ لا يتبع من نادى", () => {
+  const study = (over: Partial<OrderableStudy> & { id: number }): OrderableStudy => ({
+    revision: 1, takenOn: "2026-01-01", createdAt: "2026-01-01T00:00:00.000Z", ...over,
+  });
+
+  it("تاريخ التصوير أوّلًا", () => {
+    const early = study({ id: 9, takenOn: "2025-03-01" });
+    const late = study({ id: 2, takenOn: "2026-08-01" });
+    expect(chronologicalOrder(early, late).map((one) => one.id)).toEqual([9, 2]);
+    expect(chronologicalOrder(late, early).map((one) => one.id)).toEqual([9, 2]);
+  });
+
+  it("وإصدارا أشعّةٍ واحدة يرثان تاريخها — فيُحسم بالإصدار", () => {
+    /*
+     * وهذه أشيع الحالات لا أندرها: كل إصدارٍ ثانٍ على الصورة نفسها.
+     * وقبل هذا كان الترتيب يتبع ترتيب المعاملين، فقلبُهما يقلب كل حكم.
+     */
+    const first = study({ id: 11, revision: 1 });
+    const second = study({ id: 12, revision: 2 });
+    expect(chronologicalOrder(first, second).map((one) => one.revision)).toEqual([1, 2]);
+    expect(chronologicalOrder(second, first).map((one) => one.revision)).toEqual([1, 2]);
+  });
+
+  it("ووقتُ الإنشاء يسبق الإصدار حين يختلف اليوم فيه", () => {
+    const morning = study({ id: 5, createdAt: "2026-01-01T08:00:00.000Z", revision: 9 });
+    const evening = study({ id: 4, createdAt: "2026-01-01T20:00:00.000Z", revision: 1 });
+    expect(chronologicalOrder(evening, morning).map((one) => one.id)).toEqual([5, 4]);
+  });
+
+  it("وحين يتساوى كل شيء يحسم المعرّف — فلا يبقى شيءٌ لمن نادى", () => {
+    const a = study({ id: 3 });
+    const b = study({ id: 7 });
+    expect(chronologicalOrder(b, a).map((one) => one.id)).toEqual([3, 7]);
+  });
+
+  it("والقلبُ لا يغيّر النتيجة أبدًا — على كل تشكيلة", () => {
+    const rows: OrderableStudy[] = [
+      study({ id: 1 }),
+      study({ id: 2, revision: 2 }),
+      study({ id: 3, takenOn: null, createdAt: "2026-05-05T00:00:00.000Z" }),
+      study({ id: 4, takenOn: "2026-05-05" }),
+    ];
+    for (const one of rows) {
+      for (const two of rows) {
+        if (one.id === two.id) continue;
+        expect(chronologicalOrder(one, two).map((row) => row.id))
+          .toEqual(chronologicalOrder(two, one).map((row) => row.id));
+      }
+    }
+  });
+
+  it("والفحص نفسه يمسك الترتيب القديم الذي يتبع من نادى", () => {
+    const older = (one: OrderableStudy, two: OrderableStudy) =>
+      (one.takenOn ?? one.createdAt) <= (two.takenOn ?? two.createdAt) ? [one, two] : [two, one];
+    const first = study({ id: 11, revision: 1 });
+    const second = study({ id: 12, revision: 2 });
+    // تاريخهما واحد، فالقديم يُبقي ترتيب المنادي — ويقلب الحكم بقلب المعاملين.
+    expect(older(second, first).map((one) => one.id)).toEqual([12, 11]);
+    expect(chronologicalOrder(second, first).map((one) => one.id)).toEqual([11, 12]);
   });
 });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cephStudyAnalysis } from "@/lib/db";
-import { compareAnalyses, comparisonSummary } from "@/lib/cephCompare";
+import { chronologicalOrder, compareAnalyses, comparisonSummary } from "@/lib/cephCompare";
 import { isAdmin } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
@@ -42,14 +42,21 @@ export async function GET(request: Request) {
       return NextResponse.json({ message: "الدراستان لمريضين مختلفين." }, { status: 400 });
     }
 
-    const order = (one.study.takenOn ?? one.study.createdAt)
-      <= (two.study.takenOn ?? two.study.createdAt) ? [one, two] : [two, one];
-    const [before, after] = order;
+    /*
+     * الترتيب حاسمٌ لا يتبع من نادى.
+     *
+     * والتاريخ وحده لا يكفي: إصدارا دراسةٍ على أشعّةٍ واحدة يرثان تاريخ تصويرها
+     * نفسه فيتساويان — فكان قلبُ المعاملين يقلب كل فرقٍ وكل حكم.
+     */
+    const [before, after] = chronologicalOrder(
+      { ...one.study, analysis: one.analysis },
+      { ...two.study, analysis: two.analysis },
+    );
 
     const comparison = compareAnalyses(before.analysis, after.analysis);
     return NextResponse.json({
-      before: before.study,
-      after: after.study,
+      before,
+      after,
       comparison,
       summary: comparisonSummary(comparison),
     });
