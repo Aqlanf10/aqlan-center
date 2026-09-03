@@ -5,6 +5,8 @@ import { useClinicName, useSetting } from "@/components/SettingsProvider";
 import { CURRENCIES, CURRENCY_LABEL, isCurrency, type Currency } from "@/lib/money";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
+import { isAdmin } from "@/lib/roles";
+import { useSession } from "@/components/SessionProvider";
 import {
   LAB_FILTER_LABEL,
   LAB_STATUS_LABEL,
@@ -59,6 +61,7 @@ export default function LabPage() {
   const [labPhone, setLabPhone] = useState("");
   const [labParties, setLabParties] = useState<{ id: number; name: string }[]>([]);
   const [partyId, setPartyId] = useState("");
+  const session = useSession();
   const [doctorId, setDoctorId] = useState("");
   const [doctorParties, setDoctorParties] = useState<{ id: number; name: string }[]>([]);
   const [cost, setCost] = useState("");
@@ -384,7 +387,8 @@ export default function LabPage() {
         <ul className="space-y-2">
           {visible.map((order) => (
             <OrderCard key={order.id} order={order} today={today} busy={busy} act={act}
-              clinicName={clinicName} clinicPhone={clinicPhone} />
+              clinicName={clinicName} clinicPhone={clinicPhone}
+              doctors={doctorParties} canAssign={isAdmin(session?.role)} />
           ))}
         </ul>
       )}
@@ -392,13 +396,15 @@ export default function LabPage() {
   );
 }
 
-function OrderCard({ order, today, busy, act, clinicName, clinicPhone }: {
+function OrderCard({ order, today, busy, act, clinicName, clinicPhone, doctors, canAssign }: {
   order: LabOrder;
   today: string;
   busy: boolean;
   act: (run: () => Promise<Response>) => Promise<boolean>;
   clinicName: string;
   clinicPhone: string;
+  doctors: { id: number; name: string }[];
+  canAssign: boolean;
 }) {
   const late = daysLate(order, today);
   const labNumber = toWhatsAppNumber(order.labPhone);
@@ -433,6 +439,34 @@ function OrderCard({ order, today, busy, act, clinicName, clinicPhone }: {
           <p className="text-xs text-slate-500">
             {order.labName} · التسليم {friendlyDateLong(order.dueDate)} · {LAB_STATUS_LABEL[order.status]}
           </p>
+          {/*
+            * الطبيب الآمر — ويُنسب هنا للأوامر التي بلا طبيب.
+            *
+            * فشاشة العمولات تعرض «تكلفةٌ بلا طبيب» وتطلب نسبتها، وتنبيهٌ لا
+            * سبيل إلى إغلاقه تنبيهٌ يُهمَل بعد أسبوع ويبقى المال بلا نسبة.
+            */}
+          {canAssign ? (
+            <label className="mt-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+              الطبيب:
+              <select
+                value={order.doctorId ?? ""}
+                onChange={(event) => void act(() => fetch(`/api/lab/${order.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ doctorId: event.target.value || null }),
+                }))}
+                disabled={busy}
+                className={`rounded-lg border px-1.5 py-0.5 text-[11px] ${
+                  order.doctorId ? "border-slate-300 bg-white" : "border-amber-400 bg-amber-50"
+                }`}
+              >
+                <option value="">— بلا طبيب —</option>
+                {doctors.map((one) => <option key={one.id} value={one.id}>{one.name}</option>)}
+              </select>
+            </label>
+          ) : order.doctorName ? (
+            <p className="text-[11px] text-slate-500">الطبيب: {order.doctorName}</p>
+          ) : null}
         </div>
         {late > 0 ? (
           <span className="shrink-0 rounded-full bg-red-500 px-2.5 py-1 text-xs font-extrabold text-white">

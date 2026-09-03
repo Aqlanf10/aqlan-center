@@ -30,8 +30,17 @@ export interface DoctorCommission {
   accruedMinor: number;
   /** نسبته من المحصّل فعلًا — قبل خصم التكاليف. */
   earnedMinor: number;
-  /** تكلفة أعمال المختبر التي أمر بها في المدّة. */
+  /** تكلفة أعمال المختبر التي أمر بها في المدّة — كاملةً كما دفعها المركز. */
   labCostMinor: number;
+  /**
+   * حصّته منها — وهي المخصومة.
+   *
+   * **ونسبتُه منها لا كلُّها**: عمولته نسبةٌ من صافي ما دخل، أي
+   * `نسبة × (المحصّل − التكلفة)`. وطرحُ التكلفة كاملةً من مكتسبه يعطي
+   * `نسبة × المحصّل − التكلفة` وهو أقلّ بكثير — في مثال التاج ٤٬٠٠٠ بدل
+   * ١٦٬٠٠٠، فيُظلم الطبيب بثلثي عمولته.
+   */
+  labShareMinor: number;
   /** المكتسب بعد الخصم — وهو المستحق للدفع. */
   netEarnedMinor: number;
   /**
@@ -61,18 +70,23 @@ export interface DoctorCommission {
 export function deductLabCost(
   rows: { doctorId: number; accruedMinor: number; earnedMinor: number; paidMinor: number }[],
   labCostByDoctor: Map<number, number>,
+  percentByDoctor: Map<number, number>,
   enabled: boolean,
 ): DoctorCommission[] {
   return rows.map((row) => {
     const labCostMinor = enabled ? Math.max(0, labCostByDoctor.get(row.doctorId) ?? 0) : 0;
-    const netEarnedMinor = Math.max(0, row.earnedMinor - labCostMinor);
+    const percent = Math.max(0, percentByDoctor.get(row.doctorId) ?? 0);
+    // حصّته من التكلفة بنسبته — فالمعادلة `نسبة × (المحصّل − التكلفة)`.
+    const labShareMinor = Math.round((labCostMinor * percent) / 100);
+    const netEarnedMinor = Math.max(0, row.earnedMinor - labShareMinor);
     return {
       doctorId: row.doctorId,
       accruedMinor: row.accruedMinor,
       earnedMinor: row.earnedMinor,
       labCostMinor,
+      labShareMinor,
       netEarnedMinor,
-      uncoveredLabCostMinor: Math.max(0, labCostMinor - row.earnedMinor),
+      uncoveredLabCostMinor: Math.max(0, labShareMinor - row.earnedMinor),
       paidMinor: row.paidMinor,
       dueMinor: netEarnedMinor - row.paidMinor,
     };
@@ -151,6 +165,7 @@ export function summarizeCommissions(
   paidByDoctor: Map<number, number>,
   /** تكلفة المختبر لكل طبيب في المدّة — والخصم اختيارٌ في الإعدادات. */
   labCostByDoctor: Map<number, number> = new Map(),
+  percentByDoctor: Map<number, number> = new Map(),
   deductsLabCost = false,
 ): DoctorCommission[] {
   const totals = new Map<number, { accruedMinor: number; earnedMinor: number }>();
@@ -188,6 +203,6 @@ export function summarizeCommissions(
     paidMinor: paidByDoctor.get(doctorId) ?? 0,
   }));
 
-  return deductLabCost(rows, labCostByDoctor, deductsLabCost)
+  return deductLabCost(rows, labCostByDoctor, percentByDoctor, deductsLabCost)
     .sort((a, b) => b.dueMinor - a.dueMinor);
 }

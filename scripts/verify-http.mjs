@@ -114,10 +114,26 @@ try {
   // ── خصم تكلفة المختبر من عمولة الطبيب ──
   check('a lab order with a doctor id that is not a doctor is refused, not silently dropped',
     (await request('/api/lab',a,{patientId:rxPatientForLab.id,labName:'مختبر الاختبار',workType:'تاج',sentDate:'2026-09-01',dueDate:'2026-09-08',doctorId:999999},{origin:base})).status===400);
+  // ونسبةُ عملٍ قائم إلى طبيبه — المخرج من «تكلفةٌ بلا طبيب».
+  const doctorParty=await db.createParty({kind:'doctor',name:'د. الفحص',phone:null,note:null,commissionPercent:40});
+  const orphan=await request('/api/lab',a,{patientId:rxPatientForLab.id,labName:'مختبر بلا طبيب',workType:'تاج',sentDate:'2026-09-02',dueDate:'2026-09-09'},{origin:base});
+  const orphanId=(await orphan.json()).id;
+  check('an order can be created without a doctor — as every old order is',orphan.status===201);
+  check('reception cannot reassign it — that would deduct from a colleague',
+    (await patch(`/api/lab/${orphanId}`,reception,{doctorId:doctorParty.id})).status===403);
+  check('a party that is not a doctor is refused',
+    (await patch(`/api/lab/${orphanId}`,a,{doctorId:999999})).status===400);
+  check('**and the admin can attribute it — so the warning can be closed**',
+    (await patch(`/api/lab/${orphanId}`,a,{doctorId:doctorParty.id})).status===200);
+  check('and cleared again',(await patch(`/api/lab/${orphanId}`,a,{doctorId:null})).status===200);
+
   const commissions=await (await request('/api/finance/commissions?from=2026-09-01&to=2026-09-30',a)).json();
   check('the commissions screen says which rule it computed on',typeof commissions.deductsLabCost==='boolean');
   check('and reports lab cost that carries no doctor rather than splitting it by guess',
     typeof commissions.unattributedLabCostMinor==='number');
+  // **حصّته من التكلفة بنسبته لا التكلفة كاملةً** — وإلّا ظُلم الطبيب بثلثي عمولته.
+  check('each row carries both the full lab cost and the doctor\'s share of it',
+    commissions.rows.every(r=>typeof r.labCostMinor==='number'&&typeof r.labShareMinor==='number'));
   check('every row carries the deduction line, not just a total',
     commissions.rows.every(r=>typeof r.labCostMinor==='number'&&typeof r.netEarnedMinor==='number'&&typeof r.uncoveredLabCostMinor==='number'));
   // القيمة تحكم مالًا يُصرف، فلا تُخمَّن: «نعم» ليست yes.

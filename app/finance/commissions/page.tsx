@@ -23,7 +23,8 @@ import { addDays, clinicDateString } from "@/lib/schedule";
 interface CommissionRow {
   doctorId: number; doctorName: string; commissionPercent: number;
   accruedMinor: number; earnedMinor: number;
-  labCostMinor: number; netEarnedMinor: number; uncoveredLabCostMinor: number;
+  labCostMinor: number; labShareMinor: number;
+  netEarnedMinor: number; uncoveredLabCostMinor: number;
   paidMinor: number; dueMinor: number;
 }
 
@@ -152,8 +153,12 @@ export default function CommissionsPage() {
                 */}
               {deductsLabCost && row.labCostMinor > 0 ? (
                 <p className="mt-2 rounded-xl bg-amber-50 px-2.5 py-1.5 text-center text-[11px] font-bold text-amber-900">
-                  المكتسب {formatMoney(row.earnedMinor, base)} − تكلفة مختبره{" "}
-                  {formatMoney(row.labCostMinor, base)} = {formatMoney(row.netEarnedMinor, base)}
+                  المكتسب {formatMoney(row.earnedMinor, base)} − حصّته من تكلفة مختبره{" "}
+                  {formatMoney(row.labShareMinor, base)}{" "}
+                  <span className="font-normal">
+                    ({row.commissionPercent}% من {formatMoney(row.labCostMinor, base)})
+                  </span>{" "}
+                  = {formatMoney(row.netEarnedMinor, base)}
                   {row.uncoveredLabCostMinor > 0 ? (
                     <>
                       <br />

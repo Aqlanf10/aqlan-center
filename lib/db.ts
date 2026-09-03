@@ -3516,8 +3516,10 @@ export interface CommissionRow {
   accruedMinor: number;
   /** المكتسب قبل الخصم. */
   earnedMinor: number;
-  /** تكلفة أعمال المختبر التي أمر بها في المدّة — بالعملة الأساسية. */
+  /** تكلفة أعمال المختبر التي أمر بها في المدّة — كاملةً، بالعملة الأساسية. */
   labCostMinor: number;
+  /** حصّته منها بنسبته — وهي المخصومة. */
+  labShareMinor: number;
   /** المكتسب بعد الخصم — وهو المستحق. */
   netEarnedMinor: number;
   /** ما فاض من التكلفة عن عمولته، فلم يُخصم ولم يُرحَّل. */
@@ -3680,7 +3682,9 @@ export async function commissionReport(from: string, to: string): Promise<Commis
   const settings = await getSettingsSafe();
   const deductsLabCost = settingIsYes(settings, "finance.commission_deducts_lab_cost");
 
-  const rows = summarizeCommissions(perPatient, paidByDoctor, labCostByDoctor, deductsLabCost)
+  const rows = summarizeCommissions(
+    perPatient, paidByDoctor, labCostByDoctor, percentByDoctor, deductsLabCost,
+  )
     .map((row) => ({
       doctorId: row.doctorId,
       doctorName: nameByDoctor.get(row.doctorId) ?? "—",
@@ -3688,6 +3692,7 @@ export async function commissionReport(from: string, to: string): Promise<Commis
       accruedMinor: row.accruedMinor,
       earnedMinor: row.earnedMinor,
       labCostMinor: row.labCostMinor,
+      labShareMinor: row.labShareMinor,
       netEarnedMinor: row.netEarnedMinor,
       uncoveredLabCostMinor: row.uncoveredLabCostMinor,
       paidMinor: row.paidMinor,
@@ -8075,4 +8080,27 @@ export async function prescribedBefore(limit = 60): Promise<RxItem[]> {
     }
   }
   return [...seen.values()];
+}
+
+/**
+ * ينسب أمر مختبرٍ إلى طبيب — أو يرفع النسبة.
+ *
+ * وهو المخرج من «تكلفةٌ بلا طبيب»: أوامرُ ما قبل هذا الحقل لا طبيب لها،
+ * وتنبيهٌ يطلب نسبتها بلا سبيلٍ إلى ذلك تنبيهٌ لا يُغلق أبدًا.
+ *
+ * ويُتحقّق أنّه طبيبٌ مسجَّل: رقمُ جهةٍ أخرى يخصم تكلفةً من عمولة من ليس طبيبًا.
+ */
+export async function setLabOrderDoctor(
+  id: number, doctorPartyId: number | null,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  if (doctorPartyId !== null) {
+    const { rows } = await getPool().query<{ id: number }>(
+      `SELECT id FROM parties WHERE id = $1 AND kind = 'doctor'`, [doctorPartyId]);
+    if (!rows[0]) return { ok: false, message: "اختر الطبيب من قائمة الأطباء." };
+  }
+  const { rowCount } = await getPool().query(
+    `UPDATE lab_orders SET doctor_party_id = $2 WHERE id = $1`, [id, doctorPartyId]);
+  if (!rowCount) return { ok: false, message: "العمل غير موجود." };
+  return { ok: true };
 }
