@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import {
-  getCephTracing, getPatient, getPatientDocument, getSettingsSafe, printCount,
+  cephStudyAnalysis, getCephTracing, getPatient, getPatientDocument, getSettingsSafe, printCount,
 } from "@/lib/db";
+import { STUDY_PHASE_LABEL, STUDY_STATUS_LABEL } from "@/lib/cephStudy";
 import {
   LANDMARKS, LANDMARK_MANUAL, SEVERITY_LABEL, SKELETAL_LABEL, VERTICAL_LABEL,
   formatMeasurement, referenceLines, say, severityOf, zScore,
@@ -30,7 +31,7 @@ export default async function CephReportPage({
   params, searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ lang?: string }>;
+  searchParams: Promise<{ lang?: string; study?: string }>;
 }) {
   // التقرير تشخيصٌ سريري — للطبيب والمدير، لا للاستقبال. وصفحة الطباعة بابٌ
   // خلفي إلى التشخيص لو تُركت مفتوحة لكل من يملك جلسة.
@@ -41,9 +42,22 @@ export default async function CephReportPage({
   const id = Number(rawId);
   if (!Number.isInteger(id) || id <= 0) notFound();
 
-  const { lang: rawLang } = await searchParams;
+  const { lang: rawLang, study: rawStudy } = await searchParams;
   const lang: Lang = rawLang === "en" ? "en" : "ar";
   const rtl = lang === "ar";
+
+  /*
+   * التقرير يُطبع من **الدراسة** متى طُلبت، ومن التتبّع الحيّ متى لم تُطلب.
+   *
+   * وبلا هذا كان زرّ التقرير في ملف المريض يفتح تتبّع الصورة الحالي مهما كانت
+   * الدراسة معتمدة — فتخرج على الورقة أرقامٌ غيرُ التي وُقِّعت. والدراسة المعتمدة
+   * لا تتغيّر تحت من اعتمدها؛ **وورقتُها كذلك**.
+   */
+  const studyId = Number(rawStudy);
+  const wanted = Number.isInteger(studyId) && studyId > 0 ? studyId : null;
+  const reading = wanted ? await cephStudyAnalysis(wanted) : null;
+  // دراسةٌ لا وجود لها، أو تخصّ صورةً أخرى: لا تُطبع على هذه الأشعّة.
+  if (wanted && (!reading || reading.study.documentId !== id)) notFound();
 
   const [tracing, document, settings] = await Promise.all([
     getCephTracing(id), getPatientDocument(id), getSettingsSafe(),
@@ -53,8 +67,10 @@ export default async function CephReportPage({
   if (!patient) notFound();
 
   const printed = await printCount("ceph", id);
-  const { analysis } = tracing;
-  const lines = referenceLines(tracing.points);
+  const study = reading?.study ?? null;
+  const points = reading ? reading.points : tracing.points;
+  const analysis = reading ? reading.analysis : tracing.analysis;
+  const lines = referenceLines(points);
 
   const T = {
     title: { ar: "تقرير التحليل السيفالومتري", en: "Cephalometric Analysis Report" },
@@ -87,6 +103,17 @@ export default async function CephReportPage({
     manualNote: {
       ar: `تعريفات ${LANDMARKS.filter((item) => !item.source).length} معلمًا من الدليل السريري المعتمد ${LANDMARK_MANUAL}؛ وما عداها من الأدبيات المنشورة، وكلٌّ بمرجعه في الجدول.`,
       en: `${LANDMARKS.filter((item) => !item.source).length} landmark definitions come from the approved clinical manual ${LANDMARK_MANUAL}; the rest come from published literature, each cited in the table.`,
+    },
+    study: { ar: "الدراسة", en: "Study" },
+    revision: { ar: "إصدار", en: "Revision" },
+    approvedBy: { ar: "اعتمدها", en: "Approved by" },
+    liveNote: {
+      ar: "هذه قراءةُ التتبّع الحالي للصورة، لا دراسةً معتمدة.",
+      en: "This reads the image's current tracing; it is not an approved study.",
+    },
+    driftNote: {
+      ar: "أرقام هذه الورقة أرقامُ يوم الاعتماد — وتتبّع الصورة تغيّر بعده.",
+      en: "The figures on this sheet are those of the approval date; the image tracing has changed since.",
     },
     disclaimer: {
       ar: "هذا التقرير قراءةُ قياساتٍ تُشتقّ من معالمَ وضعها الطبيب بيده. يُقرأ مع الفحص السريري وبقيّة السجلات، ولا يُتّخذ وحده أساسًا لقرار علاجي.",
@@ -121,6 +148,32 @@ export default async function CephReportPage({
           <span>{say(T.tracedAt, lang)}: {friendlyDateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10))}</span>
         </div>
 
+        {/*
+          هويّة الورقة: أهي دراسةٌ معتمدة أم قراءةُ تتبّعٍ حالي؟ ورقةٌ لا تقول
+          ذلك تُقرأ بعد سنتين على أنها ما ليست هي.
+        */}
+        {study ? (
+          <div className="line">
+            <span>
+              {say(T.study, lang)}: {say(
+                { ar: STUDY_PHASE_LABEL[study.phase], en: STUDY_PHASE_LABEL[study.phase] }, lang)}
+              {" · "}{STUDY_STATUS_LABEL[study.status]}
+              {" · "}{say(T.revision, lang)} {study.revision}
+            </span>
+            {study.approvedBy ? (
+              <span>
+                {say(T.approvedBy, lang)}: {study.approvedBy}
+                {study.approvedAt ? ` · ${friendlyDateLong(study.approvedAt.slice(0, 10))}` : ""}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <p className="doc-meta">{say(T.liveNote, lang)}</p>
+        )}
+        {study?.drifted ? (
+          <p className="doc-meta"><strong>{say(T.driftNote, lang)}</strong></p>
+        ) : null}
+
         <div className="rule" />
 
         {/*
@@ -142,7 +195,7 @@ export default async function CephReportPage({
             ))}
           </svg>
           {LANDMARKS.map((item) => {
-            const point = tracing.points[item.code];
+            const point = points[item.code];
             if (!point) return null;
             return (
               <span key={item.code} className="ceph-mark"
