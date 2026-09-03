@@ -134,6 +134,12 @@ try {
     (await (await request('/api/messages',a,{to:'broadcast',kind:'text',body:'   '},{origin:base})).json()).message==='اكتب نصّ الرسالة.');
   check('a voice note that is not audio is refused',
     (await request('/api/messages',a,{to:'broadcast',kind:'voice',voiceMime:'text/html',voiceData:'AAAA',voiceMs:1000},{origin:base})).status===400);
+  check('comparing studies is denied without a session',(await request('/api/ceph/compare?first=1&second=2')).status===401);
+  check('and reception cannot compare either',(await request('/api/ceph/compare?first=1&second=2',reception)).status===403);
+  check('comparing a study with itself is refused',(await request('/api/ceph/compare?first=5&second=5',d)).status===400);
+  check('and a missing id is refused before the database is touched',(await request('/api/ceph/compare?first=5',d)).status===400);
+  check('comparing studies that do not exist returns 404',(await request('/api/ceph/compare?first=999998&second=999999',d)).status===404);
+
   check('a voice link the listener does not own returns 404, not 403 — 403 would say it exists',
     (await request('/api/messages/voice/999999',reception)).status===404);
 

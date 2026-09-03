@@ -10,6 +10,8 @@ import {
   STUDY_PHASE_LABEL, STUDY_PHASE_ORDER, STUDY_STATUS_LABEL,
   currentStudy, sortStudies, type StudyPhase, type StudyStatus,
 } from "@/lib/cephStudy";
+import { CHANGE_LABEL, type ChangeDirection, type Comparison } from "@/lib/cephCompare";
+import { formatMeasurement } from "@/lib/ceph";
 
 /**
  * الدراسات السيفالومترية في ملف المريض — **موضع الترابط بين الوحدتين**.
@@ -63,6 +65,11 @@ export function CephStudies({ patientId }: { patientId: number }) {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
 
+  const [pickedForCompare, setPickedForCompare] = useState<number[]>([]);
+  const [comparison, setComparison] = useState<
+    { before: Study; after: Study; comparison: Comparison; summary: { ar: string } } | null
+  >(null);
+
   const [documentId, setDocumentId] = useState<number | null>(null);
   const [phase, setPhase] = useState<StudyPhase>("pre");
   const [orthoCaseId, setOrthoCaseId] = useState<number | null>(null);
@@ -110,6 +117,37 @@ export function CephStudies({ patientId }: { patientId: number }) {
       const result = await response.json();
       if (!response.ok) { setError(result.message ?? "تعذّر تنفيذ الطلب."); return; }
       await load();
+    } catch {
+      setError("تعذّر الاتصال بالخادم.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * المقارنة تُطلب باثنتين — لا بواحدة ولا بثلاث.
+   *
+   * والترتيب يفرضه الخادم بالتاريخ: الأقدم «قبل» والأحدث «بعد». وقلبُهما يقلب
+   * كل إشارة، فيُقرأ تراجعٌ على أنه تحسّن.
+   */
+  const toggleCompare = (id: number) => {
+    setComparison(null);
+    setPickedForCompare((current) => current.includes(id)
+      ? current.filter((one) => one !== id)
+      // اثنتان فقط: الثالثة تزيح الأولى بدل أن تُرفض بصمت.
+      : [...current, id].slice(-2));
+  };
+
+  const compare = async () => {
+    if (pickedForCompare.length !== 2) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const [first, second] = pickedForCompare;
+      const response = await fetch(`/api/ceph/compare?first=${first}&second=${second}`, { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) { setError(result.message ?? "تعذّرت المقارنة."); return; }
+      setComparison(result);
     } catch {
       setError("تعذّر الاتصال بالخادم.");
     } finally {
@@ -175,6 +213,33 @@ export function CephStudies({ patientId }: { patientId: number }) {
           );
         })}
       </div>
+
+      {/*
+        شريط المقارنة — يظهر متى اختير شيء، ويختفي حين لا شيء.
+        وشريطٌ دائمٌ يقول «اختر دراستين» يشغل مكانًا في شاشةٍ تُقرأ بين مريضين.
+      */}
+      {pickedForCompare.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-brand-blue bg-navy-50 p-3">
+          <span className="text-xs font-bold text-navy-900">
+            للمقارنة: {pickedForCompare.length} من 2
+          </span>
+          <button
+            onClick={() => void compare()}
+            disabled={pickedForCompare.length !== 2 || busy}
+            className="rounded-xl bg-navy-900 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+          >
+            قارن
+          </button>
+          <button
+            onClick={() => { setPickedForCompare([]); setComparison(null); }}
+            className="text-xs font-bold text-slate-500 underline"
+          >
+            إلغاء
+          </button>
+        </div>
+      ) : null}
+
+      {comparison ? <ComparisonTable result={comparison} /> : null}
 
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-bold text-slate-500">{ordered.length} دراسة</p>
@@ -306,6 +371,17 @@ export function CephStudies({ patientId }: { patientId: number }) {
                 >
                   <Icon name="print" className="inline h-3.5 w-3.5" /> التقرير
                 </a>
+                <button
+                  onClick={() => toggleCompare(study.id)}
+                  aria-pressed={pickedForCompare.includes(study.id)}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold ${
+                    pickedForCompare.includes(study.id)
+                      ? "border-navy-800 bg-navy-800 text-white"
+                      : "border-slate-200 bg-white text-slate-600"
+                  }`}
+                >
+                  للمقارنة
+                </button>
                 {study.status === "draft" ? (
                   <button
                     onClick={() => void act(study.id, { action: "approve" })}
@@ -341,6 +417,73 @@ export function CephStudies({ patientId }: { patientId: number }) {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+const DIRECTION_STYLE: Record<ChangeDirection, string> = {
+  improved: "text-success-700",
+  worsened: "text-danger-700",
+  steady: "text-slate-500",
+  ungraded: "text-slate-400",
+};
+
+/**
+ * جدول المقارنة — ماذا فعل العلاج.
+ *
+ * والحكم محمولٌ في **النصّ** لا في اللون وحده: من يطبع بالأبيض والأسود، ومن لا
+ * يميّز الأحمر من الأخضر، يقرأ ما يقرأه غيرُه.
+ */
+function ComparisonTable({ result }: {
+  result: { before: Study; after: Study; comparison: Comparison; summary: { ar: string } };
+}) {
+  const { before, after, comparison, summary } = result;
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4" aria-label="مقارنة دراستين">
+      <p className="text-[13px] font-bold text-navy-900">
+        {STUDY_PHASE_LABEL[before.phase]}
+        {before.takenOn ? ` (${friendlyDateLong(before.takenOn)})` : ""}
+        {" ← "}
+        {STUDY_PHASE_LABEL[after.phase]}
+        {after.takenOn ? ` (${friendlyDateLong(after.takenOn)})` : ""}
+      </p>
+      <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{summary.ar}</p>
+
+      {comparison.onlyBefore.length > 0 || comparison.onlyAfter.length > 0 ? (
+        <p className="mt-2 rounded-xl border border-warning-300 bg-warning-50 px-2.5 py-1.5 text-[11px] font-bold text-warning-900">
+          قياساتٌ لم تُقس في الدراستين معًا فلم تُقارَن:{" "}
+          {[...comparison.onlyBefore, ...comparison.onlyAfter].join("، ")}
+        </p>
+      ) : null}
+
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="border-b border-slate-200 text-[10px] font-bold text-slate-500">
+              <th className="py-1.5 text-right">القياس</th>
+              <th className="py-1.5 text-left">قبل</th>
+              <th className="py-1.5 text-left">بعد</th>
+              <th className="py-1.5 text-left">الفرق</th>
+              <th className="py-1.5 text-right">القراءة</th>
+            </tr>
+          </thead>
+          <tbody>
+            {comparison.measurements.map((item) => (
+              <tr key={item.key} className="border-b border-slate-100">
+                <td className="py-1.5 font-bold text-navy-900" dir="ltr">{item.name}</td>
+                <td className="py-1.5 text-left" dir="ltr">{formatMeasurement(item.before, item.unit, "ar")}</td>
+                <td className="py-1.5 text-left" dir="ltr">{formatMeasurement(item.after, item.unit, "ar")}</td>
+                <td className={`py-1.5 text-left font-bold ${DIRECTION_STYLE[item.direction]}`} dir="ltr">
+                  {item.delta > 0 ? "+" : ""}{item.delta.toFixed(1)}
+                </td>
+                <td className={`py-1.5 text-[11px] font-semibold ${DIRECTION_STYLE[item.direction]}`}>
+                  {CHANGE_LABEL[item.direction].ar}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
