@@ -5,7 +5,7 @@ import {
 import { STUDY_PHASE_TEXT, STUDY_STATUS_TEXT } from "@/lib/cephStudy";
 import {
   LANDMARKS, LANDMARK_MANUAL, SEVERITY_LABEL, SKELETAL_LABEL, VERTICAL_LABEL,
-  formatMeasurement, referenceLines, say, severityOf, zScore,
+  ageFromBirthYear, formatMeasurement, referenceLines, say, severityOf, zScore,
   type Lang,
 } from "@/lib/ceph";
 import { friendlyDateLong } from "@/lib/reminders";
@@ -130,8 +130,14 @@ export default async function CephReportPage({
     },
   };
 
-  const age = patient.birthYear && document.takenOn
-    ? Number(document.takenOn.slice(0, 4)) - patient.birthYear : null;
+  /*
+   * العمر من الدالّة نفسها التي تحجب معايير البالغين — لا حسابٌ ثانٍ هنا.
+   *
+   * وحسابان لعمرٍ واحد يفترقان: هذا كان يقبل سنةَ ميلادٍ بعد تاريخ الأشعّة
+   * فيطبع عمرًا سالبًا، وذاك يردّها. والورقة تقول عمرًا والتحليل يحجب حكمه
+   * بعمرٍ غيره — ولا يُعرف أيّهما الصحيح إلّا بعد أن يُبنى على الخطأ.
+   */
+  const age = ageFromBirthYear(patient.birthYear, document.takenOn);
   const sexLabel = patient.gender === "male" ? (rtl ? "ذكر" : "Male")
     : patient.gender === "female" ? (rtl ? "أنثى" : "Female")
     : (rtl ? "غير محدد" : "Unspecified");

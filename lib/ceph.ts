@@ -577,6 +577,24 @@ export const DEFAULT_NORMS: Record<string, Norm> = {
 };
 
 /**
+ * اسم التحليل من مرجع المعيار.
+ *
+ * والقاعدة: **التحليل هو صاحب المعيار الذي يُحكم به**. فما دام `SNA` يُصنَّف
+ * بمعيار Steiner فهو من Steiner، ولا يُكتب الاسم مرّةً ثانية بيدٍ قد تخالف
+ * المعيار الذي تحته — واسمٌ يخالف معياره أسوأ من لا اسم: يقرأ الطبيب مجموعةً
+ * باسم تحليلٍ ويقارنها بجداوله، وحدودُها من جداول غيره.
+ *
+ * والسنة وما بعد الفاصلة تُقطعان: «Downs 1948» و«Jacobson 1975 · ♂ 1±2» و
+ * «McNamara 1984 · بالغون» تصير Downs وJacobson وMcNamara — وهي عناوين تُقرأ
+ * لا مراجع تُستشهد، والمرجع كاملًا يبقى في `norm.source` تحت كل قياس.
+ */
+export function analysisFromSource(source: string): string | null {
+  const head = source.split("·")[0].trim();
+  const name = head.replace(/\s*\d{4}\s*$/, "").trim();
+  return name.length > 0 ? name : null;
+}
+
+/**
  * سنّ اكتمال النموّ الهيكلي — وعندها تُطبَّق معايير البالغين.
  *
  * والعمر عندنا من سنة الميلاد وحدها، فهو مضبوطٌ إلى سنة. واخترنا ١٨ لأنّ النموّ
@@ -1200,6 +1218,24 @@ export function analyse(input: {
         value: distanceBetween(S, Go, aspect),
       });
     }
+  }
+
+  /*
+   * التسمية في موضعٍ واحد بعد بناء القياسات كلّها.
+   *
+   * وكانت ثمانيةٌ من ثلاثةٍ وثلاثين مسمّاةً وحدها، والباقي — ومنه SNA وSNB
+   * وANB وFMA وIMPA — يخرج على الشاشة والورقة في مجموعةٍ بلا عنوان. فالطبيب
+   * يقرأ Steiner متفرّقًا بين مجموعتين ولا يراه مجموعةً كما في مراجعه.
+   *
+   * والاسم يُشتقّ من مرجع المعيار لا يُكتب بيد: فما يُصنَّف بمعيار Steiner هو
+   * من Steiner بالضرورة. ومعيارٌ حُجب لعمر المريض لا يُسمّى منه — ولذلك تحمل
+   * قياسات McNamara اسمها صريحًا عند بنائها، فلا تفقد عنوانها حين يُحجب
+   * حكمُها عن طفل.
+   */
+  for (const item of measurements) {
+    if (item.analysis || !item.norm) continue;
+    const name = analysisFromSource(item.norm.source);
+    if (name) item.analysis = name;
   }
 
   const valueOf = (key: string) => measurements.find((item) => item.key === key)?.value ?? null;
