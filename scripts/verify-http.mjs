@@ -89,6 +89,27 @@ try {
   check('doctor cannot open the command room',(await request('/api/executive',d)).status===403);
   check('reception cannot open the command room either',(await request('/api/executive',reception)).status===403);
   check('and admin can',(await request('/api/executive',a)).status===200);
+  // ── الدراسة السيفالومترية: سريريّةٌ لا إدارية ──
+  const studyPatient=await db.createPatient({fullName:'مريضة الدراسة',phone:'770334455',altPhone:null,gender:'female',birthYear:2010,address:null,medicalAlert:null,note:null});
+  check('ceph studies denied without a session',(await request(`/api/patients/${studyPatient.id}/ceph-studies`)).status===401);
+  check('reception cannot read a cephalometric study — landmark positions are a diagnosis, not an appointment state',
+    (await request(`/api/patients/${studyPatient.id}/ceph-studies`,reception)).status===403);
+  check('nor create one',(await request(`/api/patients/${studyPatient.id}/ceph-studies`,reception,{documentId:1,phase:'pre'},{origin:base})).status===403);
+  // المسار يقبل PATCH لا POST: `request` تُرسل POST متى وُجد جسم، فتردّ 405 لا 403
+  // — وفحصٌ يمرّ على رمزٍ آخر ليس فحصًا للحارس المقصود.
+  const patch=(path,cookie,body)=>fetch(base+path,{method:'PATCH',headers:{cookie,'content-type':'application/json',origin:base},body:JSON.stringify(body),redirect:'manual'});
+  check('nor approve one',(await patch('/api/ceph/studies/1',reception,{action:'approve'})).status===403);
+  check('the doctor can read the list',(await request(`/api/patients/${studyPatient.id}/ceph-studies`,d)).status===200);
+  check('a study on a document that is not an x-ray is refused',
+    (await request(`/api/patients/${studyPatient.id}/ceph-studies`,d,{documentId:999999,phase:'pre'},{origin:base})).status===400);
+  check('a study with no treatment phase is refused',
+    (await request(`/api/patients/${studyPatient.id}/ceph-studies`,d,{documentId:1},{origin:base})).status===400);
+  check('a study that does not exist returns 404',(await request('/api/ceph/studies/999999',d)).status===404);
+  check('and approving one that does not exist is refused, not crashed',
+    (await patch('/api/ceph/studies/999999',d,{action:'approve'})).status===409);
+  check('an unknown action is refused',
+    (await patch('/api/ceph/studies/1',d,{action:'delete'})).status===400);
+
   // ── الرسائل الداخلية: خيطُ اثنين لا يُفتح لثالث ──
   check('messages denied without a session',(await request('/api/messages?conversations=1')).status===401);
   check('a portal cookie opens no staff message',(await request('/api/messages?conversations=1',portalCookie)).status===401);

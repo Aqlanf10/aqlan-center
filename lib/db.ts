@@ -543,6 +543,53 @@ export function ensureSchema(): Promise<void> {
         ON ceph_tracings (patient_id, traced_at DESC);
 
       /*
+       * الدراسة السيفالومترية — الوثيقة فوق التتبّع.
+       *
+       * التتبّع صفٌّ واحد لكل صورة يُكتب فوقه، وهذا صحيحٌ لسطح عمل وخاطئٌ لوثيقة:
+       * من يصحّح نقطةً اليوم يغيّر — بأثرٍ رجعي وبلا أثرٍ في السجل — الأرقامَ التي
+       * بُنيت عليها خطّةُ علاجٍ قبل سنة. فالخطّة تبقى، والأرقام التي بُرِّرت بها
+       * تصير أرقامًا أخرى.
+       *
+       * والدراسة تحمل موضعها من زمن العلاج (قبل/أثناء/بعد/متابعة)، وحالتها،
+       * وحالةَ التقويم التي تخدمها — ودراسةٌ لا تعرفها ورقةٌ في درج.
+       *
+       * ولقطةُ الاعتماد **معالمُ ومعايرة لا زوايا**: القياس يبقى مشتقًّا كما هو
+       * في كل هذا النظام. وتجميدُ الزوايا يعني رقمين لحقيقةٍ واحدة، ويومَ تُصحَّح
+       * معادلةٌ لا يُصحَّح المحفوظ — فيبقى في الملف رقمٌ يُعرف أنه خطأ ولا يُمسّ.
+       */
+      CREATE TABLE IF NOT EXISTS ceph_studies (
+        id             SERIAL PRIMARY KEY,
+        patient_id     INTEGER     NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        document_id    INTEGER     NOT NULL REFERENCES patient_documents(id) ON DELETE RESTRICT,
+        ortho_case_id  INTEGER              REFERENCES ortho_cases(id) ON DELETE SET NULL,
+        phase          TEXT        NOT NULL DEFAULT 'pre',
+        status         TEXT        NOT NULL DEFAULT 'draft',
+        revision       INTEGER     NOT NULL DEFAULT 1,
+        title          TEXT,
+        taken_on       DATE,
+        note           TEXT,
+        -- تُملأ عند الاعتماد وحده، وتبقى كما هي بعده.
+        snapshot_points      JSONB,
+        snapshot_calibration JSONB,
+        approved_by    TEXT,
+        approved_at    TIMESTAMPTZ,
+        archived_at    TIMESTAMPTZ,
+        created_by     TEXT        NOT NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ceph_studies_patient_idx
+        ON ceph_studies (patient_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ceph_studies_document_idx
+        ON ceph_studies (document_id, revision DESC);
+      CREATE INDEX IF NOT EXISTS ceph_studies_case_idx
+        ON ceph_studies (ortho_case_id) WHERE ortho_case_id IS NOT NULL;
+
+      -- مسودّةٌ واحدة لكل صورة: مسودّتان على أشعّةٍ واحدة تعنيان طبيبين يعملان
+      -- على نسختين ولا يعرف أحدهما بالآخر. والمعتمدات تتراكم بإصداراتها بلا حدّ.
+      CREATE UNIQUE INDEX IF NOT EXISTS ceph_studies_one_draft_idx
+        ON ceph_studies (document_id) WHERE status = 'draft';
+
+      /*
        * المجموعات المرجعية السيفالومترية.
        *
        * كانت المعايير ثابتةً في الكود: متوسّطٌ وانحرافٌ لكل قياس، بلا عمرٍ ولا جنسٍ
@@ -7375,4 +7422,287 @@ export async function staffMessageVoice(
   const row = rows[0];
   if (!row?.voice_key) return null;
   return { key: row.voice_key, mime: row.voice_mime ?? "application/octet-stream" };
+}
+
+// ─── الدراسة السيفالومترية ───────────────────────────────────────────────────
+
+import {
+  checkApproval, canTransition, isStudyPhase, nextRevision, tracingFingerprint,
+  transitionRefusal, type StudyPhase, type StudyStatus,
+} from "./cephStudy";
+
+export interface CephStudy {
+  id: number;
+  patientId: number;
+  patientName: string;
+  documentId: number;
+  documentTitle: string;
+  orthoCaseId: number | null;
+  phase: StudyPhase;
+  status: StudyStatus;
+  revision: number;
+  title: string | null;
+  takenOn: string | null;
+  note: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  createdBy: string;
+  createdAt: string;
+  /** عدد المعالم في المصدر الذي تُقرأ منه هذه الدراسة. */
+  landmarks: number;
+  /**
+   * أتغيّر التتبّع الحيّ عمّا اعتُمد؟
+   *
+   * لا يُحسب إلّا للمعتمدة — والمسودّة **هي** التتبّع الحيّ فلا فرق يُقاس.
+   */
+  drifted: boolean;
+}
+
+const STUDY_SELECT = `
+  SELECT s.id, s.patient_id, p.full_name AS patient_name, s.document_id,
+         d.title AS document_title, s.ortho_case_id, s.phase, s.status, s.revision,
+         s.title, s.taken_on, s.note, s.snapshot_points, s.snapshot_calibration,
+         s.approved_by, s.approved_at, s.created_by, s.created_at,
+         t.points AS live_points, t.calibration AS live_calibration
+    FROM ceph_studies s
+    JOIN patients p ON p.id = s.patient_id
+    JOIN patient_documents d ON d.id = s.document_id
+    LEFT JOIN ceph_tracings t ON t.document_id = s.document_id`;
+
+function toStudy(row: Record<string, unknown>): CephStudy {
+  const approved = row.status === "approved" || row.status === "archived";
+  const snapshot = sanitizeTracing(row.snapshot_points);
+  const live = sanitizeTracing(row.live_points);
+  const points = approved && row.snapshot_points ? snapshot : live;
+  const drifted = approved && row.snapshot_points
+    ? tracingFingerprint(snapshot, sanitizeCalibration(row.snapshot_calibration))
+      !== tracingFingerprint(live, sanitizeCalibration(row.live_calibration))
+    : false;
+  return {
+    id: row.id as number,
+    patientId: row.patient_id as number,
+    patientName: row.patient_name as string,
+    documentId: row.document_id as number,
+    documentTitle: row.document_title as string,
+    orthoCaseId: (row.ortho_case_id as number | null) ?? null,
+    phase: row.phase as StudyPhase,
+    status: row.status as StudyStatus,
+    revision: Number(row.revision),
+    title: (row.title as string | null) ?? null,
+    takenOn: row.taken_on ? dateText(row.taken_on as Date) : null,
+    note: (row.note as string | null) ?? null,
+    approvedBy: (row.approved_by as string | null) ?? null,
+    approvedAt: row.approved_at ? (row.approved_at as Date).toISOString() : null,
+    createdBy: row.created_by as string,
+    createdAt: (row.created_at as Date).toISOString(),
+    landmarks: Object.keys(points).length,
+    drifted,
+  };
+}
+
+/** دراسات المريض — ملفّه السيفالومتري كلّه في قائمة. */
+export async function listPatientStudies(patientId: number): Promise<CephStudy[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `${STUDY_SELECT} WHERE s.patient_id = $1 ORDER BY s.id DESC`, [patientId]);
+  return rows.map(toStudy);
+}
+
+/** دراسات حالة تقويمٍ بعينها — ما بُني عليه علاجُها. */
+export async function listCaseStudies(orthoCaseId: number): Promise<CephStudy[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `${STUDY_SELECT} WHERE s.ortho_case_id = $1 ORDER BY s.id DESC`, [orthoCaseId]);
+  return rows.map(toStudy);
+}
+
+export async function getCephStudy(id: number): Promise<CephStudy | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(`${STUDY_SELECT} WHERE s.id = $1`, [id]);
+  return rows[0] ? toStudy(rows[0]) : null;
+}
+
+/**
+ * قراءةُ الدراسة بتحليلها.
+ *
+ * والمصدر يتبع الحالة: المعتمدة تُقرأ من لقطتها، والمسودّة من التتبّع الحيّ.
+ * ولو قُرئت المعتمدة من الحيّ لتغيّرت أرقامُ وثيقةٍ موقَّعة كلّما صحّح أحدٌ نقطة.
+ */
+export async function cephStudyAnalysis(id: number): Promise<
+  { study: CephStudy; points: Tracing; calibration: Calibration | null; analysis: Analysis } | null
+> {
+  await ensureSchema();
+  const [{ rows }, norms] = await Promise.all([
+    getPool().query(`${STUDY_SELECT} WHERE s.id = $1`, [id]),
+    referenceNorms(),
+  ]);
+  const row = rows[0];
+  if (!row) return null;
+  const study = toStudy(row);
+  const frozen = study.status !== "draft" && row.snapshot_points;
+  const points = sanitizeTracing(frozen ? row.snapshot_points : row.live_points);
+  const calibration = sanitizeCalibration(frozen ? row.snapshot_calibration : row.live_calibration);
+  return { study, points, calibration, analysis: analyse({ tracing: points, calibration, norms }) };
+}
+
+/**
+ * إنشاء دراسة على صورة.
+ *
+ * والصورة يجب أن تكون أشعّةً للمريض نفسه: دراسةٌ على صورة مريضٍ آخر خطأٌ لا
+ * يُكتشف إلّا بعد أن يُبنى عليها. والمرحلة تُقرأ هنا لا تُخمَّن.
+ */
+export async function createCephStudy(input: {
+  documentId: number;
+  phase: unknown;
+  orthoCaseId: number | null;
+  title: string | null;
+  takenOn: string | null;
+  note: string | null;
+  actor: string;
+}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  if (!isStudyPhase(input.phase)) {
+    return { ok: false, message: "اختر مرحلة الدراسة من العلاج." };
+  }
+  const { rows: documents } = await getPool().query<{
+    patient_id: number; mime_type: string; taken_on: Date | null; title: string;
+  }>(
+    `SELECT patient_id, mime_type, taken_on, title FROM patient_documents
+      WHERE id = $1 AND removed_at IS NULL`,
+    [input.documentId],
+  );
+  const document = documents[0];
+  if (!document) return { ok: false, message: "الصورة غير موجودة." };
+  if (!document.mime_type.startsWith("image/")) {
+    return { ok: false, message: "الدراسة تكون على صورة أشعة لا على مستند." };
+  }
+
+  if (input.orthoCaseId !== null) {
+    const { rows: cases } = await getPool().query<{ patient_id: number }>(
+      `SELECT patient_id FROM ortho_cases WHERE id = $1`, [input.orthoCaseId]);
+    if (!cases[0]) return { ok: false, message: "حالة التقويم غير موجودة." };
+    // حالةٌ لمريضٍ آخر: الربط الخاطئ يضع أشعّة مريضٍ في ملف علاج غيره.
+    if (cases[0].patient_id !== document.patient_id) {
+      return { ok: false, message: "حالة التقويم ليست لهذا المريض." };
+    }
+  }
+
+  const { rows: existing } = await getPool().query<{ revision: number; status: string }>(
+    `SELECT revision, status FROM ceph_studies WHERE document_id = $1`, [input.documentId]);
+  if (existing.some((row) => row.status === "draft")) {
+    return { ok: false, message: "على هذه الأشعّة مسودّةُ دراسةٍ مفتوحة — أكملها أو اعتمدها." };
+  }
+
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO ceph_studies
+       (patient_id, document_id, ortho_case_id, phase, revision, title, taken_on, note, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9) RETURNING id`,
+    [
+      document.patient_id, input.documentId, input.orthoCaseId, input.phase,
+      nextRevision(existing.map((row) => ({ revision: Number(row.revision) }))),
+      input.title?.trim() || document.title,
+      input.takenOn ?? (document.taken_on ? dateText(document.taken_on) : null),
+      input.note?.trim() || null, input.actor,
+    ],
+  );
+  return { ok: true, id: rows[0].id };
+}
+
+/**
+ * اعتماد الدراسة — وهو **توقيع**.
+ *
+ * ولحظتَه تُنسخ المعالم والمعايرة إلى الدراسة، فتنفصل عن التتبّع الحيّ إلى
+ * الأبد. وبعدها من يصحّح نقطةً على الصورة لا يمسّ ما وُقِّع — تظهر الدراسة
+ * «تغيّر تتبّعها» وتُنشأ منها إصدارةٌ جديدة إن أُريد.
+ *
+ * والصفّ يُقفل قبل القراءة: اعتمادان في اللحظة نفسها كانا سيكتبان لقطتين.
+ */
+export async function approveCephStudy(input: { id: number; actor: string }): Promise<
+  { ok: true } | { ok: false; message: string }
+> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{
+      status: StudyStatus; document_id: number;
+    }>(`SELECT status, document_id FROM ceph_studies WHERE id = $1 FOR UPDATE`, [input.id]);
+    const study = rows[0];
+    if (!study) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "الدراسة غير موجودة." };
+    }
+    const { rows: tracings } = await client.query<{ points: unknown; calibration: unknown }>(
+      `SELECT points, calibration FROM ceph_tracings WHERE document_id = $1`,
+      [study.document_id],
+    );
+    const points = sanitizeTracing(tracings[0]?.points);
+    const calibration = sanitizeCalibration(tracings[0]?.calibration);
+
+    const verdict = checkApproval({ status: study.status, points });
+    if (!verdict.ok) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: verdict.message ?? "لا تُعتمد هذه الدراسة." };
+    }
+
+    await client.query(
+      `UPDATE ceph_studies
+          SET status = 'approved', snapshot_points = $2::jsonb,
+              snapshot_calibration = $3::jsonb, approved_by = $4, approved_at = NOW()
+        WHERE id = $1`,
+      [
+        input.id, JSON.stringify(points),
+        calibration ? JSON.stringify(calibration) : null, input.actor,
+      ],
+    );
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** أرشفة الدراسة — تُبطَل ولا تُمحى، فيبقى في الملف أنها كانت. */
+export async function archiveCephStudy(input: { id: number }): Promise<
+  { ok: true } | { ok: false; message: string }
+> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ status: StudyStatus }>(
+    `SELECT status FROM ceph_studies WHERE id = $1`, [input.id]);
+  if (!rows[0]) return { ok: false, message: "الدراسة غير موجودة." };
+  if (!canTransition(rows[0].status, "archived")) {
+    return { ok: false, message: transitionRefusal(rows[0].status, "archived") };
+  }
+  await getPool().query(
+    `UPDATE ceph_studies SET status = 'archived', archived_at = NOW() WHERE id = $1`,
+    [input.id],
+  );
+  return { ok: true };
+}
+
+/** ربط الدراسة بحالة تقويم — أو فكّه. */
+export async function linkStudyToCase(input: {
+  id: number; orthoCaseId: number | null;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ patient_id: number; status: StudyStatus }>(
+    `SELECT patient_id, status FROM ceph_studies WHERE id = $1`, [input.id]);
+  if (!rows[0]) return { ok: false, message: "الدراسة غير موجودة." };
+  if (rows[0].status === "archived") {
+    return { ok: false, message: "الدراسة مؤرشفة — لا تُغيَّر." };
+  }
+  if (input.orthoCaseId !== null) {
+    const { rows: cases } = await getPool().query<{ patient_id: number }>(
+      `SELECT patient_id FROM ortho_cases WHERE id = $1`, [input.orthoCaseId]);
+    if (!cases[0]) return { ok: false, message: "حالة التقويم غير موجودة." };
+    if (cases[0].patient_id !== rows[0].patient_id) {
+      return { ok: false, message: "حالة التقويم ليست لهذا المريض." };
+    }
+  }
+  await getPool().query(
+    `UPDATE ceph_studies SET ortho_case_id = $2 WHERE id = $1`, [input.id, input.orthoCaseId]);
+  return { ok: true };
 }
