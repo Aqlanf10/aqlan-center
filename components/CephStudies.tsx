@@ -10,8 +10,6 @@ import {
   STUDY_PHASE_LABEL, STUDY_PHASE_ORDER, STUDY_STATUS_LABEL,
   currentStudy, sortStudies, type StudyPhase, type StudyStatus,
 } from "@/lib/cephStudy";
-import { CHANGE_LABEL, type ChangeDirection, type Comparison } from "@/lib/cephCompare";
-import { formatMeasurement } from "@/lib/ceph";
 
 /**
  * الدراسات السيفالومترية في ملف المريض — **موضع الترابط بين الوحدتين**.
@@ -65,11 +63,6 @@ export function CephStudies({ patientId }: { patientId: number }) {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
 
-  const [pickedForCompare, setPickedForCompare] = useState<number[]>([]);
-  const [comparison, setComparison] = useState<
-    { before: Study; after: Study; comparison: Comparison; summary: { ar: string } } | null
-  >(null);
-
   const [documentId, setDocumentId] = useState<number | null>(null);
   const [phase, setPhase] = useState<StudyPhase>("pre");
   const [orthoCaseId, setOrthoCaseId] = useState<number | null>(null);
@@ -117,37 +110,6 @@ export function CephStudies({ patientId }: { patientId: number }) {
       const result = await response.json();
       if (!response.ok) { setError(result.message ?? "تعذّر تنفيذ الطلب."); return; }
       await load();
-    } catch {
-      setError("تعذّر الاتصال بالخادم.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  /**
-   * المقارنة تُطلب باثنتين — لا بواحدة ولا بثلاث.
-   *
-   * والترتيب يفرضه الخادم بالتاريخ: الأقدم «قبل» والأحدث «بعد». وقلبُهما يقلب
-   * كل إشارة، فيُقرأ تراجعٌ على أنه تحسّن.
-   */
-  const toggleCompare = (id: number) => {
-    setComparison(null);
-    setPickedForCompare((current) => current.includes(id)
-      ? current.filter((one) => one !== id)
-      // اثنتان فقط: الثالثة تزيح الأولى بدل أن تُرفض بصمت.
-      : [...current, id].slice(-2));
-  };
-
-  const compare = async () => {
-    if (pickedForCompare.length !== 2) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const [first, second] = pickedForCompare;
-      const response = await fetch(`/api/ceph/compare?first=${first}&second=${second}`, { cache: "no-store" });
-      const result = await response.json();
-      if (!response.ok) { setError(result.message ?? "تعذّرت المقارنة."); return; }
-      setComparison(result);
     } catch {
       setError("تعذّر الاتصال بالخادم.");
     } finally {
