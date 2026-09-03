@@ -185,6 +185,51 @@ try {
     `${papers.strangerStudy}`);
 
   /*
+   * وأربعةٌ وجدها المراجع الآلي على هذا التغيير — وكلّها صحيحة:
+   *
+   * ١) الورقة كانت تنسب أرقامَ يوم الاعتماد إلى **آخر من عدّل التتبّع بعده**،
+   *    وتؤرّخها بتاريخه. فتُنسب وثيقةٌ موقَّعة إلى غير صاحبها.
+   * ٢) وتُذيَّل بملاحظةٍ كُتبت **بعد** الاعتماد، فتُضيف إلى الوثيقة ما لم يكن
+   *    فيها يوم وُقِّعت.
+   * ٣) وهويّة الطبعة كانت رقم الأشعّة وحده، فأوّلُ طبعةٍ للإصدار الثاني تُختم
+   *    «نسخة معاد طباعتها» — وهو ادّعاءٌ على الورقة يجب أن يصدق.
+   * ٤) والورقة الإنجليزية كانت تحمل مرحلةَ الدراسة وحالتها بالعربية.
+   */
+  say("ولا تنسب أرقام يوم الاعتماد إلى من عدّل بعده",
+    !papers.ofStudy.includes("نفّذ التتبّع") && papers.ofStudy.includes("اعتمدها"));
+
+  const english = await page.evaluate(async ([study, document]) => {
+    const html = await (await fetch(`/print/ceph/${document}?study=${study}&lang=en`)).text();
+    return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  }, [studyId, documentId]);
+  say("والورقة الإنجليزية إنجليزيةٌ كلّها",
+    english.includes("Pre-treatment") && english.includes("Approved")
+      && !english.includes("ما قبل العلاج") && !english.includes("معتمدة"));
+
+  const reprint = await page.evaluate(async ([document, study]) => {
+    // العلامة تُقرأ من الصنف لا من النصّ: «نسخة معاد طباعتها» مكتوبةٌ دائمًا
+    // في الورقة، و`reprint-mark-on` وحده هو ما يُظهرها.
+    const mark = async (id) => {
+      const html = await (await fetch(`/print/ceph/${document}?study=${id}`)).text();
+      return html.includes("reprint-mark-on");
+    };
+    // تُسجَّل طبعةٌ للإصدار الأول، ثم يُنظر إلى ورقة الإصدار الثاني.
+    const logged = await fetch("/api/print-log", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docType: "ceph", docId: `${document}:${study.first}` }),
+    });
+    return { logged: logged.status, first: await mark(study.first), second: await mark(study.second) };
+  }, [documentId, { first: studyId, second: await page.evaluate(async (id) => {
+    const body = await (await fetch(`/api/patients/${id}/ceph-studies`)).json();
+    return body.studies.find((row) => row.revision === 2).id;
+  }, patientId) }]);
+  say("سُجّلت طبعةٌ للإصدار الأول", reprint.logged === 200, `${reprint.logged}`);
+  say("وطبعةُ إصدارٍ لا تختم إصدارًا آخر بـ«معاد طباعتها»",
+    reprint.first === true && reprint.second === false,
+    `الأول ${reprint.first ? "معاد" : "أوّل"} · الثاني ${reprint.second ? "معاد" : "أوّل"}`);
+
+
+  /*
    * ٨) الورقة تقول ما تقوله الشاشة — على أشعّةٍ **غير مربّعة**.
    *
    * وهذا ما كان يفوت: المعالم كسورٌ من العرض والارتفاع، فالنسبة تدخل حساب

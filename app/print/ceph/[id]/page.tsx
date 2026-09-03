@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import {
   cephStudyAnalysis, getCephTracing, getPatient, getPatientDocument, getSettingsSafe, printCount,
 } from "@/lib/db";
-import { STUDY_PHASE_LABEL, STUDY_STATUS_LABEL } from "@/lib/cephStudy";
+import { STUDY_PHASE_TEXT, STUDY_STATUS_TEXT } from "@/lib/cephStudy";
 import {
   LANDMARKS, LANDMARK_MANUAL, SEVERITY_LABEL, SKELETAL_LABEL, VERTICAL_LABEL,
   formatMeasurement, referenceLines, say, severityOf, zScore,
@@ -66,8 +66,17 @@ export default async function CephReportPage({
   const patient = await getPatient(tracing.patientId);
   if (!patient) notFound();
 
-  const printed = await printCount("ceph", id);
+
   const study = reading?.study ?? null;
+  /*
+   * هويّة الطبعة تشمل الدراسة.
+   *
+   * وأشعّةٌ واحدة قد تحمل إصدارين: بلا هذا تُحسب أوّلُ طبعةٍ للإصدار الثاني
+   * إعادةَ طباعة، ولا يُعرف من السجل أيّ إصدارٍ طُبع. و«نسخة معاد طباعتها»
+   * ادّعاءٌ على الورقة — فيجب أن يصدق.
+   */
+  const printKey = study ? `${id}:${study.id}` : String(id);
+  const printed = await printCount("ceph", printKey);
   const points = reading ? reading.points : tracing.points;
   const analysis = reading ? reading.analysis : tracing.analysis;
   const lines = referenceLines(points);
@@ -143,10 +152,19 @@ export default async function CephReportPage({
           {age !== null ? <span>{say(T.age, lang)}: {age} {say(T.years, lang)}</span> : null}
           {document.takenOn ? <span>{say(T.xrayDate, lang)}: {friendlyDateLong(document.takenOn)}</span> : null}
         </div>
-        <div className="line">
-          <span>{say(T.tracedBy, lang)}: {tracing.updatedBy ?? tracing.tracedBy}</span>
-          <span>{say(T.tracedAt, lang)}: {friendlyDateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10))}</span>
-        </div>
+        {/*
+          نسبةُ الورقة إلى من وقّعها.
+
+          والدراسة المعتمدة أرقامُها أرقامُ يوم الاعتماد — فنسبتُها إلى آخر من
+          عدّل التتبّع بعده تنسب عملًا إلى غير صاحبه، وتؤرّخ ورقةً بتاريخٍ لم
+          تُوقَّع فيه. فمن يقرأ الورقة بعد سنتين يجد **من اعتمدها ومتى**.
+        */}
+        {study?.approvedBy ? null : (
+          <div className="line">
+            <span>{say(T.tracedBy, lang)}: {tracing.updatedBy ?? tracing.tracedBy}</span>
+            <span>{say(T.tracedAt, lang)}: {friendlyDateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10))}</span>
+          </div>
+        )}
 
         {/*
           هويّة الورقة: أهي دراسةٌ معتمدة أم قراءةُ تتبّعٍ حالي؟ ورقةٌ لا تقول
@@ -155,9 +173,8 @@ export default async function CephReportPage({
         {study ? (
           <div className="line">
             <span>
-              {say(T.study, lang)}: {say(
-                { ar: STUDY_PHASE_LABEL[study.phase], en: STUDY_PHASE_LABEL[study.phase] }, lang)}
-              {" · "}{STUDY_STATUS_LABEL[study.status]}
+              {say(T.study, lang)}: {say(STUDY_PHASE_TEXT[study.phase], lang)}
+              {" · "}{say(STUDY_STATUS_TEXT[study.status], lang)}
               {" · "}{say(T.revision, lang)} {study.revision}
             </span>
             {study.approvedBy ? (
@@ -277,7 +294,16 @@ export default async function CephReportPage({
           <span>{analysis.vertical ? say(VERTICAL_LABEL[analysis.vertical], lang) : say(T.undecided, lang)}</span>
         </p>
 
-        {tracing.note ? <p className="doc-meta">{tracing.note}</p> : null}
+        {/*
+          الملاحظة تتبع مصدر الأرقام: ملاحظةُ الدراسة على ورقة الدراسة، وملاحظةُ
+          التتبّع على ورقة التتبّع. وإلحاقُ ملاحظةٍ كُتبت بعد الاعتماد بورقةٍ
+          موقَّعة يُضيف إلى الوثيقة ما لم يكن فيها يوم وُقِّعت.
+        */}
+        {study ? (
+          study.note ? <p className="doc-meta">{study.note}</p> : null
+        ) : (
+          tracing.note ? <p className="doc-meta">{tracing.note}</p> : null
+        )}
 
         <div className="rule-light" />
         <p className="doc-meta">{say(T.manualNote, lang)}</p>
@@ -285,7 +311,7 @@ export default async function CephReportPage({
 
         <PrintFooter settings={settings} />
       </div>
-      <PrintButton docType="ceph" docId={id} />
+      <PrintButton docType="ceph" docId={printKey} />
     </main>
   );
 }

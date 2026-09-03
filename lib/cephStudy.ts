@@ -27,11 +27,24 @@ import type { Calibration, Tracing } from "./ceph";
 /** موضع الدراسة من زمن العلاج. */
 export type StudyPhase = "pre" | "mid" | "post" | "followup";
 
+/**
+ * التسمية باللغتين — والورقة تُطبع بالإنجليزية أيضًا.
+ *
+ * ومصدرٌ واحد لهما: خريطةٌ عربية وأخرى إنجليزية تفترقان عند أول إضافة، فتخرج
+ * ورقةٌ إنجليزية نصفُها عربي.
+ */
+export const STUDY_PHASE_TEXT: Record<StudyPhase, { ar: string; en: string }> = {
+  pre: { ar: "ما قبل العلاج", en: "Pre-treatment" },
+  mid: { ar: "أثناء العلاج", en: "Mid-treatment" },
+  post: { ar: "ما بعد العلاج", en: "Post-treatment" },
+  followup: { ar: "متابعة", en: "Follow-up" },
+};
+
 export const STUDY_PHASE_LABEL: Record<StudyPhase, string> = {
-  pre: "ما قبل العلاج",
-  mid: "أثناء العلاج",
-  post: "ما بعد العلاج",
-  followup: "متابعة",
+  pre: STUDY_PHASE_TEXT.pre.ar,
+  mid: STUDY_PHASE_TEXT.mid.ar,
+  post: STUDY_PHASE_TEXT.post.ar,
+  followup: STUDY_PHASE_TEXT.followup.ar,
 };
 
 export const STUDY_PHASE_ORDER: StudyPhase[] = ["pre", "mid", "post", "followup"];
@@ -49,10 +62,16 @@ export function isStudyPhase(value: unknown): value is StudyPhase {
  */
 export type StudyStatus = "draft" | "approved" | "archived";
 
+export const STUDY_STATUS_TEXT: Record<StudyStatus, { ar: string; en: string }> = {
+  draft: { ar: "مسودّة", en: "Draft" },
+  approved: { ar: "معتمدة", en: "Approved" },
+  archived: { ar: "مؤرشفة", en: "Archived" },
+};
+
 export const STUDY_STATUS_LABEL: Record<StudyStatus, string> = {
-  draft: "مسودّة",
-  approved: "معتمدة",
-  archived: "مؤرشفة",
+  draft: STUDY_STATUS_TEXT.draft.ar,
+  approved: STUDY_STATUS_TEXT.approved.ar,
+  archived: STUDY_STATUS_TEXT.archived.ar,
 };
 
 export function isStudyStatus(value: unknown): value is StudyStatus {

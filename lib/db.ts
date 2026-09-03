@@ -7511,7 +7511,7 @@ export interface CephStudy {
 }
 
 const STUDY_SELECT = `
-  SELECT s.id, s.patient_id, p.full_name AS patient_name, s.document_id,
+  SELECT s.id, s.patient_id, p.full_name AS patient_name, p.gender, s.document_id,
          d.title AS document_title, s.ortho_case_id, s.phase, s.status, s.revision,
          s.title, s.taken_on, s.note, s.snapshot_points, s.snapshot_calibration,
          s.approved_by, s.approved_at, s.created_by, s.created_at,
@@ -7591,12 +7591,16 @@ export async function cephStudyAnalysis(id: number): Promise<
   { study: CephStudy; points: Tracing; calibration: Calibration | null; analysis: Analysis } | null
 > {
   await ensureSchema();
-  const [{ rows }, norms] = await Promise.all([
-    getPool().query(`${STUDY_SELECT} WHERE s.id = $1`, [id]),
-    referenceNorms(),
-  ]);
+  const { rows } = await getPool().query(`${STUDY_SELECT} WHERE s.id = $1`, [id]);
   const row = rows[0];
   if (!row) return null;
+  /*
+   * المعايير تُختار بجنس المريض — كما تُختار في `getCephTracing`.
+   *
+   * ومعيار Wits ذكورًا ‏١ وإناثًا ‏٠، ومليمترٌ هنا يقلب حكمًا. وكانت تُقرأ بلا
+   * جنس فيسقط صفُّ الإناث فيُطبَّق معيار الذكور على مريضةٍ في ورقةٍ موقَّعة.
+   */
+  const norms = await referenceNorms((row.gender as string | null) ?? null);
   const study = toStudy(row);
   const frozen = study.status !== "draft" && row.snapshot_points;
   const points = sanitizeTracing(frozen ? row.snapshot_points : row.live_points);
