@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_ITEMS, MIN_VOID_REASON,
   checkVoid, isInstructionsLang, isVoided, readDraft,
-  sanitizeRxItem, sanitizeRxItems, showsInstructions,
+  hasLatin, sanitizeRxItem, sanitizeRxItems, showsInstructions,
 } from "../lib/prescription";
 
 /*
@@ -134,5 +134,51 @@ describe("لغة التعليمات", () => {
     expect(isInstructionsLang("both")).toBe(true);
     expect(isInstructionsLang("fr")).toBe(false);
     expect(isInstructionsLang(null)).toBe(false);
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * اسم الدواء يُكتب كما على العلبة
+ *
+ * فالصيدليّ يبحث عن `Amoxicillin` لا عن «أموكسيسيلين» — والمكتوب بالعربية
+ * وحدها لا يجده في رفّه ولا في نظامه، والوصفة تُكتب لتُصرف.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("اسم الدواء لاتينيّ", () => {
+  it("فالعربيّ وحده يُردّ", () => {
+    expect(sanitizeRxItem({ name: "أموكسيسيلين" })).toBeNull();
+    expect(sanitizeRxItem({ name: "بنادول ٥٠٠" })).toBeNull();
+  });
+
+  it("واللاتينيّ يُقبل ولو حمل أرقامًا ورموزًا ونِسبًا", () => {
+    for (const name of [
+      "Amoxicillin", "Chlorhexidine 0.12%", "Augmentin 1g",
+      "Ibuprofen (Brufen)", "Amoxicillin + Clavulanic acid",
+    ]) {
+      expect(sanitizeRxItem({ name })?.name, name).toBe(name);
+    }
+  });
+
+  it("والمختلط يُقبل — فيه ما يبحث به الصيدليّ", () => {
+    expect(sanitizeRxItem({ name: "Amoxicillin أموكسيسيلين" })).not.toBeNull();
+  });
+
+  it("**والرسالة تفرّق بين «لا دواء» و«اسمٌ بلا لاتينية»**", () => {
+    // من كتب «أموكسيسيلين» يظنّ أنّه كتب دواءً، فقولُ «الوصفة بلا دواء» يحيّره.
+    const arabicOnly = readDraft({ patientId: 7, items: [{ name: "أموكسيسيلين" }] });
+    expect(arabicOnly.ok).toBe(false);
+    if (!arabicOnly.ok) expect(arabicOnly.message).toContain("بالإنجليزية");
+
+    const nothing = readDraft({ patientId: 7, items: [] });
+    expect(nothing.ok).toBe(false);
+    if (!nothing.ok) expect(nothing.message).toContain("بلا دواء");
+  });
+
+  it("والدالّة تُختبر وحدها", () => {
+    expect(hasLatin("Amoxicillin")).toBe(true);
+    expect(hasLatin("0.12%")).toBe(false);
+    expect(hasLatin("أموكسيسيلين")).toBe(false);
+    expect(hasLatin("")).toBe(false);
   });
 });

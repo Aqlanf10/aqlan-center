@@ -98,6 +98,15 @@ export function Prescriptions({ patientId, visitId = null }: {
     if (busy) return;
     setBusy(true);
     setError(null);
+    /*
+     * النافذة تُفتح **مع النقرة** لا بعد انتهاء الطلب.
+     *
+     * فالمتصفّح يسمح بالفتح ما دامت نقرةُ المستخدم قائمة، وتنتهي صلاحيتها قبل
+     * أن يعود الخادم. وفتحٌ بعدها يُحجب — فتُحفظ الوصفة ولا تظهر ورقة، والزرّ
+     * وعد بالاثنين. فتُفتح فارغةً الآن ثم تُوجَّه، وإن حُجبت رغم ذلك يبقى
+     * رابط «الورقة» في السطر ولا يُدَّعى أنها طُبعت.
+     */
+    const sheet = window.open("", "_blank", "noreferrer");
     try {
       const response = await fetch(`/api/patients/${patientId}/prescriptions`, {
         method: "POST",
@@ -105,14 +114,19 @@ export function Prescriptions({ patientId, visitId = null }: {
         body: JSON.stringify({ visitId, diagnosis, notes, instructionsLang: lang, items }),
       });
       const body = await response.json().catch(() => null);
-      if (!response.ok) { setError(body?.message ?? "تعذّر حفظ الوصفة."); return; }
+      if (!response.ok) {
+        sheet?.close();
+        setError(body?.message ?? "تعذّر حفظ الوصفة.");
+        return;
+      }
       setWriting(false);
       setItems([{ ...EMPTY }]);
       setDiagnosis(""); setNotes(""); setLang("both");
       await load();
-      // تُفتح الورقة فورًا: الوصفة تُكتب لتُطبع، والخطوة التالية هي الطباعة.
-      window.open(`/print/prescription/${body.id}`, "_blank", "noreferrer");
+      // الوصفة تُكتب لتُطبع، والخطوة التالية هي الطباعة.
+      if (sheet) sheet.location.href = `/print/prescription/${body.id}`;
     } catch {
+      sheet?.close();
       setError("تعذّر الاتصال بالخادم.");
     } finally {
       setBusy(false);

@@ -137,6 +137,20 @@ try {
   check("and the patient's allergy from the file",paperHtml.includes('حساسية من البنسلين'));
   check('a prescription that does not exist is 404, not an invented sample',
     (await fetch(base+'/print/prescription/999999',{headers:{cookie:d},redirect:'manual'})).status===404);
+  /*
+   * **اللقطة**: الوصفة وثيقةٌ خرجت بيد المريض، فلا يغيّرها تعديلٌ على ملفّه.
+   *
+   * وأخطرُ ما فيها التنبيه الطبي: نسخةٌ لاحقة تُحذف منها الحساسية تبدو كأنّ
+   * الوصفة كُتبت وهي معلومة وليست، أو تُضاف إليها فيبدو أنّ الطبيب حُذّر ولم يكن.
+   */
+  await db.updatePatient(rxPatient.id,{fullName:'اسمٌ صُحّح بعد الإصدار',medicalAlert:null});
+  const afterEdit=await (await fetch(base+`/print/prescription/${rxId}`,{headers:{cookie:d},redirect:'manual'})).text();
+  check("editing the file afterwards does not rewrite the issued sheet",
+    afterEdit.includes('مريض الوصفة')&&!afterEdit.includes('اسمٌ صُحّح بعد الإصدار'));
+  check("nor erase the allergy the sheet was issued with",afterEdit.includes('حساسية من البنسلين'));
+  // واسمُ دواءٍ بالعربية وحدها لا يجده الصيدليّ.
+  check('an Arabic-only drug name is refused with a reason that says why',
+    (await request(rxPath,d,{items:[{name:'أموكسيسيلين'}]},{origin:base})).status===400);
   check('voiding needs a reason that will still read in a year',
     (await request(`/api/prescriptions/${rxId}/void`,d,{reason:'خطأ'},{origin:base})).status===400);
   check('reception cannot void one',(await request(`/api/prescriptions/${rxId}/void`,reception,{reason:'سببٌ كافٍ للإبطال'},{origin:base})).status===403);

@@ -584,6 +584,13 @@ export function ensureSchema(): Promise<void> {
         notes             TEXT        NOT NULL DEFAULT '',
         instructions_lang TEXT        NOT NULL DEFAULT 'both',
         items             JSONB       NOT NULL,
+        -- لقطةُ المريض يوم الإصدار: الورقة لا تتغيّر بتغيّر ملفّه بعدها،
+        -- وأخطرُ ما فيها التنبيه الطبي.
+        patient_name      TEXT        NOT NULL DEFAULT '',
+        patient_number    TEXT        NOT NULL DEFAULT '',
+        patient_birth_year INTEGER,
+        patient_gender    TEXT        NOT NULL DEFAULT 'unspecified',
+        medical_alert     TEXT,
         issued_by         TEXT        NOT NULL,
         issued_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         voided_by         TEXT,
@@ -7850,12 +7857,18 @@ import {
   type InstructionsLang, type Prescription, type PrescriptionDraft, type RxItem,
 } from "./prescription";
 
+/*
+ * لا `JOIN patients` هنا.
+ *
+ * فاسم المريض ورقم ملفّه وتنبيهه الطبي **محفوظةٌ في الوصفة** يوم صدرت. وقراءتها
+ * من الملف الحيّ تجعل وثيقةً موقَّعة تتغيّر بتعديلٍ في شاشةٍ أخرى.
+ */
 const RX_SELECT = `
-  SELECT r.id, r.patient_id, p.full_name AS patient_name, p.patient_number,
+  SELECT r.id, r.patient_id, r.patient_name, r.patient_number,
+         r.patient_birth_year, r.patient_gender, r.medical_alert,
          r.visit_id, r.diagnosis, r.notes, r.instructions_lang, r.items,
          r.issued_by, r.issued_at, r.voided_by, r.voided_at, r.void_reason
-    FROM prescriptions r
-    JOIN patients p ON p.id = r.patient_id`;
+    FROM prescriptions r`;
 
 /**
  * صفٌّ من القاعدة إلى وصفة.
@@ -7866,8 +7879,11 @@ const RX_SELECT = `
 const toPrescription = (row: Record<string, unknown>): Prescription => ({
   id: row.id as number,
   patientId: row.patient_id as number,
-  patientName: row.patient_name as string,
+  patientName: (row.patient_name as string | null) ?? "",
   patientNumber: String(row.patient_number ?? ""),
+  birthYear: (row.patient_birth_year as number | null) ?? null,
+  gender: (row.patient_gender as string | null) ?? "unspecified",
+  medicalAlert: (row.medical_alert as string | null) ?? null,
   visitId: (row.visit_id as number | null) ?? null,
   diagnosis: (row.diagnosis as string | null) ?? "",
   notes: (row.notes as string | null) ?? "",
@@ -7887,9 +7903,14 @@ export async function createPrescription(
 ): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
   await ensureSchema();
 
-  const { rows: patients } = await getPool().query<{ id: number }>(
-    `SELECT id FROM patients WHERE id = $1`, [draft.patientId]);
-  if (!patients[0]) return { ok: false, message: "المريض غير موجود." };
+  const { rows: patients } = await getPool().query<{
+    id: number; full_name: string; patient_number: string;
+    birth_year: number | null; gender: string; medical_alert: string | null;
+  }>(
+    `SELECT id, full_name, patient_number, birth_year, gender, medical_alert
+       FROM patients WHERE id = $1`, [draft.patientId]);
+  const patient = patients[0];
+  if (!patient) return { ok: false, message: "المريض غير موجود." };
 
   if (draft.visitId !== null) {
     const { rows: visits } = await getPool().query<{ patient_id: number }>(
@@ -7906,11 +7927,15 @@ export async function createPrescription(
 
   const { rows } = await getPool().query<{ id: number }>(
     `INSERT INTO prescriptions
-       (patient_id, visit_id, diagnosis, notes, instructions_lang, items, issued_by)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING id`,
+       (patient_id, visit_id, diagnosis, notes, instructions_lang, items, issued_by,
+        patient_name, patient_number, patient_birth_year, patient_gender, medical_alert)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12) RETURNING id`,
     [
       draft.patientId, draft.visitId, draft.diagnosis, draft.notes,
       draft.instructionsLang, JSON.stringify(draft.items), actor,
+      // اللقطة تُؤخذ هنا مرّةً واحدة — وما بعدها من تعديلٍ على الملف لا يمسّها.
+      patient.full_name, patient.patient_number, patient.birth_year,
+      patient.gender, patient.medical_alert,
     ],
   );
   return { ok: true, id: rows[0].id };

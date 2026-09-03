@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
-import { getPatient, getPrescription, getSettingsSafe, printCount } from "@/lib/db";
-import { ageFromBirthYear, ageText, GENDER_LABEL } from "@/lib/patient";
+import { CLINIC_TIME_ZONE, getPrescription, getSettingsSafe, printCount } from "@/lib/db";
+import { ageFromBirthYear, ageText, GENDER_LABEL, type Gender } from "@/lib/patient";
+import { clinicDateString } from "@/lib/schedule";
 import { showsInstructions } from "@/lib/prescription";
 import { dateLong } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
@@ -39,14 +40,19 @@ export default async function PrescriptionPrintPage({
   const rx = await getPrescription(id);
   if (!rx) notFound();
 
-  const [patient, settings, printed] = await Promise.all([
-    getPatient(rx.patientId), getSettingsSafe(), printCount("prescription", id),
+  const [settings, printed] = await Promise.all([
+    getSettingsSafe(), printCount("prescription", id),
   ]);
-  if (!patient) notFound();
 
-  // العمر يوم الإصدار لا اليوم: وصفةُ طفلٍ تبقى وصفة طفل، والجرعة بُنيت عليه.
-  const issuedOn = rx.issuedAt.slice(0, 10);
-  const age = ageFromBirthYear(patient.birthYear, issuedOn);
+  /*
+   * يوم الإصدار **بتوقيت العيادة** لا بـ`slice(0,10)` على طابع UTC.
+   *
+   * واليمن على ‎+٣‎: وصفةٌ تُكتب الواحدة صباحًا يقول طابعُها العالمي إنّها من
+   * اليوم السابق، فتُطبع بتاريخٍ غير يومها — وعلى رأس السنة يخطئ العمر سنةً.
+   */
+  const issuedOn = clinicDateString(new Date(rx.issuedAt), CLINIC_TIME_ZONE);
+  // والعمر يوم الإصدار لا اليوم: وصفةُ طفلٍ تبقى وصفة طفل، والجرعة بُنيت عليه.
+  const age = ageFromBirthYear(rx.birthYear, issuedOn);
   const voided = Boolean(rx.voidedAt);
 
   return (
@@ -71,23 +77,23 @@ export default async function PrescriptionPrintPage({
         ) : null}
 
         <div className="line">
-          <span>{patient.fullName}</span>
-          <span>رقم الملف: <span dir="ltr">{patient.patientNumber}</span></span>
+          <span>{rx.patientName}</span>
+          <span>رقم الملف: <span dir="ltr">{rx.patientNumber}</span></span>
         </div>
         <div className="line">
-          <span>{ageText(age)} · {GENDER_LABEL[patient.gender]}</span>
+          <span>{ageText(age)} · {GENDER_LABEL[rx.gender as Gender] ?? "غير محدد"}</span>
           <span>{dateLong(issuedOn, "ar")}</span>
         </div>
 
         {/*
-          * تنبيه الحساسية من ملف المريض لا من يد من يكتب.
+          * تنبيه الحساسية من **لقطة** ملف المريض يوم الإصدار.
           *
           * وهو أهمّ سطرٍ في الورقة: مريضٌ يحسّس من البنسلين تُصرف له أموكسيسيلين
           * حادثةٌ تُقتل. فيُقرأ من الملف حيث سُجّل مرّةً، ولا يُترك لذاكرة من
           * يكتب الوصفة في يومٍ مزدحم.
           */}
-        {patient.medicalAlert ? (
-          <p className="rx-alert">تنبيه طبي: {patient.medicalAlert}</p>
+        {rx.medicalAlert ? (
+          <p className="rx-alert">تنبيه طبي: {rx.medicalAlert}</p>
         ) : null}
 
         {rx.diagnosis ? (

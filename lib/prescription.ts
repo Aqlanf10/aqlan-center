@@ -60,6 +60,18 @@ const text = (value: unknown, limit: number): string =>
   typeof value === "string" ? value.trim().slice(0, limit) : "";
 
 /**
+ * أفيه حرفٌ لاتينيّ؟
+ *
+ * فاسم الدواء يُكتب كما على العلبة — والصيدليّ يبحث عن `Amoxicillin` لا عن
+ * «أموكسيسيلين»، والمكتوب بالعربية وحدها لا يجده في رفّه ولا في نظامه. أمّا
+ * التعليمات فبالعربية، وهي موضعُها.
+ *
+ * وحرفٌ واحد يكفي: أسماءٌ كثيرة تحمل أرقامًا ونسبًا ورموزًا (`Chlorhexidine
+ * 0.12%`)، واشتراط اللاتينية الخالصة يردّ اسمًا صحيحًا.
+ */
+export const hasLatin = (value: string): boolean => /[A-Za-z]/.test(value);
+
+/**
  * دواءٌ من مُدخلٍ غير موثوق.
  *
  * ويعيد `null` لما لا اسم له: سطرٌ فيه جرعةٌ بلا دواء ليس دواءً ناقصًا بل سطرٌ
@@ -69,7 +81,7 @@ export function sanitizeRxItem(input: unknown): RxItem | null {
   if (!input || typeof input !== "object") return null;
   const source = input as Record<string, unknown>;
   const name = text(source.name, MAX_FIELD);
-  if (!name) return null;
+  if (!name || !hasLatin(name)) return null;
   return {
     name,
     dose: text(source.dose, MAX_FIELD),
@@ -128,8 +140,21 @@ export function readDraft(input: unknown): DraftCheck {
 
   const items = sanitizeRxItems(source.items);
   if (items.length === 0) {
-    // وصفةٌ بلا دواء ورقةٌ بترويسة المركز وتوقيع الطبيب ولا شيء فيها.
-    return { ok: false, message: "الوصفة بلا دواء — أضف دواءً واحدًا على الأقل." };
+    /*
+     * وصفةٌ بلا دواء ورقةٌ بترويسة المركز وتوقيع الطبيب ولا شيء فيها.
+     *
+     * والرسالة تفرّق بين السببين: من كتب «أموكسيسيلين» بالعربية يظنّ أنه كتب
+     * دواءً، فقولُ «الوصفة بلا دواء» له يحيّره.
+     */
+    const named = Array.isArray(source.items)
+      && source.items.some((one) => typeof (one as { name?: unknown })?.name === "string"
+        && (one as { name: string }).name.trim().length > 0);
+    return {
+      ok: false,
+      message: named
+        ? "اسم الدواء يُكتب بالإنجليزية كما على العلبة — فالصيدليّ يبحث به."
+        : "الوصفة بلا دواء — أضف دواءً واحدًا على الأقل.",
+    };
   }
 
   const lang = source.instructionsLang;
@@ -150,11 +175,25 @@ export function readDraft(input: unknown): DraftCheck {
   };
 }
 
-export interface Prescription {
-  id: number;
-  patientId: number;
+/**
+ * لقطةُ المريض يوم الإصدار — جزءٌ من الوثيقة لا قراءةٌ حيّة من ملفّه.
+ *
+ * فالمريض خرج بنسخته، وملفُّه يتغيّر بعدها: يُصحَّح اسم، تُضاف حساسية أو
+ * تُحذف. وورقةٌ تُعاد طباعتها من الملف الحيّ تخالف ما في يده — **وأخطرُه
+ * التنبيه الطبي**: نسخةٌ لاحقة تُحذف منها الحساسية تبدو كأنّ الوصفة كُتبت
+ * وهي معلومة وليست، أو تُضاف إليها فيبدو أنّ الطبيب حُذّر ولم يكن.
+ */
+export interface PatientSnapshot {
   patientName: string;
   patientNumber: string;
+  birthYear: number | null;
+  gender: string;
+  medicalAlert: string | null;
+}
+
+export interface Prescription extends PatientSnapshot {
+  id: number;
+  patientId: number;
   visitId: number | null;
   diagnosis: string;
   notes: string;
