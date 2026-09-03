@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { isPrintableDoc } from "@/lib/prints";
+import { canPrintDoc, isPrintableDoc } from "@/lib/prints";
 import { recordAudit, recordPrint } from "@/lib/db";
-import { canHandleMoney } from "@/lib/roles";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -18,10 +17,6 @@ export async function POST(request: Request) {
   if (!session) {
     return NextResponse.json({ message: "انتهت الجلسة. سجّل الدخول من جديد." }, { status: 401 });
   }
-  if (!canHandleMoney(session.role)) {
-    return NextResponse.json({ message: "المستندات المالية للإدارة والاستقبال." }, { status: 403 });
-  }
-
   let body: unknown;
   try { body = await request.json(); } catch {
     return NextResponse.json({ message: "طلب غير صالح." }, { status: 400 });
@@ -31,6 +26,18 @@ export async function POST(request: Request) {
   const docId = String(source.docId ?? "");
   if (!isPrintableDoc(docType) || !docId) {
     return NextResponse.json({ message: "مستند غير معروف." }, { status: 400 });
+  }
+  /*
+   * الصلاحية بعد معرفة النوع لا قبله.
+   *
+   * فالمالية للإدارة والاستقبال، والسريرية للطبيب والمدير — وشرطٌ واحد للاثنين
+   * يمنع الطبيب من تسجيل طبعة ورقةٍ هي أصلًا من اختصاصه وحده.
+   */
+  if (!canPrintDoc(session.role, docType)) {
+    return NextResponse.json(
+      { message: "هذا المستند ليس من صلاحيتك." },
+      { status: 403 },
+    );
   }
 
   try {

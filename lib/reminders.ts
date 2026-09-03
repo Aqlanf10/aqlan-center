@@ -74,6 +74,26 @@ export function friendlyDateLong(date: string): string {
   return `${friendlyDate(date)}/${parsed.getFullYear()}`;
 }
 
+const WEEKDAYS_EN = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * التاريخ الطويل بلغة الورقة — «الخميس 03/09/2026» أو «Thursday 03/09/2026».
+ *
+ * وورقةٌ إنجليزية عليها يوم أسبوعٍ عربي ليست إنجليزية: تخرج إلى زميلٍ لا يقرأ
+ * العربية، وهو أوّل من تُكتب له الورقة الإنجليزية أصلًا. والترقيم يبقى واحدًا
+ * في اللغتين — يوم/شهر/سنة — فلا يُقرأ ٠٣/٠٩ سبتمبرَ الثالثَ في ورقةٍ وآذارَ
+ * التاسعَ في أخرى.
+ */
+export function dateLong(date: string, lang: "ar" | "en"): string {
+  if (lang === "ar") return friendlyDateLong(date);
+  const parsed = new Date(`${date}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  const day = WEEKDAYS_EN[parsed.getDay()];
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  return `${day} ${dd}/${mm}/${parsed.getFullYear()}`;
+}
+
 export type ReminderKind = "upcoming" | "missed";
 
 /**

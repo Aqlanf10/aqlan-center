@@ -8,7 +8,7 @@ import {
   ageFromBirthYear, formatMeasurement, groupByAnalysis, referenceLines, say, severityOf, zScore,
   type Lang,
 } from "@/lib/ceph";
-import { friendlyDateLong } from "@/lib/reminders";
+import { dateLong } from "@/lib/reminders";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
 import { PrintButton, ReprintMark } from "@/components/PrintButton";
 import { isAdmin } from "@/lib/roles";
@@ -163,7 +163,7 @@ export default async function CephReportPage({
         <div className="line">
           <span>{say(T.sex, lang)}: {sexLabel}</span>
           {age !== null ? <span>{say(T.age, lang)}: {age} {say(T.years, lang)}</span> : null}
-          {document.takenOn ? <span>{say(T.xrayDate, lang)}: {friendlyDateLong(document.takenOn)}</span> : null}
+          {document.takenOn ? <span>{say(T.xrayDate, lang)}: {dateLong(document.takenOn, lang)}</span> : null}
         </div>
         {/*
           نسبةُ الورقة إلى من وقّعها.
@@ -175,7 +175,7 @@ export default async function CephReportPage({
         {study?.approvedBy ? null : (
           <div className="line">
             <span>{say(T.tracedBy, lang)}: {tracing.updatedBy ?? tracing.tracedBy}</span>
-            <span>{say(T.tracedAt, lang)}: {friendlyDateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10))}</span>
+            <span>{say(T.tracedAt, lang)}: {dateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10), lang)}</span>
           </div>
         )}
 
@@ -193,7 +193,7 @@ export default async function CephReportPage({
             {study.approvedBy ? (
               <span>
                 {say(T.approvedBy, lang)}: {study.approvedBy}
-                {study.approvedAt ? ` · ${friendlyDateLong(study.approvedAt.slice(0, 10))}` : ""}
+                {study.approvedAt ? ` · ${dateLong(study.approvedAt.slice(0, 10), lang)}` : ""}
               </span>
             ) : null}
           </div>

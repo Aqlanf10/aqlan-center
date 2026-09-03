@@ -37,7 +37,7 @@ describe("ما لا يُتراكب", () => {
   it("بلا S أو N لا تراكب — ويُقال أيّ معلمٍ ينقص", () => {
     const verdict = superimposeOnSN(study(face()), study({ S: { x: 0.3, y: 0.3 } }));
     expect(verdict.ok).toBe(false);
-    if (!verdict.ok) expect(verdict.message).toContain("S وN");
+    if (!verdict.ok) expect(verdict.message.ar).toContain("S وN");
   });
 
   it("وبلا معايرةٍ على الاثنتين لا تراكب — ويُقال لماذا", () => {
@@ -48,7 +48,7 @@ describe("ما لا يُتراكب", () => {
     const bare = study(face(), { calibration: null });
     const first = superimposeOnSN(bare, study(face()));
     expect(first.ok).toBe(false);
-    if (!first.ok) expect(first.message).toContain("معايرة");
+    if (!first.ok) expect(first.message.ar).toContain("معايرة");
     expect(superimposeOnSN(study(face()), bare).ok).toBe(false);
   });
 
@@ -192,5 +192,31 @@ describe("اختلاف المقاس بين الصورتين", () => {
     close(result.value.points.N!, face().N!);
     close(result.value.points.A!, face().A!);
     close(result.value.points.Pog!, face().Pog!);
+  });
+});
+
+/*
+ * سببُ التعذّر بلغتين.
+ *
+ * فهو يخرج على الورقة الإنجليزية بعد عنوانٍ إنجليزي — وهو أحوج ما يكون إلى أن
+ * يُفهم: الرسالة تقول ما ينقص وما يُفعل، لا «تعذّر».
+ */
+describe("رسالة التعذّر بلغتين", () => {
+  const bare = { points: {}, calibration: null, aspect: 1 };
+
+  it("لكل تعذّرٍ عربيةٌ وإنجليزية", () => {
+    const result = superimposeOnSN(bare, bare);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message.ar.length).toBeGreaterThan(0);
+    expect(result.message.en.length).toBeGreaterThan(0);
+    // ولا حرفَ عربيًّا في الإنجليزية — وإلّا ما نفعت الترجمة.
+    expect(/[\u0600-\u06FF]/.test(result.message.en), result.message.en).toBe(false);
+  });
+
+  it("وتقول ما ينقص لا «تعذّر»", () => {
+    const missing = superimposeOnSN(bare, bare);
+    if (missing.ok) throw new Error("كان يجب أن يتعذّر");
+    expect(missing.message.en).toContain("S and N");
   });
 });

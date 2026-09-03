@@ -53,7 +53,8 @@ export async function GET(request: Request) {
     );
     if (!placed.ok) {
       // ٤٠٩ لا ٤٠٠: الطلب سليم والبيانات هي التي لا تكفي — والرسالة تقول ما يُفعل.
-      return NextResponse.json({ message: placed.message }, { status: 409 });
+      // الشاشة عربية، فتُرسَل العربية منها — والورقة الإنجليزية تأخذ الإنجليزية.
+      return NextResponse.json({ message: placed.message.ar }, { status: 409 });
     }
 
     return NextResponse.json({
