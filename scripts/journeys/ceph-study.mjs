@@ -276,9 +276,57 @@ try {
     const html = await (await fetch(`/print/ceph/${id}`)).text();
     return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
   }, tall.id);
+  // ودراسةٌ على هذه الأشعّة أيضًا — فيصير في الملف ثلاثٌ، ويُفحص أن اختيار
+  // الثالثة يُبقي اثنتين. وفحصٌ يُتخطّى حين لا تكفي البيانات فحصٌ لا يُشغَّل.
+  await page.evaluate(async ([patient, document]) => {
+    await fetch(`/api/patients/${patient}/ceph-studies`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentId: document, phase: "followup" }),
+    });
+  }, [patientId, tall.id]);
+
   say("والورقة المطبوعة نفسها تحمل الرقم نفسه",
     printed.includes(tall.screenFma.toFixed(1)),
     `تبحث عن ${tall.screenFma.toFixed(1)}`);
+
+  /*
+   * ٩) المقارنة — ماذا فعل العلاج.
+   *
+   * والسؤال الذي تجيب عنه ليس «أين المريض من المعيار» بل ما تغيّر بين دراستين،
+   * ويُسأل في نهاية علاجٍ امتدّ سنتين وأمام مريضٍ يسأل «هل تحسّنت؟».
+   */
+  console.log("9) المقارنة بين دراستين");
+  await page.goto(`${BASE}/patients/${patientId}?tab=ceph`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1800);
+
+  const marks = page.getByRole("button", { name: "للمقارنة" });
+  say("لكل دراسةٍ زرّ مقارنة", (await marks.count()) >= 2, `${await marks.count()} زرًّا`);
+  await marks.nth(0).click();
+  await page.waitForTimeout(300);
+  await marks.nth(1).click();
+  await page.waitForTimeout(400);
+  const bar = await page.locator("body").innerText();
+  say("والشريط يقول كم اختير", bar.includes("للمقارنة: 2 من 2"));
+
+  // `exact` لازم: «للمقارنة» تحوي «قارن»، فالبحث غير الدقيق يجد ثلاثة أزرار.
+  await page.getByRole("button", { name: "قارن", exact: true }).click();
+  await page.waitForTimeout(2000);
+  const table = page.locator('section[aria-label="مقارنة دراستين"]');
+  say("ظهر جدول المقارنة", await table.isVisible());
+  const body = await table.innerText();
+  say("وفيه سطرُ خلاصةٍ يعدّ ولا يحكم على العلاج",
+    /اقترب من معياره/.test(body) && !/نجح|ممتاز/.test(body));
+  say("والقراءة مكتوبةٌ نصًّا لا لونًا وحده",
+    /اقترب من المعيار|ابتعد عن المعيار|بلا تغيّر يُذكر|بلا معيار/.test(body));
+  say("ويقول التاريخين — فمن يقرأه يعرف أيّهما قبل",
+    /←/.test(body));
+
+  // ثالثةٌ تُزيح الأولى: اثنتان فقط لا ثلاث.
+  say("وفي الملف ثلاث دراسات", (await marks.count()) >= 3, `${await marks.count()}`);
+  await marks.nth(2).click();
+  await page.waitForTimeout(400);
+  say("واختيارُ ثالثةٍ يُبقي اثنتين لا ثلاثًا",
+    (await page.locator("body").innerText()).includes("للمقارنة: 2 من 2"));
 
   console.log(failed ? "\nسقطت الرحلة." : "\nرحلة الدراسة اكتملت.");
 } finally {
