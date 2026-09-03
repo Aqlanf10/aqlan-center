@@ -23,6 +23,7 @@ import {
   ageFromBirthYear,
   applicableNorm,
   analysisFromSource,
+  groupByAnalysis,
   type Tracing,
 } from "../lib/ceph";
 
@@ -979,5 +980,66 @@ describe("اسم التحليل يُشتقّ من مرجع معياره", () => 
     expect(analysisFromSource("McNamara 1984 · بالغون")).toBe("McNamara");
     expect(analysisFromSource("  ")).toBeNull();
     expect(analysisFromSource("· شيء")).toBeNull();
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * التجميع بالتحاليل
+ *
+ * والقياسات تُبنى بترتيبٍ حسابيّ لا بترتيب التحاليل: Steiner ثم Tweed ثم
+ * Steiner ثانيةً عند `U1-SN`. فعارضٌ يكتب عنوانًا كلّما تغيّر الاسم عن سابقه
+ * يكتب «Steiner» مرّتين أو ثلاثًا — وهو نقيض الغرض من التسمية.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("التجميع بالتحاليل — كلُّ تحليلٍ مرّةً واحدة", () => {
+  it("يجمع المتفرّق ولا يكرّر عنوانًا", () => {
+    const scattered = [
+      { key: "a", analysis: "Steiner" },
+      { key: "b", analysis: "Tweed" },
+      { key: "c", analysis: "Steiner" },
+      { key: "d", analysis: "Downs" },
+      { key: "e", analysis: "Tweed" },
+    ];
+    const groups = groupByAnalysis(scattered);
+    expect(groups.map((g) => g.analysis)).toEqual(["Steiner", "Tweed", "Downs"]);
+    expect(groups[0].items.map((i) => i.key)).toEqual(["a", "c"]);
+    expect(groups[1].items.map((i) => i.key)).toEqual(["b", "e"]);
+  });
+
+  it("وما لا اسم له مجموعةٌ واحدة بلا عنوان", () => {
+    const groups = groupByAnalysis([
+      { key: "a", analysis: "Steiner" }, { key: "b" }, { key: "c", analysis: null }, { key: "d" },
+    ]);
+    const bare = groups.find((g) => g.analysis === null);
+    expect(bare?.items.map((i) => i.key)).toEqual(["b", "c", "d"]);
+  });
+
+  it("ولا يُفقد قياسٌ ولا يُكرَّر", () => {
+    const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+    const grouped = groupByAnalysis(all).flatMap((g) => g.items);
+    expect(grouped).toHaveLength(all.length);
+    expect(new Set(grouped.map((i) => i.key)).size).toBe(all.length);
+  });
+
+  it("**والتحليل الواحد لا يظهر في مجموعتين** — على قياساتٍ حقيقية", () => {
+    // وهذا هو العطب بعينه: الترتيب الحسابيّ يعود إلى Steiner بعد Tweed.
+    const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+    const names = groupByAnalysis(all).map((g) => g.analysis);
+    expect(names.length).toBe(new Set(names).size);
+    expect(names).toContain("Steiner");
+    // ويُثبَت أنّ المصدر متفرّقٌ فعلًا، وإلّا كان الفحص يمرّ بالصدفة.
+    const raw = all.map((item) => item.analysis ?? null);
+    const collapsed = raw.filter((name, index) => name !== raw[index - 1]);
+    expect(collapsed.length, collapsed.join(" · ")).toBeGreaterThan(new Set(raw).size);
+  });
+
+  it("وترتيب المجموعات بأوّل ظهور، وترتيب القياسات كما بُنيت", () => {
+    const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+    const groups = groupByAnalysis(all);
+    expect(groups[0].analysis).toBe(all[0].analysis ?? null);
+    const steiner = groups.find((g) => g.analysis === "Steiner")!;
+    const inOrder = all.filter((item) => item.analysis === "Steiner").map((item) => item.key);
+    expect(steiner.items.map((item) => item.key)).toEqual(inOrder);
   });
 });

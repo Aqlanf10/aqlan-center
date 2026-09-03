@@ -577,6 +577,38 @@ export const DEFAULT_NORMS: Record<string, Norm> = {
 };
 
 /**
+ * القياسات مجموعةً بتحاليلها — كلُّ تحليلٍ مرّةً واحدة.
+ *
+ * والقياسات تُبنى بترتيبٍ حسابيّ لا بترتيب التحاليل: Steiner ثم Tweed ثم
+ * Steiner ثانيةً عند `U1-SN`. فعارضٌ يكتب عنوانًا كلّما تغيّر الاسم عن سابقه
+ * يكتب «Steiner» مرّتين أو ثلاثًا — **وهو نقيض الغرض**: أن يُقرأ التحليل
+ * مجموعةً كما في المراجع لا متفرّقًا.
+ *
+ * والتجميع هنا لا في كل عارض: عارضان يجمّعان بطريقتين يعرضان ترتيبين
+ * مختلفين للورقة والشاشة، ويقرأ الطبيب رقمًا في مكانٍ ويبحث عنه في الآخر.
+ *
+ * وترتيب المجموعات بأوّل ظهورٍ لكلٍّ، وترتيب القياسات داخلها كما بُنيت —
+ * فلا يُعاد ترتيبُ ما رتّبه الحساب.
+ */
+export function groupByAnalysis<T extends { analysis?: string | null }>(
+  items: readonly T[],
+): { analysis: string | null; items: T[] }[] {
+  const groups: { analysis: string | null; items: T[] }[] = [];
+  const seen = new Map<string | null, { analysis: string | null; items: T[] }>();
+  for (const item of items) {
+    const key = item.analysis ?? null;
+    let group = seen.get(key);
+    if (!group) {
+      group = { analysis: key, items: [] };
+      seen.set(key, group);
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  return groups;
+}
+
+/**
  * اسم التحليل من مرجع المعيار.
  *
  * والقاعدة: **التحليل هو صاحب المعيار الذي يُحكم به**. فما دام `SNA` يُصنَّف

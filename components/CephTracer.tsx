@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  GROUP_LABEL, LANDMARKS, LANDMARK_BY_CODE, LANDMARK_MANUAL, SKELETAL_LABEL, analyse, formatMeasurement, say,
+  GROUP_LABEL, LANDMARKS, LANDMARK_BY_CODE, LANDMARK_MANUAL, SKELETAL_LABEL, analyse, formatMeasurement,
+  groupByAnalysis, say,
   type Calibration, type Lang, type LandmarkCode, type Norm, type TracedPoint, type Tracing,
 } from "@/lib/ceph";
 
@@ -584,12 +585,13 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                   * بتحاليلها تُقرأ حكمًا حكمًا — «تويد يقول كذا وداونز كذا». وما
                   * لا ينتمي إلى تحليلٍ بعينه يبقى بلا عنوان فلا يُنسب إلى واحد.
                   */}
-                {analysis.measurements.map((item, index) => [
-                  item.analysis && item.analysis !== analysis.measurements[index - 1]?.analysis ? (
-                    <li key={`${item.key}-head`} className="px-1 pt-1.5 text-[10px] font-extrabold text-slate-400" dir="ltr">
-                      {item.analysis}
+                {groupByAnalysis(analysis.measurements).flatMap((group) => [
+                  group.analysis ? (
+                    <li key={`${group.analysis}-head`} className="px-1 pt-1.5 text-[10px] font-extrabold text-slate-400" dir="ltr">
+                      {group.analysis}
                     </li>
                   ) : null,
+                  ...group.items.map((item) => (
                   <li key={item.key} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-extrabold" dir="ltr">{item.name}</span>
@@ -614,7 +616,8 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                         ? <>{" · "}<span className="text-amber-700">{say(item.normNote, lang)}</span></>
                         : null}
                     </p>
-                  </li>,
+                  </li>
+                  )),
                 ])}
               </ul>
             )}
