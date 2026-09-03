@@ -211,6 +211,28 @@ try {
     (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'34000',effectiveFrom:todayText,replace:true},{origin:base})).status===409);
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
+  /*
+   * ── عمر الدين بالأقدم-أوّلًا ──
+   *
+   * وكان يُحسب من أقدم فاتورةٍ بلا نظرٍ إلى ما دفع. فمريضٌ عليه رصيدٌ افتتاحي
+   * من ٢٠٢٤ سدّده كاملًا، وعليه اليوم فاتورةٌ جديدة، كان يظهر «منذ ست مئة
+   * يوم» ويُصنَّف دَينًا ميتًا — فيُطارَد بمكالماتٍ يستحقّها غيره، أو يُشطب
+   * دينُه وهو حاضرٌ يدفع.
+   *
+   * والرصيد الافتتاحي تاريخُه بيدنا، فيُفحص به بلا حاجةٍ إلى تزوير تواريخ.
+   */
+  const settled=await db.createPatient({fullName:'مريض سدّد القديم',phone:'770445566',altPhone:null,gender:'male',birthYear:1980,address:null,medicalAlert:null,note:null});
+  await db.setPatientOpeningBalance({patientId:settled.id,amountMinor:100000,asOfDate:'2024-01-15',note:null,createdBy:'shots'});
+  const settledShift=await db.openShift({openedBy:'shots',opening:{YER:0,SAR:0,USD:0}});
+  await db.recordPayment({patientId:settled.id,invoiceId:null,kind:'payment',amountMinor:100000,currency:'YER',baseCurrency:'YER',exchangeRate:1,method:'cash',note:null,createdBy:'shots'});
+  await db.createInvoice({patientId:settled.id,baseCurrency:'YER',discountMinor:0,note:null,createdBy:'shots',items:[{serviceId:null,doctorId:null,description:'علاج اليوم',quantity:1,unitPriceMinor:40000}]});
+  const aged=(await db.patientDebtReport(1)).find(r=>r.patientId===settled.id);
+  check("a patient who cleared an old balance still owes today's invoice",aged&&aged.dueMinor===40000,`${aged&&aged.dueMinor}`);
+  // ست مئة يومٍ كان الجواب القديم؛ والصحيح صفر — فاتورةُ اليوم.
+  check('**and its age is today, not the day of the balance he already paid**',
+    aged&&aged.ageDays===0,`${aged&&aged.ageDays} يومًا`);
+  if(settledShift) await db.closeShift({id:settledShift.id,closedBy:'shots',counted:{YER:100000,SAR:0,USD:0},note:null});
+
 
   // ── خصم تكلفة المختبر من عمولة الطبيب ──
   check('a lab order with a doctor id that is not a doctor is refused, not silently dropped',
