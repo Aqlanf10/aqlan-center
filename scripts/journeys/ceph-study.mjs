@@ -449,6 +449,79 @@ try {
       (await view.locator("svg line").count()) >= 2, `${await view.locator("svg line").count()} خطًّا`);
   }
 
+  /*
+   * ١١) الورقة — «قبل وبعد» تخرج من الشاشة إلى اليد.
+   *
+   * والفحص الحاكم ليس «أظهرت الصفحة» بل **أنّ ترتيبها لا يتبع الرابط**: من ينقر
+   * الأحدث أولًا يجب أن يجد الورقة نفسها بالضبط، وإلّا قُرئت نكسةٌ تحسّنًا على
+   * ورقةٍ تُعطى لمريض.
+   */
+  console.log("11) ورقة المقارنة المطبوعة");
+  const [firstId, secondId] = calibrated.slice(0, 2);
+  const sheet = `${BASE}/print/ceph-compare?first=${firstId}&second=${secondId}`;
+  await page.goto(sheet, { waitUntil: "networkidle" });
+  const paper = await page.locator("body").innerText();
+  say("فُتحت الورقة وعليها هوية المركز", paper.includes("مقارنة دراستين سيفالومتريتين"));
+  say("وفيها «قبل» و«بعد» بالنصّ", paper.includes("قبل:") && paper.includes("بعد:"));
+
+  // سطر «قبل» كاملًا — هويّة الدراسة الأقدم كما تكتبها الورقة.
+  const beforeLine = (text) => (text.split("\n").find((row) => row.startsWith("قبل:")) ?? "").trim();
+  const forward = beforeLine(paper);
+  say("وسطرُ «قبل» ليس فارغًا", forward.length > "قبل:".length, forward);
+
+  await page.goto(`${BASE}/print/ceph-compare?first=${secondId}&second=${firstId}`,
+    { waitUntil: "networkidle" });
+  const flippedPaper = await page.locator("body").innerText();
+  say("**وقلبُ الرابط لا يقلب الورقة** — الأقدم يبقى «قبل»",
+    beforeLine(flippedPaper) === forward, `${forward} مقابل ${beforeLine(flippedPaper)}`);
+
+  await page.goto(sheet, { waitUntil: "networkidle" });
+  say("وفيها التراكب مرسومًا — الصورتان معايَرتان",
+    (await page.locator("svg.ceph-superimpose line").count()) >= 4,
+    `${await page.locator("svg.ceph-superimpose line").count()} خطًّا`);
+  say("ويقول طول قاعدة الجمجمة بالمليمتر", /طول S–N/.test(paper) && /mm/.test(paper));
+  say("ويقول إنّ التحجيم من المعايرة لا من طول SN",
+    paper.includes("بمقياس المعايرة لا بطول SN"));
+  say("وفيها جدولُ قبل/بعد بأسطرٍ فعلية",
+    (await page.locator("table.items tbody tr").count()) >= 3,
+    `${await page.locator("table.items tbody tr").count()} سطرًا`);
+  say("وحصيلةٌ تعدّ ولا تحكم على العلاج",
+    /اقترب من معياره/.test(paper) && !/نجح|ممتاز|فشل/.test(paper));
+
+  /*
+   * وعلامة «نسخة معاد طباعتها» تصدق.
+   *
+   * والنصّ «معاد» مرسومٌ دائمًا في الورقة ويُظهره الصنف وحده — ففحصُ الكلمة
+   * يمرّ بالصدفة على الطبعة الأولى. فيُفحص الصنف.
+   */
+  say("ولا علامة إعادةٍ قبل الطباعة الأولى",
+    (await page.locator(".reprint-mark-on").count()) === 0);
+  const logged = await page.evaluate(async (docId) => {
+    const response = await fetch("/api/print-log", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docType: "ceph-compare", docId }),
+    });
+    return { status: response.status, body: await response.json() };
+    /*
+     * ومفتاح الطبعة **بالترتيب الزمني** لا بترتيب النقر — كما تبنيه الورقة.
+     *
+     * وهذا ما سقط أوّل مرّة: سُجّلت الطبعة بمفتاح `${firstId}:${secondId}`
+     * فلم تظهر العلامة، لأنّ الورقة تعدّ طبعاتها على `قبل:بعد`. والسقوط كان
+     * صوابًا — لو تبع المفتاح الرابط لصارت الورقة الواحدة طبعتين مختلفتين.
+     */
+  }, `${drawn.body.before.id}:${drawn.body.after.id}`);
+  /*
+   * والرحلة تدخل بحساب **مدير**، فقبولُ المسار هنا لا يقول شيئًا عن الطبيب:
+   * المدير كان يمرّ بالشرط القديم أيضًا. فالمُثبَت هنا التوصيل وحده — أنّ نوع
+   * `ceph-compare` مسجَّلٌ ويُقبل وتظهر أثرُه على الورقة. وأمّا أنّ الطبيب يطبع
+   * السريري والاستقبال لا، فتُثبته اختبارات `__tests__/prints.test.ts`.
+   */
+  say("وتُسجَّل الطبعة — النوع مسجَّلٌ والمسار يقبله",
+    logged.status === 200, logged.body?.message ?? `${logged.status}`);
+  await page.goto(sheet, { waitUntil: "networkidle" });
+  say("**فتظهر العلامة على الثانية**",
+    (await page.locator(".reprint-mark-on").count()) === 1);
+
   console.log(failed ? "\nسقطت الرحلة." : "\nرحلة الدراسة اكتملت.");
 } finally {
   await context.close();
