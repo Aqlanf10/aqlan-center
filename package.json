@@ -45,7 +45,8 @@
     "backfill:image-size": "tsx scripts/backfill-image-size.mjs",
     "journey:messages": "node scripts/journeys/messages.mjs",
     "journey:pwa": "node scripts/journeys/pwa.mjs",
-    "icons": "node scripts/make-icons.mjs"
+    "icons": "node scripts/make-icons.mjs",
+    "audit:gate": "tsx scripts/audit-gate.mjs"
   },
   "dependencies": {
     "next": "^16.3.3",
