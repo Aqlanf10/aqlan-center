@@ -33,7 +33,7 @@ export type AuditAction =
   | "document.upload" | "document.remove"
   | "ceph.study.create" | "ceph.study.approve" | "ceph.study.archive"
   | "prescription.issue" | "prescription.void"
-  | "lab.order.doctor";
+  | "lab.order.doctor" | "lab.service" | "lab.price";
 
 export const AUDIT_LABEL: Record<AuditAction, string> = {
   "invoice.create": "إنشاء فاتورة",
@@ -72,6 +72,8 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "prescription.issue": "إصدار وصفة",
   "prescription.void": "إبطال وصفة",
   "lab.order.doctor": "نسبة عمل مختبر إلى طبيب",
+  "lab.service": "كتالوج أعمال المختبر",
+  "lab.price": "سعر مختبر",
   "document.upload": "رفع مستند",
   "document.remove": "إخفاء مستند",
 };
@@ -86,7 +88,9 @@ export const SENSITIVE_ACTIONS: AuditAction[] = [
   "invoice.cancel", "payment.refund", "opening_balance.set", "opening_balance.clear",
   "journal.manual", "fx.revalue", "settings.update", "user.create", "user.update",
   "user.disable", "backup.download", "export.download", "document.reprint",
-  "visit.addendum", "prescription.void", "lab.order.doctor",
+  "visit.addendum", "prescription.void",
+  // ونسبةُ عملٍ إلى طبيب وسعرُ مختبرٍ يحكمان مالًا يُصرف.
+  "lab.order.doctor", "lab.price",
 ];
 
 export function isSensitive(action: AuditAction): boolean {

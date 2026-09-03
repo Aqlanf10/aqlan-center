@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { agreedLabPrice, listLabServices } from "@/lib/db";
+import { priceGap } from "@/lib/labCatalog";
 import { createLabOrder, getSettings, labCounts, listLabNames, listLabOrders, listParties } from "@/lib/db";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { toWhatsAppNumber } from "@/lib/reminders";
@@ -43,7 +45,27 @@ export async function POST(request: Request) {
   if (!labName || labName.length > 80) {
     return NextResponse.json({ message: "اكتب اسم المختبر." }, { status: 400 });
   }
-  const workType = typeof source.workType === "string" ? source.workType.trim() : "";
+  /*
+   * العمل من الكتالوج — ومنه يُقرأ السعر المتّفق عليه.
+   *
+   * ويبقى اختياريًّا: أعمالٌ نادرة تُكتب نصًّا، ومنعُها يوقف العمل اليومي على
+   * إدخال كتالوجٍ كامل أوّلًا.
+   */
+  const serviceIdRaw = Number(source.serviceId);
+  const services = await listLabServices();
+  const service = services.find((one) => one.id === serviceIdRaw) ?? null;
+  if (source.serviceId !== undefined && String(source.serviceId).trim() !== "" && !service) {
+    return NextResponse.json({ message: "اختر العمل من الكتالوج." }, { status: 400 });
+  }
+
+  /*
+   * ونوع العمل نصًّا **لا يُطلب متى اختير من الكتالوج**: الخدمة هي النوع.
+   *
+   * واشتراطُ الاثنين يجعل مستدعيًا يرسل الخدمة وحدها يُردّ «اختر نوع العمل»
+   * وقد اختاره — ويفتح بابًا لأن يختلف الاسمان على أمرٍ واحد.
+   */
+  const workType = service ? service.name
+    : typeof source.workType === "string" ? source.workType.trim() : "";
   if (!workType || workType.length > 80) {
     return NextResponse.json({ message: "اختر نوع العمل." }, { status: 400 });
   }
@@ -96,6 +118,7 @@ export async function POST(request: Request) {
   let costMinor: number | null = null;
   let costCurrency: Currency | null = null;
   let exchangeRate = 1;
+  let priceNotice: { agreedMinor: number; deltaMinor: number } | null = null;
   if (source.cost !== undefined && String(source.cost).trim() !== "") {
     costCurrency = isCurrency(source.costCurrency) ? source.costCurrency : base;
     costMinor = parseAmount(String(source.cost), costCurrency);
@@ -108,6 +131,21 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    /*
+     * الفرق عن السعر المتّفق عليه يُقال ولا يُمنع.
+     *
+     * فقد يتّفق الطبيب على سعرٍ خاصّ لحالة، أو يزيد المختبر لعملٍ مركّب. وإنما
+     * فرقٌ يمرّ بلا أن يُرى مرّةً يمرّ كلَّ مرّة، وآخرُ الشهر يجد المالك فاتورةً
+     * لا تشبه ما اتّفق عليه.
+     */
+    if (service && partyId) {
+      const agreed = await agreedLabPrice(partyId, service.id, sentDate);
+      if (agreed && agreed.currency === costCurrency) {
+        const gap = priceGap(agreed.costMinor, costMinor);
+        if (gap.differs) priceNotice = { agreedMinor: agreed.costMinor, deltaMinor: gap.deltaMinor };
+      }
+    }
+
     const rate = rateFromSettings(settings, costCurrency, base);
     if (rate === null) {
       return NextResponse.json({ message: "سعر الصرف غير مضبوط في الإعدادات." }, { status: 409 });
@@ -117,12 +155,17 @@ export async function POST(request: Request) {
 
   try {
     const created = await createLabOrder({
-      patientId, labName, labPhone, workType, details, sentDate, dueDate, note,
+      patientId, labName, labPhone,
+      // اسم العمل من الكتالوج متى اختير — فتُوحَّد التسمية ويصحّ تجميع التقارير.
+      workType,
+      serviceId: service ? service.id : null,
+      details, sentDate, dueDate, note,
       partyId, doctorPartyId, costMinor, costCurrency, baseCurrency: base, exchangeRate,
       createdBy: session.username,
     });
     if (!created) return NextResponse.json({ message: "تعذّر حفظ العمل." }, { status: 500 });
-    return NextResponse.json(created, { status: 201 });
+    // الأمر يُحفظ، والفرق يُقال معه — لا يُمنع الحفظ ولا يُسكت عن الفرق.
+    return NextResponse.json({ ...created, priceNotice }, { status: 201 });
   } catch {
     // المريض المحذوف أو غير الموجود يسقط على قيد المفتاح الأجنبي.
     return NextResponse.json({ message: "تعذّر حفظ العمل. تأكد من المريض وأعد المحاولة." }, { status: 500 });

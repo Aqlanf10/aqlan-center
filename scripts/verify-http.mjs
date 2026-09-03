@@ -111,6 +111,53 @@ try {
     (await patch('/api/ceph/studies/1',d,{action:'delete'})).status===400);
 
   const rxPatientForLab=await db.createPatient({fullName:'مريض المختبر',phone:'770998877',altPhone:null,gender:'male',birthYear:1985,address:null,medicalAlert:null,note:null});
+  // ── كتالوج أعمال المختبر وأسعارها ──
+  check('the catalogue is readable by anyone with a session — it is a picker, not a secret',
+    (await request('/api/lab/services',d)).status===200);
+  check('but only the admin adds to it',(await request('/api/lab/services',d,{name:'تاج زيركون'},{origin:base})).status===403);
+  check('a service with no name is refused',(await request('/api/lab/services',a,{name:''},{origin:base})).status===400);
+  check('an unknown category is refused, not silently defaulted',
+    (await request('/api/lab/services',a,{name:'تاج',category:'زرع'},{origin:base})).status===400);
+  const svc=await request('/api/lab/services',a,{name:'تاج زيركون',category:'prostho',defaultDays:10},{origin:base});
+  check('the admin adds one',svc.status===201);
+  const svcId=(await svc.json()).id;
+  check('and the same name twice is refused — it would split its own report',
+    (await request('/api/lab/services',a,{name:'تاج زيركون'},{origin:base})).status===409);
+
+  // الأسعار للمدير وحده: كشفُها للطبيب يُطلعه على هامش العيادة في كل عمل.
+  check('lab prices are the admin\'s alone',(await request('/api/lab/prices',d)).status===403);
+  const lab=await db.createParty({kind:'lab',name:'مختبر الأسعار',phone:null,note:null,commissionPercent:0});
+  check('a price on a party that is not a lab is refused',
+    (await request('/api/lab/prices',a,{partyId:999999,serviceId:svcId,cost:'20000',effectiveFrom:'2026-01-01'},{origin:base})).status===400);
+  check('a price of zero is refused — zero means free, and free hides a debt',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'0',effectiveFrom:'2026-01-01'},{origin:base})).status===400);
+  check('the admin sets one',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'20000',effectiveFrom:'2026-01-01'},{origin:base})).status===201);
+  // مدّتان تشملان يومًا واحدًا تجعلان للسعر جوابين، فيُحاسَب المختبر بسعرٍ لا يُفهم من أين جاء.
+  check('**and an overlapping period is refused, with what to do**',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'26000',effectiveFrom:'2026-06-01'},{origin:base})).status===409);
+
+  const priceList=await (await request(`/api/lab/prices?partyId=${lab.id}`,a)).json();
+  const openPrice=priceList.prices.find(p=>p.effectiveTo===null);
+  check('closing a price before it started is refused',
+    (await patch(`/api/lab/prices/${openPrice.id}`,a,{effectiveTo:'2025-01-01'})).status===409);
+  check('and closing it properly works',
+    (await patch(`/api/lab/prices/${openPrice.id}`,a,{effectiveTo:'2026-05-31'})).status===200);
+  check('then the next period is accepted — a day ends and a day begins',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'26000',effectiveFrom:'2026-06-01'},{origin:base})).status===201);
+
+  // والفرق عن المتّفق يُقال مع الحفظ — لا يُمنع الحفظ ولا يُسكت عن الفرق.
+  const labPatient=await db.createPatient({fullName:'مريض التسعير',phone:'770112233',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:null,note:null});
+  const order=await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:svcId,sentDate:'2026-09-01',dueDate:'2026-09-11',partyId:lab.id,cost:'31000'},{origin:base});
+  check('an order priced above the agreement is still saved',order.status===201);
+  const orderBody=await order.json();
+  check('**and the gap is said, not swallowed**',
+    orderBody.priceNotice&&orderBody.priceNotice.deltaMinor===5000&&orderBody.priceNotice.agreedMinor===26000);
+  const matching=await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:svcId,sentDate:'2026-09-01',dueDate:'2026-09-11',partyId:lab.id,cost:'26000'},{origin:base});
+  check('and an order at the agreed price raises nothing',(await matching.json()).priceNotice===null);
+  check('a service id that is not in the catalogue is refused',
+    (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
+
   // ── خصم تكلفة المختبر من عمولة الطبيب ──
   check('a lab order with a doctor id that is not a doctor is refused, not silently dropped',
     (await request('/api/lab',a,{patientId:rxPatientForLab.id,labName:'مختبر الاختبار',workType:'تاج',sentDate:'2026-09-01',dueDate:'2026-09-08',doctorId:999999},{origin:base})).status===400);

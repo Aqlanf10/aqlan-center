@@ -7,6 +7,7 @@ import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
 import { useSession } from "@/components/SessionProvider";
+import { formatMoney } from "@/lib/money";
 import {
   LAB_FILTER_LABEL,
   LAB_STATUS_LABEL,
@@ -63,6 +64,9 @@ export default function LabPage() {
   const [partyId, setPartyId] = useState("");
   const session = useSession();
   const [doctorId, setDoctorId] = useState("");
+  const [serviceId, setServiceId] = useState("");
+  const [services, setServices] = useState<{ id: number; name: string; defaultDays: number }[]>([]);
+  const [priceNotice, setPriceNotice] = useState<string | null>(null);
   const [doctorParties, setDoctorParties] = useState<{ id: number; name: string }[]>([]);
   const [cost, setCost] = useState("");
   const [costCurrency, setCostCurrency] = useState<Currency>(
@@ -101,6 +105,16 @@ export default function LabPage() {
     })();
   }, []);
 
+  // كتالوج الأعمال: الاسم يُختار لا يُكتب، فتُوحَّد التسمية ويصحّ تجميع التقارير.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/lab/services", { cache: "no-store" });
+        if (response.ok) setServices((await response.json()).services ?? []);
+      } catch { /* يبقى النوع نصًّا حرًّا */ }
+    })();
+  }, []);
+
   // والأطباء: على من كتب اسمه هنا تُخصم تكلفة العمل من عمولته.
   useEffect(() => {
     void (async () => {
@@ -122,7 +136,15 @@ export default function LabPage() {
     return () => clearTimeout(timer);
   }, [query, patient]);
 
-  const act = useCallback(async (run: () => Promise<Response>) => {
+  /*
+   * ويُعاد جسد الردّ لا `true` وحدها.
+   *
+   * فالخادم قد يقول مع النجاح شيئًا يلزم عرضه — كفرقِ التكلفة عن السعر المتّفق
+   * عليه. وابتلاعُ الجسد يجعل الفرق يمرّ بلا أن يُرى.
+   *
+   * والفشل يبقى `false`، فكلُّ `if (ok)` قائمة يعمل كما كان: الكائن صادق دائمًا.
+   */
+  const act = useCallback(async (run: () => Promise<Response>): Promise<Record<string, unknown> | false> => {
     if (inFlight.current) return false;
     inFlight.current = true;
     setBusy(true);
@@ -132,7 +154,7 @@ export default function LabPage() {
       if (!response.ok) { setError(payload?.message ?? "تعذّر تنفيذ الإجراء."); await load(false); return false; }
       setError(null);
       await load(false);
-      return true;
+      return (payload ?? {}) as Record<string, unknown>;
     } catch {
       setError("تعذّر الاتصال بالخادم.");
       return false;
@@ -150,16 +172,30 @@ export default function LabPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         patientId: patient.id, labName, labPhone, workType, details, sentDate, dueDate,
-        partyId: partyId || undefined, doctorId: doctorId || undefined, cost, costCurrency,
+        partyId: partyId || undefined, doctorId: doctorId || undefined,
+        serviceId: serviceId || undefined, cost, costCurrency,
       }),
     }));
     if (ok) {
+      /*
+       * الفرق عن السعر المتّفق عليه يُقال بعد الحفظ.
+       *
+       * ولا يُمنع الحفظ: قد يتّفق الطبيب على سعرٍ خاصّ لحالة. وإنما فرقٌ يمرّ
+       * بلا أن يُرى مرّةً يمرّ كلَّ مرّة، وآخرُ الشهر تأتي فاتورةٌ لا تشبه
+       * ما اتُّفق عليه.
+       */
+      const notice = ok.priceNotice as { agreedMinor: number; deltaMinor: number } | null | undefined;
+      setPriceNotice(notice
+        ? `التكلفة المكتوبة تخالف السعر المتّفق عليه (${formatMoney(notice.agreedMinor, costCurrency)})`
+          + ` بفارق ${formatMoney(Math.abs(notice.deltaMinor), costCurrency)}`
+          + `${notice.deltaMinor > 0 ? " زيادة" : " نقصًا"} — حُفظ الأمر، وراجِع الاتفاق.`
+        : null);
       setPatient(null); setQuery(""); setDetails(""); setCost("");
       setSentDate(today); setDueDate(addDays(today, labDays));
       setAdding(false);
       setFilter("outstanding");
     }
-  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, doctorId, cost, costCurrency]);
+  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, doctorId, serviceId, cost, costCurrency]);
 
   const summary = useMemo(() => labSummary(feed.orders, today), [feed.orders, today]);
   const visible = useMemo(
@@ -182,6 +218,14 @@ export default function LabPage() {
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+
+      {/* الفرق تنبيهٌ لا خطأ: الأمر حُفظ، والفرق يُراجَع مع المختبر. */}
+      {priceNotice ? (
+        <p role="status" className="mb-4 flex items-start justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-900">
+          <span>{priceNotice}</span>
+          <button onClick={() => setPriceNotice(null)} className="text-xs underline">إخفاء</button>
+        </p>
       ) : null}
 
       {!adding ? (
@@ -231,10 +275,29 @@ export default function LabPage() {
           <label className="mb-1 block text-[11px] font-bold text-slate-500">نوع العمل</label>
           <select
             value={workType}
-            onChange={(event) => setWorkType(event.target.value)}
+            onChange={(event) => {
+              setWorkType(event.target.value);
+              /*
+               * اختيارُ عملٍ من الكتالوج يجرّ معه رقمَه ومهلتَه.
+               *
+               * والرقم هو ما يُقرأ به السعر المتّفق عليه — واسمُ العمل وحده لا
+               * يكفي: مختبران قد يسمّيان العمل نفسه باسمين.
+               */
+              const chosen = services.find((one) => one.name === event.target.value);
+              setServiceId(chosen ? String(chosen.id) : "");
+              if (chosen) setDueDate(addDays(sentDate, chosen.defaultDays));
+            }}
             className="mb-3 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
           >
-            {WORK_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            {/*
+              * الكتالوج أوّلًا، والأنواع القديمة بعده.
+              *
+              * فمن أدخل الكتالوج يختار منه، ومن لم يُدخله بعدُ يعمل كما كان —
+              * ولا يتوقّف العمل اليومي على إدخال كتالوجٍ كامل أوّلًا.
+              */}
+            {services.map((one) => <option key={`s-${one.id}`} value={one.name}>{one.name}</option>)}
+            {WORK_TYPES.filter((type) => !services.some((one) => one.name === type))
+              .map((type) => <option key={type} value={type}>{type}</option>)}
           </select>
 
           <label className="mb-1 block text-[11px] font-bold text-slate-500">المختبر</label>
@@ -400,7 +463,7 @@ function OrderCard({ order, today, busy, act, clinicName, clinicPhone, doctors, 
   order: LabOrder;
   today: string;
   busy: boolean;
-  act: (run: () => Promise<Response>) => Promise<boolean>;
+  act: (run: () => Promise<Response>) => Promise<Record<string, unknown> | false>;
   clinicName: string;
   clinicPhone: string;
   doctors: { id: number; name: string }[];

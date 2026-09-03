@@ -190,6 +190,7 @@ export function ensureSchema(): Promise<void> {
         created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS lab_orders_status_idx ON lab_orders (status, due_date);
+
       CREATE INDEX IF NOT EXISTS lab_orders_patient_idx ON lab_orders (patient_id);
 
       -- الإعدادات: مفتاح وقيمة. لا أعمدة لكل إعداد، لأن كل إعداد جديد كان سيعني
@@ -356,6 +357,56 @@ export function ensureSchema(): Promise<void> {
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS party_id   INTEGER REFERENCES parties(id);
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_minor BIGINT;
       ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS cost_currency TEXT;
+      /*
+       * كتالوج أعمال المختبر — بدل تسعة أنواع مكتوبة في الكود.
+       *
+       * ونصٌّ حرّ يجعل «زيركون» و«زركون» وZirconia ثلاثة أعمال في التقارير،
+       * فلا يُعرف كم صُرف على الزيركون هذا العام.
+       */
+      CREATE TABLE IF NOT EXISTS lab_services (
+        id             SERIAL PRIMARY KEY,
+        name           TEXT        NOT NULL,
+        category       TEXT        NOT NULL DEFAULT 'prostho',
+        default_days   INTEGER     NOT NULL DEFAULT 7,
+        requires_shade BOOLEAN     NOT NULL DEFAULT TRUE,
+        is_active      BOOLEAN     NOT NULL DEFAULT TRUE,
+        sort_order     INTEGER     NOT NULL DEFAULT 100,
+        created_by     TEXT        NOT NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      -- اسمٌ واحد للعمل الواحد بين العاملة: عملان بالاسم نفسه يقسمان تقريره.
+      CREATE UNIQUE INDEX IF NOT EXISTS lab_services_name_unique
+        ON lab_services (lower(btrim(name))) WHERE is_active;
+      CREATE INDEX IF NOT EXISTS lab_services_active_idx
+        ON lab_services (is_active, sort_order, name);
+
+      /*
+       * قائمة أسعار كل مختبر — بتاريخ سريان.
+       *
+       * فالسعر يتغيّر، وأمرٌ أُرسل قبل الرفع سعرُه سعرُ يومه. ومراجعةُ فاتورة
+       * الشهر الماضي بسعر اليوم تُنتج خلافًا مع المختبر لا حكم فيه.
+       */
+      CREATE TABLE IF NOT EXISTS lab_prices (
+        id             SERIAL PRIMARY KEY,
+        party_id       INTEGER     NOT NULL REFERENCES parties(id) ON DELETE RESTRICT,
+        service_id     INTEGER     NOT NULL REFERENCES lab_services(id) ON DELETE RESTRICT,
+        cost_minor     BIGINT      NOT NULL CHECK (cost_minor > 0),
+        currency       TEXT        NOT NULL,
+        effective_from DATE        NOT NULL,
+        effective_to   DATE,
+        note           TEXT,
+        created_by     TEXT        NOT NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        -- نهايةٌ قبل بداية تجعل السعر لا يسري يومًا واحدًا، وتبقى في الجدول.
+        CONSTRAINT lab_prices_range CHECK (effective_to IS NULL OR effective_to >= effective_from)
+      );
+      CREATE INDEX IF NOT EXISTS lab_prices_lookup_idx
+        ON lab_prices (party_id, service_id, effective_from DESC);
+
+      -- العمل المختار من الكتالوج — ويبقى العمود work_type نصًّا لما سبقه.
+      ALTER TABLE lab_orders ADD COLUMN IF NOT EXISTS service_id INTEGER
+        REFERENCES lab_services(id) ON DELETE SET NULL;
+
       /*
        * الطبيب الذي أمر بالعمل — وعليه تُخصم تكلفته من عمولته.
        *
@@ -2405,6 +2456,8 @@ export async function createLabOrder(input: {
   dueDate: string;
   note: string | null;
   partyId: number | null;
+  /** العمل من الكتالوج متى اختير — فتُوحَّد التسمية ويصحّ تجميع التقارير. */
+  serviceId: number | null;
   /** الطبيب الذي أمر بالعمل — تُخصم تكلفته من عمولته. */
   doctorPartyId: number | null;
   costMinor: number | null;
@@ -2420,14 +2473,15 @@ export async function createLabOrder(input: {
     const { rows } = await client.query<{ id: number }>(
       `INSERT INTO lab_orders (patient_id, lab_name, lab_phone, work_type, details, sent_date,
                                due_date, note, party_id, cost_minor, cost_currency,
-                               doctor_party_id)
+                               doctor_party_id, service_id)
        VALUES ($1, $2, $3::text, $4, $5::text, $6::date, $7::date, $8::text, $9::int, $10::bigint,
-               $11::text, $12::int)
+               $11::text, $12::int, $13::int)
        RETURNING id`,
       [
         input.patientId, input.labName, input.labPhone, input.workType,
         input.details, input.sentDate, input.dueDate, input.note,
         input.partyId, input.costMinor, input.costCurrency, input.doctorPartyId,
+        input.serviceId,
       ],
     );
     const orderId = rows[0].id;
@@ -8103,4 +8157,179 @@ export async function setLabOrderDoctor(
     `UPDATE lab_orders SET doctor_party_id = $2 WHERE id = $1`, [id, doctorPartyId]);
   if (!rowCount) return { ok: false, message: "العمل غير موجود." };
   return { ok: true };
+}
+// ─── كتالوج أعمال المختبر وأسعارها ───────────────────────────────────────────
+
+import {
+  isLabCategory, overlaps, priceOn,
+  type LabCategory, type LabPrice, type LabService, type ServiceDraft,
+} from "./labCatalog";
+
+const toLabService = (row: Record<string, unknown>): LabService => ({
+  id: row.id as number,
+  name: row.name as string,
+  category: isLabCategory(row.category) ? (row.category as LabCategory) : "prostho",
+  defaultDays: Number(row.default_days),
+  requiresShade: Boolean(row.requires_shade),
+  isActive: Boolean(row.is_active),
+  sortOrder: Number(row.sort_order),
+});
+
+/** أعمال المختبر — المتوقّفة تبقى للتقارير القديمة ولا تُعرض في النموذج. */
+export async function listLabServices(includeInactive = false): Promise<LabService[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT id, name, category, default_days, requires_shade, is_active, sort_order
+       FROM lab_services
+      ${includeInactive ? "" : "WHERE is_active"}
+      ORDER BY is_active DESC, sort_order, name`,
+  );
+  return rows.map(toLabService);
+}
+
+export async function createLabService(
+  draft: ServiceDraft, actor: string,
+): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  try {
+    const { rows } = await getPool().query<{ id: number }>(
+      `INSERT INTO lab_services (name, category, default_days, requires_shade, sort_order, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [draft.name, draft.category, draft.defaultDays, draft.requiresShade, draft.sortOrder, actor],
+    );
+    return { ok: true, id: rows[0].id };
+  } catch (error) {
+    // اسمٌ مكرّر: الفهرس الفريد يمنعه، والرسالة تقول ما وقع لا «تعذّر الحفظ».
+    if ((error as { code?: string }).code === "23505") {
+      return { ok: false, message: "هذا العمل مسجَّل بالفعل." };
+    }
+    throw error;
+  }
+}
+
+export async function updateLabService(
+  id: number, draft: ServiceDraft,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  try {
+    const { rowCount } = await getPool().query(
+      `UPDATE lab_services
+          SET name = $2, category = $3, default_days = $4, requires_shade = $5, sort_order = $6
+        WHERE id = $1`,
+      [id, draft.name, draft.category, draft.defaultDays, draft.requiresShade, draft.sortOrder],
+    );
+    if (!rowCount) return { ok: false, message: "العمل غير موجود." };
+    return { ok: true };
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") {
+      return { ok: false, message: "الاسم مستعمَل في عملٍ آخر." };
+    }
+    throw error;
+  }
+}
+
+/**
+ * يوقف عملًا ولا يحذفه.
+ *
+ * فالأوامر القديمة تشير إليه، وحذفُه يترك تقاريرها بلا اسمٍ للعمل — أو يمنع
+ * الحذف بقيد المفتاح الأجنبي فتظهر رسالةٌ لا يفهمها المستخدم.
+ */
+export async function deactivateLabService(id: number): Promise<boolean> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE lab_services SET is_active = FALSE WHERE id = $1`, [id]);
+  return Boolean(rowCount);
+}
+
+const toLabPrice = (row: Record<string, unknown>): LabPrice => ({
+  id: row.id as number,
+  partyId: row.party_id as number,
+  serviceId: row.service_id as number,
+  costMinor: Number(row.cost_minor),
+  currency: row.currency as string,
+  effectiveFrom: dateText(row.effective_from as Date),
+  effectiveTo: row.effective_to ? dateText(row.effective_to as Date) : null,
+});
+
+/** أسعار مختبرٍ — أو أسعار الجميع حين لا يُذكر. */
+export async function listLabPrices(partyId?: number): Promise<LabPrice[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT id, party_id, service_id, cost_minor, currency, effective_from, effective_to
+       FROM lab_prices
+      ${partyId ? "WHERE party_id = $1" : ""}
+      ORDER BY party_id, service_id, effective_from DESC`,
+    partyId ? [partyId] : [],
+  );
+  return rows.map(toLabPrice);
+}
+
+/**
+ * يضيف سعرًا بعد فحص التداخل.
+ *
+ * والفحص في المعاملة نفسها بقفل الصفوف: قراءةٌ ثم كتابة تسمح لطلبين متزامنين
+ * أن يُدخلا مدّتين متداخلتين، فيصير للسعر جوابان في يومٍ واحد.
+ */
+export async function createLabPrice(input: {
+  partyId: number; serviceId: number; costMinor: number; currency: string;
+  effectiveFrom: string; effectiveTo: string | null; note: string | null; actor: string;
+}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: existing } = await client.query(
+      `SELECT id, party_id, service_id, cost_minor, currency, effective_from, effective_to
+         FROM lab_prices WHERE party_id = $1 AND service_id = $2 FOR UPDATE`,
+      [input.partyId, input.serviceId],
+    );
+    const verdict = overlaps(existing.map(toLabPrice), {
+      partyId: input.partyId, serviceId: input.serviceId,
+      effectiveFrom: input.effectiveFrom, effectiveTo: input.effectiveTo,
+    });
+    if (!verdict.ok) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: verdict.message };
+    }
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO lab_prices
+         (party_id, service_id, cost_minor, currency, effective_from, effective_to, note, created_by)
+       VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8) RETURNING id`,
+      [
+        input.partyId, input.serviceId, input.costMinor, input.currency,
+        input.effectiveFrom, input.effectiveTo, input.note, input.actor,
+      ],
+    );
+    await client.query("COMMIT");
+    return { ok: true, id: rows[0].id };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** يُغلق سعرًا ساريًا بتاريخ نهاية — فيبقى تاريخًا ولا يُحذف. */
+export async function closeLabPrice(
+  id: number, effectiveTo: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE lab_prices SET effective_to = $2::date
+      WHERE id = $1 AND (effective_to IS NULL OR effective_to > $2::date)
+        AND effective_from <= $2::date`,
+    [id, effectiveTo],
+  );
+  if (!rowCount) {
+    return { ok: false, message: "تاريخ الإغلاق قبل بدء السريان، أو السعر مُغلق أصلًا." };
+  }
+  return { ok: true };
+}
+
+/** السعر المتّفق عليه لعملٍ عند مختبرٍ يوم كذا — أو لا شيء. */
+export async function agreedLabPrice(
+  partyId: number, serviceId: number, onDate: string,
+): Promise<LabPrice | null> {
+  return priceOn(await listLabPrices(partyId), partyId, serviceId, onDate);
 }

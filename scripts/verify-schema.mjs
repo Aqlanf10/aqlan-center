@@ -29,6 +29,11 @@ const REQUIRED = [
   "payments", "parties", "expenses", "payables", "journal_manual",
   "journal_manual_lines", "treatment_plans", "plan_installments",
   "patient_opening_balances", "audit_log", "document_prints", "tooth_conditions",
+  // وما بُني بعد ذلك — والقائمة تُزاد مع كل جدول، وإلّا حرست ما مضى وحده.
+  "ceph_tracings", "ceph_studies", "ceph_reference_sets",
+  "inventory_items", "inventory_movements",
+  "staff_messages", "patient_documents",
+  "prescriptions", "lab_services", "lab_prices",
 ];
 
 const temporary = `schema_check_${Date.now()}`;
