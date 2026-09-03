@@ -11,7 +11,7 @@ import {
   currentStudy, sortStudies, type StudyPhase, type StudyStatus,
 } from "@/lib/cephStudy";
 import { CHANGE_LABEL, type ChangeDirection, type Comparison } from "@/lib/cephCompare";
-import { formatMeasurement } from "@/lib/ceph";
+import { formatMeasurement, say, type Bilingual } from "@/lib/ceph";
 
 /**
  * الدراسات السيفالومترية في ملف المريض — **موضع الترابط بين الوحدتين**.
@@ -69,6 +69,8 @@ export function CephStudies({ patientId }: { patientId: number }) {
   const [comparison, setComparison] = useState<
     { before: Study; after: Study; comparison: Comparison; summary: { ar: string } } | null
   >(null);
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
+  const [overlayNote, setOverlayNote] = useState<string | null>(null);
 
   const [documentId, setDocumentId] = useState<number | null>(null);
   const [phase, setPhase] = useState<StudyPhase>("pre");
@@ -132,6 +134,8 @@ export function CephStudies({ patientId }: { patientId: number }) {
    */
   const toggleCompare = (id: number) => {
     setComparison(null);
+    setOverlay(null);
+    setOverlayNote(null);
     setPickedForCompare((current) => current.includes(id)
       ? current.filter((one) => one !== id)
       // اثنتان فقط: الثالثة تزيح الأولى بدل أن تُرفض بصمت.
@@ -150,6 +154,29 @@ export function CephStudies({ patientId }: { patientId: number }) {
       setComparison(result);
     } catch {
       setError("تعذّر الاتصال بالخادم.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * التراكب — الجدول يقول كم تغيّر، والرسم يقول **أين**.
+   *
+   * وهو منفصلٌ عن زرّ «قارن» عمدًا: قد يتعذّر لنقص معايرةٍ بينما الجدول يعمل،
+   * فزرٌّ واحد يُسقط الاثنين معًا يُخفي ما كان يعمل.
+   */
+  const superimpose = async () => {
+    if (pickedForCompare.length !== 2) return;
+    setBusy(true);
+    setOverlayNote(null);
+    try {
+      const [first, second] = pickedForCompare;
+      const response = await fetch(`/api/ceph/superimpose?first=${first}&second=${second}`, { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) { setOverlay(null); setOverlayNote(result.message ?? "تعذّر التراكب."); return; }
+      setOverlay(result);
+    } catch {
+      setOverlayNote("تعذّر الاتصال بالخادم.");
     } finally {
       setBusy(false);
     }
@@ -231,7 +258,17 @@ export function CephStudies({ patientId }: { patientId: number }) {
             قارن
           </button>
           <button
-            onClick={() => { setPickedForCompare([]); setComparison(null); }}
+            onClick={() => void superimpose()}
+            disabled={pickedForCompare.length !== 2 || busy}
+            className="rounded-xl border border-navy-800 bg-white px-3 py-1.5 text-xs font-bold text-navy-900 disabled:opacity-40"
+          >
+            تراكب
+          </button>
+          <button
+            onClick={() => {
+              setPickedForCompare([]); setComparison(null);
+              setOverlay(null); setOverlayNote(null);
+            }}
             className="text-xs font-bold text-slate-500 underline"
           >
             إلغاء
@@ -239,6 +276,12 @@ export function CephStudies({ patientId }: { patientId: number }) {
         </div>
       ) : null}
 
+      {overlayNote ? (
+        <p className="rounded-xl border border-warning-300 bg-warning-50 px-3 py-2 text-xs font-bold text-warning-900">
+          {overlayNote}
+        </p>
+      ) : null}
+      {overlay ? <SuperimposeView overlay={overlay} /> : null}
       {comparison ? <ComparisonTable result={comparison} /> : null}
 
       <div className="flex items-center justify-between gap-2">
@@ -484,6 +527,110 @@ function ComparisonTable({ result }: {
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+interface OverlayLine { key: string; name: Bilingual; from: { x: number; y: number }; to: { x: number; y: number } }
+interface OverlaySide {
+  id: number; phase: StudyPhase; revision: number;
+  takenOn: string | null; documentId: number; lines: OverlayLine[];
+}
+interface Overlay {
+  before: OverlaySide;
+  after: OverlaySide;
+  scale: number;
+  rotationDegrees: number;
+  cranialBaseBefore: number;
+  cranialBaseAfter: number;
+}
+
+/**
+ * الرسم المتراكب — الجدول يقول كم تغيّر، وهذا يقول **أين**.
+ *
+ * ويُرسم على أشعّة الدراسة الأقدم، ومعالمُ الأحدث منقولةٌ إليها بعد التسجيل على
+ * قاعدة الجمجمة. واللونان يُشرحان بالنصّ لا بالمفتاح اللوني وحده: من لا يميّز
+ * الأزرق من البرتقالي يقرأ أيّهما قبل من السطر لا من الخط.
+ */
+function SuperimposeView({ overlay }: { overlay: Overlay }) {
+  const growth = overlay.cranialBaseAfter - overlay.cranialBaseBefore;
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4" aria-label="تراكب دراستين">
+      <p className="text-[13px] font-bold text-navy-900">
+        تراكب على قاعدة الجمجمة SN عند S
+      </p>
+      <p className="mt-0.5 text-[11px] font-semibold text-slate-500">
+        <span className="text-navy-800">▬ الأقدم</span>{" "}
+        {STUDY_PHASE_LABEL[overlay.before.phase]}
+        {overlay.before.takenOn ? ` (${friendlyDateLong(overlay.before.takenOn)})` : ""}
+        {" · "}
+        <span className="text-accent-600">▬ الأحدث</span>{" "}
+        {STUDY_PHASE_LABEL[overlay.after.phase]}
+        {overlay.after.takenOn ? ` (${friendlyDateLong(overlay.after.takenOn)})` : ""}
+      </p>
+
+      <div className="relative mt-2 overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={`/api/documents/${overlay.before.documentId}`}
+          alt="أشعّة الدراسة الأقدم"
+          className="block w-full opacity-70"
+        />
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden
+        >
+          {overlay.before.lines.map((line) => (
+            <line key={`b-${line.key}`}
+              x1={line.from.x * 100} y1={line.from.y * 100}
+              x2={line.to.x * 100} y2={line.to.y * 100}
+              stroke="#38bdf8" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+          ))}
+          {overlay.after.lines.map((line) => (
+            <line key={`a-${line.key}`}
+              x1={line.from.x * 100} y1={line.from.y * 100}
+              x2={line.to.x * 100} y2={line.to.y * 100}
+              stroke="#f5922e" strokeWidth="1.6" strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke" />
+          ))}
+        </svg>
+      </div>
+
+      <dl className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-3">
+        <div className="rounded-xl border border-slate-200 p-2">
+          <dt className="text-[10px] font-bold text-slate-400">قاعدة الجمجمة — الأقدم</dt>
+          <dd className="text-[13px] font-bold text-navy-900" dir="ltr">
+            {overlay.cranialBaseBefore.toFixed(1)} mm
+          </dd>
+        </div>
+        <div className="rounded-xl border border-slate-200 p-2">
+          <dt className="text-[10px] font-bold text-slate-400">قاعدة الجمجمة — الأحدث</dt>
+          <dd className="text-[13px] font-bold text-navy-900" dir="ltr">
+            {overlay.cranialBaseAfter.toFixed(1)} mm
+          </dd>
+        </div>
+        <div className="rounded-xl border border-slate-200 p-2">
+          <dt className="text-[10px] font-bold text-slate-400">فرقها</dt>
+          <dd className="text-[13px] font-bold text-navy-900" dir="ltr">
+            {growth > 0 ? "+" : ""}{growth.toFixed(1)} mm
+          </dd>
+        </div>
+      </dl>
+
+      {/*
+        ولا يُحجَّم على SN — وهذا يُقال على الشاشة لا في تعليقٍ في الكود.
+        فمن يرى القاعدتين مختلفتي الطول قد يظنّه عطلًا، وهو النموّ نفسه.
+      */}
+      <p className="mt-2 text-[11px] font-semibold text-slate-500">
+        التحجيم من معايرة الصورتين لا من طول قاعدة الجمجمة — فاختلافُ طولها بينهما
+        هو النموّ، ولو حُجِّم عليه لاختفى.
+      </p>
+      <p className="mt-1 text-[10px] font-semibold text-slate-400">
+        الرسم توصيلُ معالمَ ومستوياتٍ مرجعية، لا تتبّعًا تشريحيًّا كاملًا:
+        {" "}{overlay.before.lines.map((line) => say(line.name, "ar")).join(" · ") || "—"}
+      </p>
     </section>
   );
 }

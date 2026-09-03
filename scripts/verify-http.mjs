@@ -140,6 +140,11 @@ try {
   check('and a missing id is refused before the database is touched',(await request('/api/ceph/compare?first=5',d)).status===400);
   check('comparing studies that do not exist returns 404',(await request('/api/ceph/compare?first=999998&second=999999',d)).status===404);
 
+  check('superimposing is denied without a session',(await request('/api/ceph/superimpose?first=1&second=2')).status===401);
+  check('and reception cannot superimpose either',(await request('/api/ceph/superimpose?first=1&second=2',reception)).status===403);
+  check('superimposing a study on itself is refused',(await request('/api/ceph/superimpose?first=5&second=5',d)).status===400);
+  check('and studies that do not exist return 404',(await request('/api/ceph/superimpose?first=999998&second=999999',d)).status===404);
+
   check('a voice link the listener does not own returns 404, not 403 — 403 would say it exists',
     (await request('/api/messages/voice/999999',reception)).status===404);
 
