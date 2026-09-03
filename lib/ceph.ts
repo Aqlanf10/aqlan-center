@@ -153,8 +153,16 @@ export const LANDMARKS: LandmarkDefinition[] = [
             en: "Bisector of the ramus posterior and mandibular inferior tangents — constructed" } },
   { code: "D", group: "mandible", required: false,
     name: { ar: "النقطة D", en: "Point D" },
-    hint: { ar: "على الحد الشفوي للارتفاق الذقني، تقريبًا منتصف المسافة بين B ومنطقة الذقن",
-            en: "On the labial outline of the symphysis, about midway between B and the chin region" } },
+    /*
+     * **مركز الارتفاق لا حدُّه.**
+     *
+     * وكان الوصف هنا «على الحد الشفوي» — وهو وصفٌ لنقطةٍ أخرى. وSND تُقاس من
+     * مركز الارتفاق العظمي، والفرق بين المركز والحدّ الأمامي عدّة مليمترات،
+     * فتُقارَن زاويةٌ مبنيّة على الحدّ بمعيار ٧٧° المبنيّ على المركز — ويخرج
+     * الفرق حكمًا على موضع الفك السفلي لا سند له.
+     */
+    hint: { ar: "مركز الارتفاق الذقني العظمي — منتصفه هندسيًّا، لا نقطةٌ على حدّه",
+            en: "Centre of the bony symphysis — its geometric middle, not a point on its outline" } },
   { code: "Pm", group: "mandible", required: false,
     name: { ar: "بروتوبرانس منتي", en: "Protuberance Menti" },
     hint: { ar: "حيث يتغيّر الحد الأمامي للارتفاق من التقعّر إلى التحدّب فوق Pogonion",
@@ -409,6 +417,18 @@ export interface Norm {
   tolerance: number;
   /** مرجع المعيار — كي يُراجَع لا يُصدَّق. */
   source: string;
+  /**
+   * معيارُ بالغين — **لا يُحكم به على وجهٍ ما زال ينمو**.
+   *
+   * وأطوال McNamara أوضح مثال: Co-A لطفلٍ في التاسعة نحو ٨٥ مم وهو سويٌّ
+   * تمامًا لعمره، ومعيار البالغين ٩٤±٥ — فيخرج «منخفضًا» على ورقةٍ موقَّعة،
+   * ويُقرأ نقصًا فكّيًّا يستدعي جهاز نموّ أو جراحة. والخطأ صامت: الرقم صحيح،
+   * والحكم عليه وحده الكاذب.
+   *
+   * فحين يكون المريض دون سنّ اكتمال النموّ — أو عمرُه غير معروف — يُعرض
+   * القياس **بلا معيارٍ وبلا حكم**، كما تُعرض الارتفاعات الوجهية.
+   */
+  adultOnly?: true;
 }
 
 /** نصٌّ بلغتين — التقويم علمٌ مصطلحاته إنجليزية، والعمل اليومي عربي. */
@@ -443,6 +463,13 @@ export interface Measurement {
   from: LandmarkCode[];
   /** التحليل الذي ينتمي إليه — فتُقرأ القياسات مجموعةً كما تُقرأ في المراجع. */
   analysis?: string;
+  /**
+   * لماذا لا معيار — حين يكون للقياس معيارٌ منشور لكنه لا يخصّ هذا المريض.
+   *
+   * وفرقٌ بين «لا معيار له» و«له معيارٌ لا ينطبق عليك»: الثاني يُقال للقارئ
+   * كي لا يظنّ القياس مهملًا فيبحث عن حكمٍ في مكانٍ آخر.
+   */
+  normNote?: Bilingual;
 }
 
 /**
@@ -540,14 +567,73 @@ export const DEFAULT_NORMS: Record<string, Norm> = {
    * ومعاييرها هنا للبالغين، **وتختلف بالعمر والجنس اختلافًا كبيرًا** — فتُقرأ
    * مع الوجه، وتُصحَّح بمجموعةٍ مرجعية حين تُجمع بيانات المركز.
    */
-  MAX_LEN: { mean: 94, tolerance: 5, source: "McNamara 1984 · بالغون" },
-  MAND_LEN: { mean: 122, tolerance: 5, source: "McNamara 1984 · بالغون" },
-  MM_DIFF: { mean: 28, tolerance: 4, source: "McNamara 1984 · بالغون" },
-  A_NPERP: { mean: 0.5, tolerance: 1.5, source: "McNamara 1984 · بالغون" },
-  POG_NPERP: { mean: -2, tolerance: 2, source: "McNamara 1984 · بالغون" },
+  MAX_LEN: { mean: 94, tolerance: 5, source: "McNamara 1984 · بالغون", adultOnly: true },
+  MAND_LEN: { mean: 122, tolerance: 5, source: "McNamara 1984 · بالغون", adultOnly: true },
+  MM_DIFF: { mean: 28, tolerance: 4, source: "McNamara 1984 · بالغون", adultOnly: true },
+  A_NPERP: { mean: 0.5, tolerance: 1.5, source: "McNamara 1984 · بالغون", adultOnly: true },
+  POG_NPERP: { mean: -2, tolerance: 2, source: "McNamara 1984 · بالغون", adultOnly: true },
   // نسبةٌ لا طول — فتُحسب بلا معايرة، كنسبة Jarabak.
   LAFH: { mean: 55, tolerance: 3, source: "McNamara" },
 };
+
+/**
+ * سنّ اكتمال النموّ الهيكلي — وعندها تُطبَّق معايير البالغين.
+ *
+ * والعمر عندنا من سنة الميلاد وحدها، فهو مضبوطٌ إلى سنة. واخترنا ١٨ لأنّ النموّ
+ * الوجهي يكون قد قارب تمامه، ولأنّ الحجب فوق ذلك يمنع الحكم على بالغين فعليّين.
+ */
+export const ADULT_AGE = 18;
+
+/**
+ * عمر المريض يوم الأشعّة — من سنة الميلاد وحدها.
+ *
+ * والملفّ يحفظ السنة لا التاريخ الكامل، فالعمر مضبوطٌ إلى سنة: من وُلد في
+ * ٢٠٠٨ وصُوّر في ٢٠٢٦ عمرُه ١٧ أو ١٨ بحسب شهر ميلاده. ونُعيد **الأكبر**
+ * الممكن (١٨) — لأنّ الأصغر يحجب الحكم عن بالغين كثيرين، والفرق عند الحدّ
+ * وحده وقد اكتمل النموّ فيه تقريبًا. والسنة المستقبلية أو غير المعقولة تُردّ
+ * `null` — رقمٌ فاسد أسوأ من لا رقم.
+ *
+ * @param onDate تاريخ الأشعّة بصيغة `YYYY-MM-DD` بتوقيت العيادة.
+ */
+export function ageFromBirthYear(
+  birthYear: number | null | undefined,
+  onDate: string | null | undefined,
+): number | null {
+  if (typeof birthYear !== "number" || !Number.isInteger(birthYear)) return null;
+  if (birthYear < 1900 || birthYear > 2200) return null;
+  const year = Number(String(onDate ?? "").slice(0, 4));
+  if (!Number.isInteger(year) || year < 1900 || year > 2200) return null;
+  const age = year - birthYear;
+  return age >= 0 && age <= 130 ? age : null;
+}
+
+/**
+ * المعيار المنطبق على هذا المريض — أو لا معيار.
+ *
+ * وحجبُ المعيار ليس نقصًا في التحليل بل شرطُ صدقه: القياس يُعرض بقيمته كاملةً
+ * ويُقارَن بدراسةٍ سابقة للمريض نفسه، وإنما يُمنع **الحكم** الذي لا سند له.
+ */
+export function applicableNorm(
+  norm: Norm | null | undefined,
+  ageYears: number | null,
+): { norm: Norm | null; normNote?: Bilingual } {
+  if (!norm) return { norm: null };
+  if (!norm.adultOnly) return { norm };
+  if (typeof ageYears === "number" && Number.isFinite(ageYears) && ageYears >= ADULT_AGE) {
+    return { norm };
+  }
+  return {
+    norm: null,
+    normNote: {
+      ar: ageYears == null
+        ? `معيار ${norm.source} للبالغين، وعمر المريض غير مسجَّل — فلا حكم`
+        : `معيار ${norm.source} للبالغين، والمريض في ${Math.floor(ageYears)} سنة — فلا حكم`,
+      en: ageYears == null
+        ? `${norm.source} norm is for adults and the patient's age is unrecorded — no verdict`
+        : `${norm.source} norm is for adults; the patient is ${Math.floor(ageYears)} — no verdict`,
+    },
+  };
+}
 
 /**
  * التصنيف الهيكلي من زاوية ANB.
@@ -631,10 +717,19 @@ export function analyse(input: {
   calibration?: Calibration | null;
   /** المعايير المعتمدة — من المجموعة المرجعية. وبلا تمريرها تُستعمل الافتراضية. */
   norms?: Record<string, Norm>;
+  /**
+   * عمر المريض يوم الأشعّة — تُحجب به معايير البالغين عن وجهٍ ينمو.
+   *
+   * وغيابُه ليس محايدًا: يُعامَل معاملة «قد يكون طفلًا»، فتُحجب. ومريضٌ بالغ
+   * بلا سنة ميلادٍ مسجّلة يخسر خمسة أحكام — وهذا أهون من طفلٍ يُقال عن فكّه
+   * إنه ناقص وهو سويٌّ لعمره.
+   */
+  ageYears?: number | null;
 }): Analysis {
   const { tracing } = input;
   const NORMS = { ...DEFAULT_NORMS, ...(input.norms ?? {}) };
   const aspect = input.aspect && input.aspect > 0 ? input.aspect : 1;
+  const ageYears = typeof input.ageYears === "number" ? input.ageYears : null;
   const missing = LANDMARKS.filter((item) => item.required && !tracing[item.code])
     .map((item) => item.code);
 
@@ -922,12 +1017,15 @@ export function analyse(input: {
       from: LandmarkCode[]; value: number; analysis?: string;
     }) => {
       const value = input.value * scale;
+      // المعيار يمرّ بالعمر قبل أن يصير حكمًا — ولا يُبنى الحكم إلّا مما بقي.
+      const { norm, normNote } = applicableNorm(input.norm, ageYears);
       measurements.push({
         key: input.key, name: input.name, unit: "mm", value,
-        meaning: input.meaning, norm: input.norm,
-        verdict: input.norm ? verdictFor(value, input.norm) : null,
+        meaning: input.meaning, norm,
+        verdict: norm ? verdictFor(value, norm) : null,
         from: input.from,
         analysis: input.analysis,
+        normNote,
       });
     };
 

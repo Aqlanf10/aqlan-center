@@ -19,6 +19,9 @@ import {
   skeletalClass,
   verdictFor,
   NORMS,
+  ADULT_AGE,
+  ageFromBirthYear,
+  applicableNorm,
   type Tracing,
 } from "../lib/ceph";
 
@@ -796,5 +799,106 @@ describe("SND — موضع وسط الارتفاق", () => {
     const snd = analyse({ tracing: FACE_D }).measurements.find((m) => m.key === "SND");
     expect(snd?.analysis).toBe("Steiner");
     expect(snd?.unit).toBe("deg");
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * معايير البالغين على وجهٍ ينمو
+ *
+ * وهذا أخطرُ ما في أطوال McNamara: الرقم صحيح والحكم كاذب. طفلٌ في التاسعة
+ * فكُّه العلوي ٨٥ مم — وهو سويٌّ تمامًا لعمره — ومعيار البالغين ٩٤±٥، فيخرج
+ * على ورقةٍ موقَّعة «منخفض»، ويُقرأ نقصًا فكّيًّا يستدعي جهاز نموّ أو جراحة.
+ *
+ * فالفحص هنا ليس على القيمة — القيمة لا تتغيّر — بل على **ما يُقال عنها**.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("معايير البالغين لا تُطبَّق على وجهٍ ينمو", () => {
+  const of = (key: string, ageYears: number | null) =>
+    analyse({ tracing: FACE_MCN, calibration: CAL, ageYears })
+      .measurements.find((m) => m.key === key);
+
+  const ADULT_ONLY = ["Co-A", "Co-Gn", "MM-diff", "A-NPerp", "Pog-NPerp"];
+
+  it("البالغ يُحكم عليه — المعيار حاضر والحكم معه", () => {
+    for (const key of ADULT_ONLY) {
+      const m = of(key, 30);
+      expect(m?.norm, key).toBeTruthy();
+      expect(m?.verdict, key).toBeTruthy();
+      expect(m?.normNote, key).toBeUndefined();
+    }
+  });
+
+  it("والطفل يُقاس ولا يُحكم عليه — والقيمة هي هي", () => {
+    for (const key of ADULT_ONLY) {
+      const child = of(key, 9);
+      const adult = of(key, 30);
+      // القيمة لا تتغيّر بالعمر — المقياس واحد، وإنما يُحجب الحكم وحده.
+      expect(child?.value, key).toBeCloseTo(adult!.value, 12);
+      expect(child?.norm, key).toBeNull();
+      expect(child?.verdict, key).toBeNull();
+      expect(child?.normNote?.ar, key).toContain("للبالغين");
+      expect(child?.normNote?.ar, key).toContain("9");
+    }
+  });
+
+  it("وعمرٌ غير مسجَّل يُعامَل معاملة «قد يكون طفلًا»", () => {
+    for (const key of ADULT_ONLY) {
+      const m = of(key, null);
+      expect(m?.norm, key).toBeNull();
+      expect(m?.verdict, key).toBeNull();
+      expect(m?.normNote?.ar, key).toContain("غير مسجَّل");
+    }
+  });
+
+  it("وعند الحدّ: ثمانية عشر يُحكم عليها وسبعة عشر لا", () => {
+    expect(of("Co-A", ADULT_AGE)?.verdict).toBeTruthy();
+    expect(of("Co-A", ADULT_AGE - 1)?.verdict).toBeNull();
+  });
+
+  it("والقياسات التي لا تخصّ البالغين وحدهم لا تُمسّ", () => {
+    // LAFH نسبةٌ لا طول، وبروز القاطع معياره ليس موسومًا للبالغين.
+    // ولا `continue` هنا: فحصٌ يمرّ لأنّ القياس غائب فحصٌ يمرّ بالصدفة.
+    for (const key of ["LAFH", "U1-NA-mm"]) {
+      const child = of(key, 9);
+      expect(child, key).toBeDefined();
+      expect(child!.norm, key).toBeTruthy();
+      expect(child!.verdict, key).toBeTruthy();
+    }
+  });
+
+  it("والوسم على المعيار نفسه — فأيّ معيارٍ للبالغين يُحجب بالقاعدة نفسها", () => {
+    for (const key of ["MAX_LEN", "MAND_LEN", "MM_DIFF", "A_NPERP", "POG_NPERP"]) {
+      expect(DEFAULT_NORMS[key as keyof typeof DEFAULT_NORMS].adultOnly, key).toBe(true);
+    }
+    expect(DEFAULT_NORMS.LAFH.adultOnly).toBeUndefined();
+    expect(DEFAULT_NORMS.SNA.adultOnly).toBeUndefined();
+  });
+
+  it("والحجب دالّةٌ مستقلّة تُختبر وحدها", () => {
+    const adult = { mean: 94, tolerance: 5, source: "س", adultOnly: true } as const;
+    const any = { mean: 82, tolerance: 2, source: "س" };
+    expect(applicableNorm(adult, 30).norm).toBe(adult);
+    expect(applicableNorm(adult, 9).norm).toBeNull();
+    expect(applicableNorm(adult, null).norm).toBeNull();
+    expect(applicableNorm(any, 9).norm).toBe(any);
+    expect(applicableNorm(null, 30).norm).toBeNull();
+  });
+});
+
+describe("العمر من سنة الميلاد", () => {
+  it("يُحسب بفارق السنتين", () => {
+    expect(ageFromBirthYear(2008, "2026-09-03")).toBe(18);
+    expect(ageFromBirthYear(2017, "2026-01-01")).toBe(9);
+  });
+
+  it("ويُردّ لا شيء حين لا يُعرف أو يستحيل", () => {
+    expect(ageFromBirthYear(null, "2026-09-03")).toBeNull();
+    expect(ageFromBirthYear(2008, null)).toBeNull();
+    expect(ageFromBirthYear(2008, "")).toBeNull();
+    // سنةٌ بعد التصوير — بيانٌ فاسد، ورقمٌ فاسد أسوأ من لا رقم.
+    expect(ageFromBirthYear(2030, "2026-09-03")).toBeNull();
+    expect(ageFromBirthYear(1800, "2026-09-03")).toBeNull();
+    expect(ageFromBirthYear(2008.5, "2026-09-03")).toBeNull();
   });
 });
