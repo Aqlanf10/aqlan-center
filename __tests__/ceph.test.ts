@@ -678,3 +678,123 @@ describe("النمط العمودي — من قياسين لا من واحد", (
     expect(analyse({ tracing: FACE_MM }).vertical).toBe("balanced");
   });
 });
+
+/*
+ * McNamara وSND — منقولةٌ من أرشيف المالك بتصحيح.
+ *
+ * والمنقولُ منه يقيس بُعد A وPog عن عمود N بدالّةٍ **تثبّت الإشارة على محور
+ * الصورة** — فتخرج قياساتُه معكوسةً على كل أشعّةٍ يواجه فيها الوجه اليسار. وهنا
+ * الجهة من **التشريح**: الأمام هو الجانب المقابل لـPo، وPo خلفيّةٌ بالتعريف.
+ */
+
+/** وجهٌ فيه Co — لازمة لأطوال McNamara — على الإطار المصنوع نفسه. */
+const FACE_MCN: Tracing = {
+  ...FACE_MM,
+  // اللقمة: خلف Po وأعلى قليلًا، كما هي تشريحيًّا.
+  Co: frame(-8, 8),
+};
+
+describe("McNamara — أطوالٌ فعلية لا زوايا", () => {
+  it("الطولان يُقاسان بالمليمتر ولا يظهران بلا معايرة", () => {
+    const plain = analyse({ tracing: FACE_MCN });
+    expect(plain.measurements.find((m) => m.key === "Co-A")).toBeUndefined();
+    expect(plain.measurements.find((m) => m.key === "Co-Gn")).toBeUndefined();
+
+    const scaled = analyse({ tracing: FACE_MCN, calibration: CAL });
+    expect(scaled.measurements.find((m) => m.key === "Co-A")?.unit).toBe("mm");
+    expect(scaled.measurements.find((m) => m.key === "Co-Gn")?.unit).toBe("mm");
+  });
+
+  it("والفرق بينهما هو الطرح لا رقمٌ ثالث يُحسب على حدة", () => {
+    // رقمان لحقيقةٍ واحدة يفترقان: لو حُسب الفرق من نقاطٍ أخرى لاختلف عن الطرح.
+    const long = mmValue(FACE_MCN, "Co-Gn");
+    const short = mmValue(FACE_MCN, "Co-A");
+    expect(mmValue(FACE_MCN, "MM-diff")).toBeCloseTo(long - short, 9);
+  });
+
+  it("وطولُ الفكّ السفلي أكبر من العلوي على وجهٍ سويّ", () => {
+    expect(mmValue(FACE_MCN, "Co-Gn")).toBeGreaterThan(mmValue(FACE_MCN, "Co-A"));
+  });
+
+  it("وبُعدُ A عن عمود N يقيس الإزاحة الأفقية عنه بمقدارها", () => {
+    /*
+     * عمود N على فرانكفورت في هذا الإطار **رأسيٌّ** (فرانكفورت أفقي بالبناء)،
+     * فالبُعد عنه هو فرق x بين A وN. وA في الوجه المصنوع خلفه بقليل — وهو ما
+     * يقوله الرقم، وأوّل اشتراطٍ كتبتُه («موجبٌ دائمًا») كان خطأً في الاشتراط
+     * لا في الحساب.
+     */
+    const behind = mmValue(FACE_MCN, "A-NPerp");
+    expect(behind).toBeLessThan(0);
+
+    // ويُدفع A خمسة أمامًا فينقلب الموجب — والفرق خمسة بالضبط.
+    const forward: Tracing = { ...FACE_MCN, A: frame(89.6 + 5, -21.35) };
+    const ahead = mmValue(forward, "A-NPerp");
+    expect(ahead).toBeGreaterThan(0);
+    expect(ahead - behind).toBeCloseTo(5, 1);
+  });
+
+  it("**والإشارة من التشريح لا من محور الصورة** — الصورة المعكوسة تعطي الرقم نفسه", () => {
+    /*
+     * وهذا هو العطب الذي وجدتُه في المستودع المنقول عنه: دالّتُه تثبّت الإشارة
+     * على محور الصورة («الوجه يمين الصورة فالأمام شرقًا»)، فتخرج القياسات
+     * الموقَّعة معكوسةً على كل أشعّةٍ يواجه فيها الوجه اليسار.
+     */
+    const mirrored: Tracing = Object.fromEntries(
+      Object.entries(FACE_MCN).map(([code, point]) => [code, { x: 1 - point!.x, y: point!.y }]),
+    ) as Tracing;
+    const mirroredCal = {
+      ...CAL,
+      from: { x: 1 - CAL.from.x, y: CAL.from.y },
+      to: { x: 1 - CAL.to.x, y: CAL.to.y },
+    };
+    for (const key of ["A-NPerp", "Pog-NPerp", "Co-A", "Co-Gn", "MM-diff"]) {
+      expect(mmValue(mirrored, key, mirroredCal), key)
+        .toBeCloseTo(mmValue(FACE_MCN, key), 8);
+    }
+  });
+
+  it("ونسبة LAFH تُحسب بلا معايرة — المقياس يسقط بالقسمة", () => {
+    /*
+     * والمنقولُ منه يحوّل الطولين إلى مليمترات ثم يقسمهما، فتمتنع نسبتُه بلا
+     * معايرة بلا سبب — والنسبة لا تحتاج مليمترًا لتصحّ.
+     */
+    const plain = analyse({ tracing: FACE_MCN });
+    const lafh = plain.measurements.find((m) => m.key === "LAFH");
+    expect(lafh?.unit).toBe("ratio");
+    expect(lafh!.value).toBeGreaterThan(0);
+    // والمعايرة لا تغيّرها.
+    expect(mmValue(FACE_MCN, "LAFH")).toBeCloseTo(lafh!.value, 9);
+  });
+
+  it("وهي ANS-Me من N-Me بالضبط", () => {
+    const total = mmValue(FACE_MCN, "N-Me");
+    const lower = mmValue(FACE_MCN, "ANS-Me");
+    expect(mmValue(FACE_MCN, "LAFH")).toBeCloseTo((lower / total) * 100, 6);
+  });
+
+  it("وكلّها تحمل اسم تحليلها — فتُقرأ مجموعةً كما في المراجع", () => {
+    const named = analyse({ tracing: FACE_MCN, calibration: CAL }).measurements
+      .filter((m) => m.analysis === "McNamara").map((m) => m.key).sort();
+    expect(named).toEqual(["A-NPerp", "Co-A", "Co-Gn", "LAFH", "MM-diff", "Pog-NPerp"]);
+  });
+});
+
+describe("SND — موضع وسط الارتفاق", () => {
+  const FACE_D: Tracing = { ...FACE_MCN, D: frame(78, -60) };
+
+  it("يُحسب حين تُوضع D، ولا يُحسب بدونها", () => {
+    expect(analyse({ tracing: FACE_MCN }).measurements.find((m) => m.key === "SND")).toBeUndefined();
+    expect(measured(FACE_D, "SND")).toBeGreaterThan(0);
+  });
+
+  it("وهو أقلّ من SNB — فـD خلف B وأسفل منه على الارتفاق", () => {
+    // وهذا هو معنى القياس: يُقرأ عند وسط الارتفاق لا عند قمّته.
+    expect(measured(FACE_D, "SND")).toBeLessThan(measured(FACE_D, "SNB"));
+  });
+
+  it("وباسم تحليله Steiner", () => {
+    const snd = analyse({ tracing: FACE_D }).measurements.find((m) => m.key === "SND");
+    expect(snd?.analysis).toBe("Steiner");
+    expect(snd?.unit).toBe("deg");
+  });
+});

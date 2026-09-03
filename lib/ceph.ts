@@ -524,6 +524,29 @@ export const DEFAULT_NORMS: Record<string, Norm> = {
   AB_PLANE: { mean: -4.6, tolerance: 3.7, source: "Downs 1948" },
   E_LINE_UPPER: { mean: -4, tolerance: 2, source: "Ricketts 1968" },
   E_LINE_LOWER: { mean: -2, tolerance: 2, source: "Ricketts 1968" },
+  /*
+   * ستاينر — موضع وسط الارتفاق.
+   *
+   * وSNB تُقرأ عند B، وهي نقطةٌ تتأثّر بشكل قمة الارتفاق ودرجة انحداره؛ وSND
+   * تُقرأ عند وسطه فتقلّ حساسيّتها لذلك. فتُقرآن معًا لا إحداهما بدل الأخرى.
+   */
+  SND: { mean: 77, tolerance: 2, source: "Steiner" },
+  /*
+   * McNamara ١٩٨٤ — أطوالٌ فعلية بالمليمتر لا زوايا.
+   *
+   * وفائدتها أنها تقول **كم** ينقص الفكّ لا «أهو خلفيّ»: زاويةٌ واحدة قد تخرج
+   * سويّةً على فكّين صغيرين معًا، والطول يكشف ذلك.
+   *
+   * ومعاييرها هنا للبالغين، **وتختلف بالعمر والجنس اختلافًا كبيرًا** — فتُقرأ
+   * مع الوجه، وتُصحَّح بمجموعةٍ مرجعية حين تُجمع بيانات المركز.
+   */
+  MAX_LEN: { mean: 94, tolerance: 5, source: "McNamara 1984 · بالغون" },
+  MAND_LEN: { mean: 122, tolerance: 5, source: "McNamara 1984 · بالغون" },
+  MM_DIFF: { mean: 28, tolerance: 4, source: "McNamara 1984 · بالغون" },
+  A_NPERP: { mean: 0.5, tolerance: 1.5, source: "McNamara 1984 · بالغون" },
+  POG_NPERP: { mean: -2, tolerance: 2, source: "McNamara 1984 · بالغون" },
+  // نسبةٌ لا طول — فتُحسب بلا معايرة، كنسبة Jarabak.
+  LAFH: { mean: 55, tolerance: 3, source: "McNamara" },
 };
 
 /**
@@ -638,6 +661,26 @@ export function analyse(input: {
     });
   }
 
+  /*
+   * SND — موضع وسط الارتفاق.
+   *
+   * وSNB تُقرأ عند B، وهي نقطةٌ تتأثّر بشكل قمة الارتفاق ودرجة انحداره: ذقنٌ
+   * بارزةٌ ترفعها وذقنٌ منحسرة تخفضها، والفكّ نفسُه لم يتحرّك. وSND تُقرأ عند
+   * **وسط** الارتفاق فتقلّ حساسيّتها لذلك — فتُقرآن معًا لا إحداهما بدل الأخرى.
+   */
+  if (S && N && tracing.D) {
+    const value = angleAt(N, S, tracing.D, aspect);
+    measurements.push({
+      key: "SND", name: "SND", unit: "deg", value,
+      meaning: {
+        ar: "موضع وسط الارتفاق من قاعدة الجمجمة — يُقرأ مع SNB لا بدلها",
+        en: "Symphysis midpoint relative to the cranial base — read alongside SNB",
+      },
+      norm: NORMS.SND, verdict: verdictFor(value, NORMS.SND), from: ["S", "N", "D"],
+      analysis: "Steiner",
+    });
+  }
+
   if (S && N && A && B) {
     // ANB فرقٌ بين زاويتين لا زاوية تُقاس — ولذلك تكون سالبة في الصنف الثالث،
     // وهي إشارةٌ ذات معنى لا خطأ يُلغى بالقيمة المطلقة.
@@ -668,7 +711,7 @@ export function analyse(input: {
     });
   };
 
-  const { Po, Or, Go, Me, Gn, Pog, ANS, U1T, U1A, L1T, L1A, U6, L6, Pn, PogS, LS, LI } = tracing;
+  const { Po, Or, Go, Me, Gn, Pog, ANS, U1T, U1A, L1T, L1A, U6, L6, Pn, PogS, LS, LI, Co } = tracing;
 
   // نمط النمو: كم ينحدر الفك السفلي عن قاعدة الجمجمة. المرتفع وجهٌ طويل مفتوح
   // العضّة، والمنخفض وجهٌ قصير عميق العضّة — ولكلٍّ علاجٌ مختلف.
@@ -841,6 +884,31 @@ export function analyse(input: {
   }
 
   /*
+   * نسبة McNamara للارتفاع الوجهي الأمامي السفلي — ANS-Me من N-Me.
+   *
+   * **وتُحسب بلا معايرة** كنسبة Jarabak: المقياس يسقط بالقسمة. والمستودع المصغّر
+   * يحوّل الطولين إلى مليمترات ثم يقسمهما، فتمتنع نسبتُه بلا معايرة بلا سبب —
+   * والنسبة لا تحتاج مليمترًا لتصحّ.
+   */
+  if (N && ANS && Me) {
+    const total = distanceBetween(N, Me, aspect);
+    const lower = distanceBetween(ANS, Me, aspect);
+    if (total > 0) {
+      const value = (lower / total) * 100;
+      measurements.push({
+        key: "LAFH", name: "LAFH %", unit: "ratio", value,
+        meaning: {
+          ar: "نسبة الارتفاع الوجهي الأمامي السفلي من الكلّي — يُقرأ مع النمط العمودي",
+          en: "Lower anterior facial height as a share of the total — read with the vertical pattern",
+        },
+        norm: NORMS.LAFH, verdict: verdictFor(value, NORMS.LAFH),
+        from: ["N", "ANS", "Me"],
+        analysis: "McNamara",
+      });
+    }
+  }
+
+  /*
    * القياسات الطولية — ولا واحد منها بلا معايرة.
    *
    * لا يُعرض الطول بالبكسل ولا بأيّ وحدةٍ أخرى حين تغيب المعايرة: رقمٌ بلا وحدة
@@ -935,6 +1003,81 @@ export function analyse(input: {
       }
     }
 
+    /*
+     * McNamara ١٩٨٤ — أطوالٌ فعلية لا زوايا.
+     *
+     * وفائدتها أنها تقول **كم** ينقص الفكّ لا «أهو خلفيّ»: ANB سويّةٌ على فكّين
+     * صغيرين معًا، وعلى فكّين كبيرين معًا — والزاوية لا تفرّق، والطول يفرّق.
+     * وعليها يُبنى قرار الجراحة الفكّية أو الانتظار للنموّ.
+     */
+    if (Co && A) {
+      mm({
+        key: "Co-A", name: "Co-A", norm: NORMS.MAX_LEN, from: ["Co", "A"],
+        analysis: "McNamara",
+        meaning: { ar: "الطول الفعلي للفك العلوي", en: "Effective maxillary length" },
+        value: distanceBetween(Co, A, aspect),
+      });
+    }
+
+    if (Co && Gn) {
+      mm({
+        key: "Co-Gn", name: "Co-Gn", norm: NORMS.MAND_LEN, from: ["Co", "Gn"],
+        analysis: "McNamara",
+        meaning: { ar: "الطول الفعلي للفك السفلي", en: "Effective mandibular length" },
+        value: distanceBetween(Co, Gn, aspect),
+      });
+    }
+
+    if (Co && A && Gn) {
+      mm({
+        key: "MM-diff", name: "Co-Gn − Co-A", norm: NORMS.MM_DIFF, from: ["Co", "A", "Gn"],
+        analysis: "McNamara",
+        meaning: {
+          ar: "الفرق الفعلي بين الفكّين — يُقرأ مع الطولين لا وحده",
+          en: "Maxillomandibular differential — read with both lengths, not alone",
+        },
+        value: distanceBetween(Co, Gn, aspect) - distanceBetween(Co, A, aspect),
+      });
+    }
+
+    /*
+     * عمود N على مستوى فرانكفورت — وموجبُه الأمام.
+     *
+     * **والاتجاه من التشريح لا من محور الصورة**: تُبنى نقطةٌ على العمود ثم يُقاس
+     * الجانب بالنسبة إلى Po، وPo خلفيّةٌ بالتعريف — فالجهة المقابلة لها هي الأمام
+     * على الصورة اليمينية واليسارية معًا.
+     *
+     * وهذا بالضبط ما رأيتُه معطوبًا في المستودع المصغّر: دالّته تثبّت الإشارة على
+     * محور الصورة، فتخرج قياساتُه معكوسةً على كل أشعّةٍ يواجه فيها الوجه اليسار.
+     */
+    if (N && Po && Or) {
+      const fh = { x: (Or.x - Po.x) * aspect, y: -(Or.y - Po.y) };
+      const span = Math.hypot(fh.x, fh.y);
+      if (span > 0) {
+        // عمودٌ على فرانكفورت مارٌّ بـN — نقطةٌ ثانية عليه تكفي لتعريف الخط.
+        const anchor: TracedPoint = {
+          x: N.x + (-fh.y / span) * 0.2 / aspect,
+          y: N.y - (fh.x / span) * 0.2,
+        };
+        if (A) {
+          mm({
+            key: "A-NPerp", name: "A–N⊥", norm: NORMS.A_NPERP, from: ["N", "Po", "Or", "A"],
+            analysis: "McNamara",
+            meaning: { ar: "بُعد A عن عمود N — الموجب أمامه", en: "A to N-perpendicular — positive is anterior" },
+            value: offsetFromLine(A, N, anchor, Po, aspect),
+          });
+        }
+        if (Pog) {
+          mm({
+            key: "Pog-NPerp", name: "Pog–N⊥", norm: NORMS.POG_NPERP, from: ["N", "Po", "Or", "Pog"],
+            analysis: "McNamara",
+            meaning: { ar: "بُعد الذقن عن عمود N — الموجب أمامه", en: "Pog to N-perpendicular — positive is anterior" },
+            value: offsetFromLine(Pog, N, anchor, Po, aspect),
+          });
+        }
+      }
+    }
+
     // الارتفاعات: تُعرض بلا حكم — معيارها يختلف بالعمر والجنس، ولا معيار واحد لها.
     if (N && Me) {
       mm({
@@ -1020,6 +1163,13 @@ export const NORM_LABEL: Record<string, { name: string; unit: Unit; meaning: Bil
   AB_PLANE: { name: "A-B plane", unit: "deg", meaning: { ar: "القاعدتان مع المستوى الوجهي", en: "Apical bases to the facial plane" } },
   E_LINE_UPPER: { name: "E-line · LS", unit: "mm", meaning: { ar: "الشفة العليا عن الخط الجمالي", en: "Upper lip to the aesthetic line" } },
   E_LINE_LOWER: { name: "E-line · LI", unit: "mm", meaning: { ar: "الشفة السفلى عن الخط الجمالي", en: "Lower lip to the aesthetic line" } },
+  SND: { name: "SND", unit: "deg", meaning: { ar: "موضع وسط الارتفاق", en: "Symphysis midpoint position" } },
+  MAX_LEN: { name: "Co-A", unit: "mm", meaning: { ar: "الطول الفعلي للفك العلوي", en: "Effective maxillary length" } },
+  MAND_LEN: { name: "Co-Gn", unit: "mm", meaning: { ar: "الطول الفعلي للفك السفلي", en: "Effective mandibular length" } },
+  MM_DIFF: { name: "Co-Gn − Co-A", unit: "mm", meaning: { ar: "الفرق الفعلي بين الفكّين", en: "Maxillomandibular differential" } },
+  A_NPERP: { name: "A–N⊥", unit: "mm", meaning: { ar: "بُعد A عن عمود N", en: "A to N-perpendicular" } },
+  POG_NPERP: { name: "Pog–N⊥", unit: "mm", meaning: { ar: "بُعد الذقن عن عمود N", en: "Pog to N-perpendicular" } },
+  LAFH: { name: "LAFH %", unit: "ratio", meaning: { ar: "نسبة الارتفاع الوجهي الأمامي السفلي", en: "Lower anterior facial height ratio" } },
 };
 
 
