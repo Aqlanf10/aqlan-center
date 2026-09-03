@@ -22,6 +22,8 @@ import {
   ADULT_AGE,
   ageFromBirthYear,
   applicableNorm,
+  analysisFromSource,
+  groupByAnalysis,
   type Tracing,
 } from "../lib/ceph";
 
@@ -900,5 +902,144 @@ describe("العمر من سنة الميلاد", () => {
     expect(ageFromBirthYear(2030, "2026-09-03")).toBeNull();
     expect(ageFromBirthYear(1800, "2026-09-03")).toBeNull();
     expect(ageFromBirthYear(2008.5, "2026-09-03")).toBeNull();
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * اسم التحليل من معياره
+ *
+ * وكانت ثمانيةٌ من ثلاثةٍ وثلاثين مسمّاة، والباقي — ومنه SNA وSNB وANB وFMA
+ * وIMPA — يخرج في مجموعةٍ بلا عنوان. فيقرأ الطبيب Steiner متفرّقًا بين
+ * مجموعتين، لا مجموعةً كما في مراجعه.
+ *
+ * والقاعدة أنّ **التحليل صاحبُ المعيار الذي يُحكم به**، فلا يُكتب الاسم مرّةً
+ * ثانية بيدٍ قد تخالف المعيار الذي تحته.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("اسم التحليل يُشتقّ من مرجع معياره", () => {
+  const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+  const find = (key: string) => all.find((item) => item.key === key);
+
+  it("فكلّ قياسٍ له معيارٌ له اسمُ تحليل — بلا استثناء", () => {
+    const orphans = all.filter((item) => item.norm && !item.analysis).map((item) => item.key);
+    expect(orphans, orphans.join(" · ")).toEqual([]);
+  });
+
+  it("وما لا معيار له يبقى بلا اسم — ولا يُلحق بتحليلٍ لا يحكمه", () => {
+    // الارتفاعات الوجهية الخام: تُقرأ ولا تُصنَّف، فنسبتُها إلى تحليلٍ ادّعاء.
+    for (const key of ["N-Me", "ANS-Me", "S-Go"]) {
+      const item = find(key);
+      expect(item, key).toBeDefined();
+      expect(item!.norm, key).toBeNull();
+      expect(item!.analysis, key).toBeUndefined();
+    }
+  });
+
+  it("وينتقل الاسم إلى صاحبه: Steiner وTweed وDowns", () => {
+    for (const key of ["SNA", "SNB", "ANB", "SN-GoGn", "U1-SN", "U1-NA", "L1-NB"]) {
+      expect(find(key)?.analysis, key).toBe("Steiner");
+    }
+    for (const key of ["FMA", "IMPA", "FMIA"]) {
+      expect(find(key)?.analysis, key).toBe("Tweed");
+    }
+    for (const key of ["U1-L1", "Y-Axis", "Facial"]) {
+      expect(find(key)?.analysis, key).toBe("Downs");
+    }
+  });
+
+  it("**والاسم يوافق المعيار الذي تحته** — لا يخالفه", () => {
+    // وهذا جوهر القاعدة: مجموعةٌ باسم تحليلٍ وحدودُها من جداول غيره تُقرأ خطأً.
+    for (const item of all) {
+      if (!item.norm || !item.analysis) continue;
+      const fromNorm = analysisFromSource(item.norm.source);
+      // الاسم الصريح يغلب المشتقّ (Wits من Jacobson) — وما عداه يجب أن يتطابق.
+      if (item.key === "Wits") continue;
+      expect(item.analysis, `${item.key} · ${item.norm.source}`).toBe(fromNorm);
+    }
+  });
+
+  it("والاسم الصريح يغلب المشتقّ", () => {
+    expect(find("Wits")?.analysis).toBe("Wits");
+    expect(find("Wits")?.norm?.source).toContain("Jacobson");
+  });
+
+  it("وقياسُ بالغين يحتفظ باسمه وإن حُجب حكمُه عن طفل", () => {
+    // بلا هذا يفقد Co-A عنوانه على ورقة طفلٍ فيسقط من مجموعة McNamara.
+    const child = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 9 })
+      .measurements.find((item) => item.key === "Co-A");
+    expect(child?.norm).toBeNull();
+    expect(child?.analysis).toBe("McNamara");
+  });
+
+  it("والسنة وما بعد الفاصلة يُقطعان من المرجع", () => {
+    expect(analysisFromSource("Steiner")).toBe("Steiner");
+    expect(analysisFromSource("Downs 1948")).toBe("Downs");
+    expect(analysisFromSource("Tweed 1954")).toBe("Tweed");
+    expect(analysisFromSource("Jacobson 1975 · ♂ 1±2 · ♀ 0±2")).toBe("Jacobson");
+    expect(analysisFromSource("McNamara 1984 · بالغون")).toBe("McNamara");
+    expect(analysisFromSource("  ")).toBeNull();
+    expect(analysisFromSource("· شيء")).toBeNull();
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * التجميع بالتحاليل
+ *
+ * والقياسات تُبنى بترتيبٍ حسابيّ لا بترتيب التحاليل: Steiner ثم Tweed ثم
+ * Steiner ثانيةً عند `U1-SN`. فعارضٌ يكتب عنوانًا كلّما تغيّر الاسم عن سابقه
+ * يكتب «Steiner» مرّتين أو ثلاثًا — وهو نقيض الغرض من التسمية.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("التجميع بالتحاليل — كلُّ تحليلٍ مرّةً واحدة", () => {
+  it("يجمع المتفرّق ولا يكرّر عنوانًا", () => {
+    const scattered = [
+      { key: "a", analysis: "Steiner" },
+      { key: "b", analysis: "Tweed" },
+      { key: "c", analysis: "Steiner" },
+      { key: "d", analysis: "Downs" },
+      { key: "e", analysis: "Tweed" },
+    ];
+    const groups = groupByAnalysis(scattered);
+    expect(groups.map((g) => g.analysis)).toEqual(["Steiner", "Tweed", "Downs"]);
+    expect(groups[0].items.map((i) => i.key)).toEqual(["a", "c"]);
+    expect(groups[1].items.map((i) => i.key)).toEqual(["b", "e"]);
+  });
+
+  it("وما لا اسم له مجموعةٌ واحدة بلا عنوان", () => {
+    const groups = groupByAnalysis([
+      { key: "a", analysis: "Steiner" }, { key: "b" }, { key: "c", analysis: null }, { key: "d" },
+    ]);
+    const bare = groups.find((g) => g.analysis === null);
+    expect(bare?.items.map((i) => i.key)).toEqual(["b", "c", "d"]);
+  });
+
+  it("ولا يُفقد قياسٌ ولا يُكرَّر", () => {
+    const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+    const grouped = groupByAnalysis(all).flatMap((g) => g.items);
+    expect(grouped).toHaveLength(all.length);
+    expect(new Set(grouped.map((i) => i.key)).size).toBe(all.length);
+  });
+
+  it("**والتحليل الواحد لا يظهر في مجموعتين** — على قياساتٍ حقيقية", () => {
+    // وهذا هو العطب بعينه: الترتيب الحسابيّ يعود إلى Steiner بعد Tweed.
+    const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+    const names = groupByAnalysis(all).map((g) => g.analysis);
+    expect(names.length).toBe(new Set(names).size);
+    expect(names).toContain("Steiner");
+    // ويُثبَت أنّ المصدر متفرّقٌ فعلًا، وإلّا كان الفحص يمرّ بالصدفة.
+    const raw = all.map((item) => item.analysis ?? null);
+    const collapsed = raw.filter((name, index) => name !== raw[index - 1]);
+    expect(collapsed.length, collapsed.join(" · ")).toBeGreaterThan(new Set(raw).size);
+  });
+
+  it("وترتيب المجموعات بأوّل ظهور، وترتيب القياسات كما بُنيت", () => {
+    const all = analyse({ tracing: FACE_MCN, calibration: CAL, ageYears: 30 }).measurements;
+    const groups = groupByAnalysis(all);
+    expect(groups[0].analysis).toBe(all[0].analysis ?? null);
+    const steiner = groups.find((g) => g.analysis === "Steiner")!;
+    const inOrder = all.filter((item) => item.analysis === "Steiner").map((item) => item.key);
+    expect(steiner.items.map((item) => item.key)).toEqual(inOrder);
   });
 });

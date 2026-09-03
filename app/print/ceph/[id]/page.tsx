@@ -5,7 +5,7 @@ import {
 import { STUDY_PHASE_TEXT, STUDY_STATUS_TEXT } from "@/lib/cephStudy";
 import {
   LANDMARKS, LANDMARK_MANUAL, SEVERITY_LABEL, SKELETAL_LABEL, VERTICAL_LABEL,
-  formatMeasurement, referenceLines, say, severityOf, zScore,
+  ageFromBirthYear, formatMeasurement, groupByAnalysis, referenceLines, say, severityOf, zScore,
   type Lang,
 } from "@/lib/ceph";
 import { dateLong } from "@/lib/reminders";
@@ -130,14 +130,27 @@ export default async function CephReportPage({
     },
   };
 
-  const age = patient.birthYear && document.takenOn
-    ? Number(document.takenOn.slice(0, 4)) - patient.birthYear : null;
+  /*
+   * العمر من الدالّة نفسها التي تحجب معايير البالغين — لا حسابٌ ثانٍ هنا.
+   *
+   * وحسابان لعمرٍ واحد يفترقان: هذا كان يقبل سنةَ ميلادٍ بعد تاريخ الأشعّة
+   * فيطبع عمرًا سالبًا، وذاك يردّها. والورقة تقول عمرًا والتحليل يحجب حكمه
+   * بعمرٍ غيره — ولا يُعرف أيّهما الصحيح إلّا بعد أن يُبنى على الخطأ.
+   */
+  const age = ageFromBirthYear(patient.birthYear, document.takenOn);
   const sexLabel = patient.gender === "male" ? (rtl ? "ذكر" : "Male")
     : patient.gender === "female" ? (rtl ? "أنثى" : "Female")
     : (rtl ? "غير محدد" : "Unspecified");
 
-  const judged = analysis.measurements;
-  const groups = [...new Set(judged.map((item) => item.analysis ?? ""))];
+  /*
+   * التجميع من `groupByAnalysis` لا بنسخةٍ محلّية.
+   *
+   * وكان هنا تجميعٌ ثانٍ مكتوبٌ بيده، وثالثٌ في الشاشة يكتب عنوانًا كلّما
+   * تغيّر الاسم عن سابقه. وثلاثةُ تجميعاتٍ لقائمةٍ واحدة تفترق: الشاشة كانت
+   * تكرّر «Steiner» ثلاث مرّات والورقة تجمعه مرّة، فيقرأ الطبيب رقمًا في
+   * مكانٍ ويبحث عنه في الآخر.
+   */
+  const groups = groupByAnalysis(analysis.measurements);
 
   return (
     <main className="print-root" dir={rtl ? "rtl" : "ltr"}>
@@ -247,12 +260,12 @@ export default async function CephReportPage({
           <tbody>
             {groups.map((group) => (
               <>
-                {group ? (
-                  <tr key={`head-${group}`}>
-                    <td colSpan={5} className="group-head" dir="ltr">{group}</td>
+                {group.analysis ? (
+                  <tr key={`head-${group.analysis}`}>
+                    <td colSpan={5} className="group-head" dir="ltr">{group.analysis}</td>
                   </tr>
                 ) : null}
-                {judged.filter((item) => (item.analysis ?? "") === group).map((item) => {
+                {group.items.map((item) => {
                   const z = zScore(item.value, item.norm);
                   const severity = severityOf(z);
                   return (
