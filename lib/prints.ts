@@ -1,3 +1,5 @@
+import { canHandleMoney, canTreat } from "./roles";
+
 /**
  * أنواع المستندات التي تُسجَّل طبعاتها — في مكانٍ واحد.
  *
@@ -6,7 +8,7 @@
  * ترسله الشاشة. والتسجيل هو ما يجعل «نسخة معاد طباعتها» تظهر على الورقة الثانية.
  */
 export const PRINTABLE_DOCS =
-  ["receipt", "invoice", "voucher", "statement", "ceph", "ceph-compare"] as const;
+  ["receipt", "invoice", "voucher", "statement", "ceph", "ceph-compare", "prescription"] as const;
 
 export type PrintableDoc = (typeof PRINTABLE_DOCS)[number];
 
@@ -31,6 +33,7 @@ export const PRINT_AUDIENCE: Record<PrintableDoc, PrintAudience> = {
   statement: "money",
   ceph: "clinical",
   "ceph-compare": "clinical",
+  prescription: "clinical",
 };
 
 /**
@@ -41,6 +44,5 @@ export const PRINT_AUDIENCE: Record<PrintableDoc, PrintAudience> = {
  * يُسجَّل — وهو ما كان.
  */
 export function canPrintDoc(role: string | undefined | null, doc: PrintableDoc): boolean {
-  if (PRINT_AUDIENCE[doc] === "clinical") return role === "admin" || role === "doctor";
-  return role === "admin" || role === "reception";
+  return PRINT_AUDIENCE[doc] === "clinical" ? canTreat(role) : canHandleMoney(role);
 }

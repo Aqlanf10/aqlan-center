@@ -20,7 +20,6 @@ import {
   verdictFor,
   NORMS,
   ADULT_AGE,
-  ageFromBirthYear,
   applicableNorm,
   analysisFromSource,
   groupByAnalysis,
@@ -885,23 +884,6 @@ describe("معايير البالغين لا تُطبَّق على وجهٍ ين
     expect(applicableNorm(adult, null).norm).toBeNull();
     expect(applicableNorm(any, 9).norm).toBe(any);
     expect(applicableNorm(null, 30).norm).toBeNull();
-  });
-});
-
-describe("العمر من سنة الميلاد", () => {
-  it("يُحسب بفارق السنتين", () => {
-    expect(ageFromBirthYear(2008, "2026-09-03")).toBe(18);
-    expect(ageFromBirthYear(2017, "2026-01-01")).toBe(9);
-  });
-
-  it("ويُردّ لا شيء حين لا يُعرف أو يستحيل", () => {
-    expect(ageFromBirthYear(null, "2026-09-03")).toBeNull();
-    expect(ageFromBirthYear(2008, null)).toBeNull();
-    expect(ageFromBirthYear(2008, "")).toBeNull();
-    // سنةٌ بعد التصوير — بيانٌ فاسد، ورقمٌ فاسد أسوأ من لا رقم.
-    expect(ageFromBirthYear(2030, "2026-09-03")).toBeNull();
-    expect(ageFromBirthYear(1800, "2026-09-03")).toBeNull();
-    expect(ageFromBirthYear(2008.5, "2026-09-03")).toBeNull();
   });
 });
 

@@ -12,6 +12,7 @@ import { shortMinutes } from "@/lib/report";
 import { DentalChart } from "@/components/DentalChart";
 import { PatientDocuments } from "@/components/PatientDocuments";
 import { CephStudies } from "@/components/CephStudies";
+import { Prescriptions } from "@/components/Prescriptions";
 import { PatientIntake } from "@/components/PatientIntake";
 import { PatientOrtho } from "@/components/PatientOrtho";
 
@@ -38,7 +39,7 @@ function dateOnly(iso: string): string {
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 }
 
-type Tab = "overview" | "chart" | "ortho" | "ceph" | "plans" | "documents" | "ledger" | "appointments" | "visits";
+type Tab = "overview" | "chart" | "ortho" | "ceph" | "plans" | "rx" | "documents" | "ledger" | "appointments" | "visits";
 
 /** التبويبات بترتيبها — مصدرٌ واحد للأزرار ولقراءة التبويب من الرابط. */
 const TABS: [Tab, string][] = [
@@ -48,6 +49,8 @@ const TABS: [Tab, string][] = [
   // بعد التقويم مباشرةً: الدراسة تخدم حالةً، وقراءتُها بعيدةً عنها تفصل السببَ عن أثره.
   ["ceph", "السيفالو"],
   ["plans", "خطة العلاج"],
+  // بعد الخطة: الوصفة تخرج من الزيارة التي تنفّذها، وقبل الأشعة والحساب.
+  ["rx", "الوصفات"],
   ["documents", "الأشعة"],
   ["ledger", "الحساب"],
   ["appointments", "المواعيد"],
@@ -207,6 +210,8 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
         <CephStudies patientId={patient.id} />
       ) : tab === "plans" ? (
         <PatientPlans patientId={patient.id} />
+      ) : tab === "rx" ? (
+        <Prescriptions patientId={patient.id} />
       ) : tab === "documents" ? (
         <PatientDocuments patientId={patient.id} />
       ) : tab === "ledger" ? (
