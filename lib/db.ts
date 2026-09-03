@@ -465,6 +465,16 @@ export function ensureSchema(): Promise<void> {
         ON patient_documents (patient_id, uploaded_at DESC);
       CREATE INDEX IF NOT EXISTS patient_documents_visit_idx ON patient_documents (visit_id);
 
+      -- أبعاد الصورة بالبكسل.
+      --
+      -- ولم تكن محفوظة، ومعالمُ التتبّع كسورٌ من العرض والارتفاع — فنسبةُ الصورة
+      -- تدخل حساب الزاوية. الشاشة تعرفها لأن المتصفّح حمّل الصورة؛ والخادم لم
+      -- يكن يعرفها، فكان **تقرير الطباعة يحسب على نسبة ١**. وعلى أشعّةٍ ٤:٥ تُقاس
+      -- FMA ٣٦٫٠° على الشاشة و٢٩٫٤° على الورقة — وستّ درجاتٍ ونصف هي الفرق بين
+      -- نمطٍ عمودي مرتفع ونمطٍ سويّ، وعليها يُقرَّر القلع والتثبيت.
+      ALTER TABLE patient_documents ADD COLUMN IF NOT EXISTS image_width INTEGER;
+      ALTER TABLE patient_documents ADD COLUMN IF NOT EXISTS image_height INTEGER;
+
       -- حالة التقويم: علاجٌ يمتدّ سنتين لا زيارةً واحدة.
       -- والفرق الحاكم أن السؤال ليس «ماذا عُمل اليوم» بل «أين نحن من الخطة»: في أيّ
       -- مرحلة، وعلى أيّ سلك، وكم مضى وكم بقي.
@@ -5875,6 +5885,9 @@ export interface PatientDocument {
   removedAt: string | null;
   removedBy: string | null;
   removedNote: string | null;
+  /** بالبكسل — تدخل نسبتُها في حساب كل زاوية سيفالومترية. `null` لما لا يُقرأ. */
+  imageWidth: number | null;
+  imageHeight: number | null;
 }
 
 interface DocumentRow {
@@ -5882,6 +5895,7 @@ interface DocumentRow {
   mime_type: string; size_bytes: string; note: string | null; taken_on: Date | null;
   uploaded_by: string; uploaded_at: Date; removed_at: Date | null;
   removed_by: string | null; removed_note: string | null;
+  image_width: number | null; image_height: number | null;
 }
 
 const toDocument = (row: DocumentRow): PatientDocument => ({
@@ -5900,10 +5914,13 @@ const toDocument = (row: DocumentRow): PatientDocument => ({
   removedAt: row.removed_at ? row.removed_at.toISOString() : null,
   removedBy: row.removed_by,
   removedNote: row.removed_note,
+  imageWidth: row.image_width ?? null,
+  imageHeight: row.image_height ?? null,
 });
 
 const DOCUMENT_COLUMNS = `id, patient_id, visit_id, kind, title, mime_type, size_bytes,
-       note, taken_on, uploaded_by, uploaded_at, removed_at, removed_by, removed_note`;
+       note, taken_on, uploaded_by, uploaded_at, removed_at, removed_by, removed_note,
+       image_width, image_height`;
 
 /**
  * ملفّات المريض.
@@ -5960,21 +5977,41 @@ export async function recordDocument(input: {
   note: string | null;
   takenOn: string | null;
   uploadedBy: string;
+  /** من ترويسة الملف. الغياب مقبول: مستندٌ PDF لا أبعادَ صورةٍ له. */
+  imageWidth?: number | null;
+  imageHeight?: number | null;
 }): Promise<PatientDocument> {
   await ensureSchema();
   const { rows } = await getPool().query<DocumentRow>(
     `INSERT INTO patient_documents
        (patient_id, visit_id, kind, title, mime_type, size_bytes, sha256, storage_key,
-        note, taken_on, uploaded_by)
-     VALUES ($1, $2::int, $3, $4, $5, $6, $7, $8, $9::text, $10::date, $11)
+        note, taken_on, uploaded_by, image_width, image_height)
+     VALUES ($1, $2::int, $3, $4, $5, $6, $7, $8, $9::text, $10::date, $11, $12::int, $13::int)
      RETURNING ${DOCUMENT_COLUMNS}`,
     [
       input.patientId, input.visitId, input.kind, input.title.trim(), input.mimeType,
       input.sizeBytes, input.sha256, input.storageKey,
       input.note?.trim() || null, input.takenOn, input.uploadedBy,
+      input.imageWidth ?? null, input.imageHeight ?? null,
     ],
   );
   return toDocument(rows[0]);
+}
+
+/**
+ * أبعاد صورةٍ سُجّلت قبل أن تُحفظ الأبعاد — تُملأ مرّةً من ترويسة الملف.
+ *
+ * ولا تُكتب فوق قيمةٍ موجودة: الملء علاجٌ للماضي لا مصدرٌ ثانٍ للحقيقة.
+ */
+export async function backfillDocumentSize(input: {
+  id: number; width: number; height: number;
+}): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE patient_documents SET image_width = $2, image_height = $3
+      WHERE id = $1 AND (image_width IS NULL OR image_height IS NULL)`,
+    [input.id, input.width, input.height],
+  );
 }
 
 /**
@@ -6712,9 +6749,12 @@ export async function getCephTracing(documentId: number, aspect?: number): Promi
   await ensureSchema();
   // جنس المريض يدخل اختيار المعيار — ومعيار Wits ذكورًا غيرُه إناثًا بمليمتر،
   // ومليمترٌ هنا يقلب حكمًا. فيُقرأ من ملفّه لا يُسأل عنه الطبيب من جديد.
-  const { rows } = await getPool().query<{ gender: string }>(
-    `SELECT p.gender FROM ceph_tracings t
+  const { rows } = await getPool().query<{
+    gender: string; image_width: number | null; image_height: number | null;
+  }>(
+    `SELECT p.gender, d.image_width, d.image_height FROM ceph_tracings t
        JOIN patients p ON p.id = t.patient_id
+       JOIN patient_documents d ON d.id = t.document_id
       WHERE t.document_id = $1`,
     [documentId],
   );
@@ -6722,7 +6762,18 @@ export async function getCephTracing(documentId: number, aspect?: number): Promi
     getPool().query(`SELECT ${TRACING_COLUMNS} FROM ceph_tracings WHERE document_id = $1`, [documentId]),
     referenceNorms(rows[0]?.gender ?? null),
   ]);
-  return tracings[0] ? toTracing({ ...tracings[0], aspect, norms }) : null;
+  /*
+   * النسبة من المتصفّح إن أرسلها، وإلّا من أبعاد الصورة المحفوظة.
+   *
+   * والشاشة ترسلها لأنها حمّلت الصورة؛ **وصفحة الطباعة لا ترسلها** — فكانت
+   * تُحسب على ١ فتخرج على الورقة زوايا غير التي على الشاشة. والاحتياطُ هنا هو
+   * ما يجعل الرقمين واحدًا: مصدرٌ واحد للنسبة مهما كان المستدعي.
+   */
+  const stored = aspectOf({
+    width: rows[0]?.image_width ?? null, height: rows[0]?.image_height ?? null,
+  });
+  const effective = aspect && aspect > 0 ? aspect : stored;
+  return tracings[0] ? toTracing({ ...tracings[0], aspect: effective, norms }) : null;
 }
 
 /** جنس صاحب الصورة — تختاره الشاشة به معيارها كما يختاره الخادم. */
@@ -7426,6 +7477,7 @@ export async function staffMessageVoice(
 
 // ─── الدراسة السيفالومترية ───────────────────────────────────────────────────
 
+import { aspectOf } from "./imageSize";
 import {
   checkApproval, canTransition, isStudyPhase, nextRevision, tracingFingerprint,
   transitionRefusal, type StudyPhase, type StudyStatus,
@@ -7463,11 +7515,18 @@ const STUDY_SELECT = `
          d.title AS document_title, s.ortho_case_id, s.phase, s.status, s.revision,
          s.title, s.taken_on, s.note, s.snapshot_points, s.snapshot_calibration,
          s.approved_by, s.approved_at, s.created_by, s.created_at,
+         d.image_width, d.image_height,
          t.points AS live_points, t.calibration AS live_calibration
     FROM ceph_studies s
     JOIN patients p ON p.id = s.patient_id
     JOIN patient_documents d ON d.id = s.document_id
     LEFT JOIN ceph_tracings t ON t.document_id = s.document_id`;
+
+/** النسبة التي تُحسب بها زوايا الدراسة — من أبعاد أشعّتها المحفوظة. */
+const studyAspect = (row: Record<string, unknown>): number => aspectOf({
+  width: (row.image_width as number | null) ?? null,
+  height: (row.image_height as number | null) ?? null,
+});
 
 function toStudy(row: Record<string, unknown>): CephStudy {
   const approved = row.status === "approved" || row.status === "archived";
@@ -7542,7 +7601,10 @@ export async function cephStudyAnalysis(id: number): Promise<
   const frozen = study.status !== "draft" && row.snapshot_points;
   const points = sanitizeTracing(frozen ? row.snapshot_points : row.live_points);
   const calibration = sanitizeCalibration(frozen ? row.snapshot_calibration : row.live_calibration);
-  return { study, points, calibration, analysis: analyse({ tracing: points, calibration, norms }) };
+  return {
+    study, points, calibration,
+    analysis: analyse({ tracing: points, calibration, norms, aspect: studyAspect(row) }),
+  };
 }
 
 /**

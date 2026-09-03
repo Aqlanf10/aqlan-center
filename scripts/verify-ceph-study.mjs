@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makePng } from "./journeys/png.mjs";
 
 /**
  * هل الدراسة السيفالومترية وثيقةٌ يُعتمد عليها؟
@@ -226,6 +227,58 @@ try {
     `${caseStudies.length} دراسة`);
   check("ولا تُرى فيها دراسةُ حالةٍ أخرى",
     (await db.listCaseStudies(strangerCase.id)).length === 0);
+
+  console.log("\n  ── نسبةُ الأشعّة تدخل الحساب: الورقة تقول ما تقوله الشاشة ──");
+
+  /*
+   * أخطرُ ما في هذا الملف.
+   *
+   * المعالم كسورٌ من العرض والارتفاع، فنسبةُ الصورة تدخل حساب الزاوية. والشاشة
+   * تعرفها لأن المتصفّح حمّل الصورة؛ **وصفحة الطباعة لا ترسلها** — فكانت تُحسب
+   * على ١. وعلى أشعّةٍ ٤:٥ تُقاس FMA ‏٣٦٫٠° على الشاشة و‏٢٩٫٤° على الورقة، وستّ
+   * درجاتٍ ونصف هي الفرق بين نمطٍ عمودي مرتفع ونمطٍ سويّ.
+   *
+   * والفحص القديم كان يمرّ **بالصدفة**: صورته مربّعة فالنسبة ١ فيتطابق الرقمان.
+   * فالصورة هنا ٢٠٠٠×٢٥٠٠ عمدًا.
+   */
+  const tall = makePng(200, 250);
+  const tallStored = await files.putFile(tall, "png");
+  const tallXray = await db.recordDocument({
+    patientId: patient.id, visitId: null, kind: "xray", title: "أشعّة غير مربّعة",
+    mimeType: "image/png", sizeBytes: tallStored.sizeBytes, sha256: tallStored.sha256,
+    storageKey: tallStored.key, note: null, takenOn: "2026-09-01", uploadedBy: "فحص",
+    imageWidth: 200, imageHeight: 250,
+  });
+  await db.saveCephTracing({
+    documentId: tallXray.id, points: NORMAL, calibration: null, note: null, actor: "فحص",
+  });
+
+  const onScreen = await db.getCephTracing(tallXray.id, 200 / 250);
+  const onPaper = await db.getCephTracing(tallXray.id);
+  const pick = (reading, key) => reading.analysis.measurements.find((m) => m.key === key).value;
+
+  check("النسبة المحفوظة تُقرأ من الملف", tallXray.imageWidth === 200 && tallXray.imageHeight === 250,
+    `${tallXray.imageWidth}×${tallXray.imageHeight}`);
+  for (const key of ["SNA", "SNB", "ANB", "FMA"]) {
+    check(`${key}: الورقة تقول ما تقوله الشاشة`,
+      Math.abs(pick(onPaper, key) - pick(onScreen, key)) < 0.001,
+      `${pick(onScreen, key).toFixed(2)} = ${pick(onPaper, key).toFixed(2)}`);
+  }
+
+  const asSquare = await db.getCephTracing(tallXray.id, 1);
+  check("ولولا النسبة لاختلفتا — وهذا هو العطل الذي أُصلح",
+    Math.abs(pick(asSquare, "FMA") - pick(onPaper, "FMA")) > 3,
+    `مربّعة ${pick(asSquare, "FMA").toFixed(2)}° مقابل ${pick(onPaper, "FMA").toFixed(2)}°`);
+
+  const tallStudy = await db.createCephStudy({
+    documentId: tallXray.id, phase: "post", orthoCaseId: null,
+    title: null, takenOn: null, note: null, actor: "فحص",
+  });
+  await db.approveCephStudy({ id: tallStudy.id, actor: "د. عقلان" });
+  const tallAnalysis = await db.cephStudyAnalysis(tallStudy.id);
+  const studyFma = tallAnalysis.analysis.measurements.find((m) => m.key === "FMA").value;
+  check("ولقطةُ الدراسة تُحسب بالنسبة نفسها",
+    Math.abs(studyFma - pick(onScreen, "FMA")) < 0.001, studyFma.toFixed(2));
 
   console.log("\n  ── دراسةٌ ناقصة لا تُعتمد ──");
 

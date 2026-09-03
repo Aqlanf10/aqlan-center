@@ -156,6 +156,57 @@ try {
   say("والأولى باقيةٌ معتمدة — الإصدارات تتراكم ولا تُستبدل",
     both.includes("إصدار 1") && both.includes("معتمدة"));
 
+  /*
+   * ٧) الورقة تقول ما تقوله الشاشة — على أشعّةٍ **غير مربّعة**.
+   *
+   * وهذا ما كان يفوت: المعالم كسورٌ من العرض والارتفاع، فالنسبة تدخل حساب
+   * الزاوية. الشاشة تعرفها لأن المتصفّح حمّل الصورة؛ وصفحة الطباعة لا ترسلها،
+   * فكانت تُحسب على ١. **ورحلةُ السيفالو ترفع صورةً مربّعة فتتطابق بالصدفة.**
+   */
+  console.log("7) الورقة تقول ما تقوله الشاشة — على أشعّة 4:5");
+  await page.getByRole("button", { name: "الأشعة" }).click().catch(() => {});
+  await page.goto(`${BASE}/patients/${patientId}?tab=documents`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1500);
+  await type(page.getByLabel("وصف المستند"), "أشعّة غير مربّعة");
+  await page.getByLabel("ملف الأشعة").setInputFiles({
+    name: "tall.png", mimeType: "image/png", buffer: makePng(200, 250),
+  });
+  await page.getByRole("button", { name: "ارفع" }).click();
+  await page.waitForTimeout(3500);
+
+  const tall = await page.evaluate(async ([id, points]) => {
+    const list = await (await fetch(`/api/patients/${id}/documents`)).json();
+    const image = list.documents.find((row) => row.title === "أشعّة غير مربّعة" && !row.removedAt);
+    await fetch(`/api/documents/${image.id}/tracing`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ points, calibration: null, note: null }),
+    });
+    // الشاشة ترسل النسبة الحقيقية؛ والورقة لا ترسل شيئًا.
+    const screen = await (await fetch(`/api/documents/${image.id}/tracing?aspect=${200 / 250}`)).json();
+    const paper = await (await fetch(`/api/documents/${image.id}/tracing`)).json();
+    const read = (body, key) =>
+      (body.tracing ?? body).analysis.measurements.find((m) => m.key === key).value;
+    return {
+      id: image.id,
+      width: image.imageWidth, height: image.imageHeight,
+      screenFma: read(screen, "FMA"), paperFma: read(paper, "FMA"),
+    };
+  }, [patientId, NORMAL]);
+
+  say("أبعاد الصورة حُفظت وقت الرفع", tall.width === 200 && tall.height === 250,
+    `${tall.width}×${tall.height}`);
+  say("والخادم يحسب بها ولو لم تُرسَل النسبة",
+    Math.abs(tall.screenFma - tall.paperFma) < 0.001,
+    `FMA ${tall.screenFma.toFixed(2)} = ${tall.paperFma.toFixed(2)}`);
+
+  const printed = await page.evaluate(async (id) => {
+    const html = await (await fetch(`/print/ceph/${id}`)).text();
+    return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  }, tall.id);
+  say("والورقة المطبوعة نفسها تحمل الرقم نفسه",
+    printed.includes(tall.screenFma.toFixed(1)),
+    `تبحث عن ${tall.screenFma.toFixed(1)}`);
+
   console.log(failed ? "\nسقطت الرحلة." : "\nرحلة الدراسة اكتملت.");
 } finally {
   await context.close();
