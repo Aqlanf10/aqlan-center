@@ -7588,7 +7588,10 @@ export async function getCephStudy(id: number): Promise<CephStudy | null> {
  * ولو قُرئت المعتمدة من الحيّ لتغيّرت أرقامُ وثيقةٍ موقَّعة كلّما صحّح أحدٌ نقطة.
  */
 export async function cephStudyAnalysis(id: number): Promise<
-  { study: CephStudy; points: Tracing; calibration: Calibration | null; analysis: Analysis } | null
+  {
+    study: CephStudy; points: Tracing; calibration: Calibration | null;
+    aspect: number; analysis: Analysis;
+  } | null
 > {
   await ensureSchema();
   const { rows } = await getPool().query(`${STUDY_SELECT} WHERE s.id = $1`, [id]);
@@ -7607,6 +7610,9 @@ export async function cephStudyAnalysis(id: number): Promise<
   const calibration = sanitizeCalibration(frozen ? row.snapshot_calibration : row.live_calibration);
   return {
     study, points, calibration,
+    // النسبة تخرج مع القراءة: التراكب يحتاجها كما يحتاجها التحليل، ولا تُحسب
+    // مرّتين من مصدرين فتفترقا.
+    aspect: studyAspect(row),
     analysis: analyse({ tracing: points, calibration, norms, aspect: studyAspect(row) }),
   };
 }

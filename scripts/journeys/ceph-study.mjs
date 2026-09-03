@@ -363,6 +363,92 @@ try {
     `${swapped.forward.before}→${swapped.forward.after} مقابل ${swapped.backward.before}→${swapped.backward.after}`);
   say("ولا يقلب فرقًا واحدًا", swapped.forward.deltas === swapped.backward.deltas);
 
+  /*
+   * ١٠) التراكب — الجدول يقول كم تغيّر، والرسم يقول أين.
+   *
+   * وأوّلُ ما يُفحص أنه **يرفض بلا معايرة** ويقول لماذا: دراسات هذه الرحلة بلا
+   * معايرة، فالتراكب عليها لا يُعرف مقياسه — ورسمٌ يبدو صحيحًا وهو غلط أسوأ من
+   * لا رسم.
+   */
+  console.log("10) التراكب");
+  await page.getByRole("button", { name: "تراكب" }).click();
+  await page.waitForTimeout(1500);
+  const refused = await page.locator("body").innerText();
+  say("يُرفض بلا معايرة — ويقول السبب لا «تعذّر»",
+    refused.includes("يحتاج معايرة الصورتين"));
+
+  // ثم تُعايَر الصورتان وتُعاد المحاولة.
+  const calibrated = await page.evaluate(async ([patient, docs]) => {
+    const bar = { from: { x: 0.1, y: 0.9 }, to: { x: 0.3, y: 0.9 }, millimetres: 20 };
+    for (const id of docs) {
+      const current = await (await fetch(`/api/documents/${id}/tracing`)).json();
+      const tracing = current.tracing ?? current;
+      await fetch(`/api/documents/${id}/tracing`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ points: tracing.points, calibration: bar, note: null }),
+      });
+    }
+    const body = await (await fetch(`/api/patients/${patient}/ceph-studies`)).json();
+    // دراستان مسودّتان تقرآن التتبّع الحيّ — فتحملان المعايرة الجديدة.
+    return body.studies.filter((row) => row.status === "draft").map((row) => row.id);
+  }, [patientId, [documentId, tall.id]]);
+
+  say("عُويرت الصورتان", calibrated.length >= 2, `${calibrated.length} مسودّة`);
+
+  const drawn = await page.evaluate(async ([first, second]) => {
+    const response = await fetch(`/api/ceph/superimpose?first=${first}&second=${second}`);
+    return { status: response.status, body: await response.json() };
+  }, calibrated.slice(0, 2));
+
+  say("ثم يُرسم", drawn.status === 200, drawn.body?.message ?? "");
+  if (drawn.status === 200) {
+    say("وفيه خطوط الدراستين معًا",
+      drawn.body.before.lines.length > 0 && drawn.body.after.lines.length > 0,
+      `${drawn.body.before.lines.length} و ${drawn.body.after.lines.length}`);
+    say("ويقول طول قاعدة الجمجمة بالمليمتر في كلٍّ",
+      Number.isFinite(drawn.body.cranialBaseBefore) && drawn.body.cranialBaseBefore > 0,
+      `${drawn.body.cranialBaseBefore.toFixed(1)} ← ${drawn.body.cranialBaseAfter.toFixed(1)} مم`);
+
+    // وقلبُ المعاملين لا يقلب أيّهما «قبل» — كما في المقارنة.
+    const flipped = await page.evaluate(async ([first, second]) => {
+      const response = await fetch(`/api/ceph/superimpose?first=${second}&second=${first}`);
+      return response.json();
+    }, calibrated.slice(0, 2));
+    say("وقلبُ المعاملين لا يقلب أيّهما الأقدم",
+      flipped.before?.id === drawn.body.before.id && flipped.after?.id === drawn.body.after.id,
+      `${drawn.body.before.id}→${drawn.body.after.id} مقابل ${flipped.before?.id}→${flipped.after?.id}`);
+  }
+
+  /*
+   * وعلى الشاشة تُختار **المسودّتان** بعينهما.
+   *
+   * فالدراسة المعتمدة مجمَّدةٌ بلا معايرة — لُقطتها أُخذت قبل أن تُعايَر الصورة —
+   * فلا تُتراكب أبدًا. وهذا صحيح: لقطةُ الاعتماد لا تُعدَّل بأثرٍ رجعي، ولو
+   * قُرئت معايرةُ اليوم لها لتغيّرت وثيقةٌ موقَّعة.
+   */
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(1800);
+  const drafts = page.locator("li", { hasText: "مسودّة" });
+  say("في الملف مسودّتان معايَرتان", (await drafts.count()) >= 2, `${await drafts.count()}`);
+  await drafts.nth(0).getByRole("button", { name: "للمقارنة" }).click();
+  await page.waitForTimeout(300);
+  await drafts.nth(1).getByRole("button", { name: "للمقارنة" }).click();
+  await page.waitForTimeout(400);
+
+  await page.getByRole("button", { name: "تراكب" }).click();
+  await page.waitForTimeout(2500);
+  const view = page.locator('section[aria-label="تراكب دراستين"]');
+  say("والرسم يظهر على الشاشة", await view.isVisible());
+  if (await view.isVisible()) {
+    const text = await view.innerText();
+    say("ويقول أيّهما الأقدم بالنصّ لا باللون وحده",
+      text.includes("الأقدم") && text.includes("الأحدث"));
+    say("ويقول إن التحجيم ليس على قاعدة الجمجمة — فلا يُقرأ النموّ عطلًا",
+      text.includes("لا من طول قاعدة الجمجمة"));
+    say("وفيه خطّان مرسومان",
+      (await view.locator("svg line").count()) >= 2, `${await view.locator("svg line").count()} خطًّا`);
+  }
+
   console.log(failed ? "\nسقطت الرحلة." : "\nرحلة الدراسة اكتملت.");
 } finally {
   await context.close();
