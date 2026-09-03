@@ -297,8 +297,9 @@ export function CephStudies({ patientId }: { patientId: number }) {
               </div>
 
               <div className="flex shrink-0 flex-wrap gap-1.5">
+                {/* الورقة تُطبع من الدراسة نفسها — لا من تتبّع الصورة الحالي. */}
                 <a
-                  href={`/print/ceph/${study.documentId}`}
+                  href={`/print/ceph/${study.documentId}?study=${study.id}`}
                   target="_blank"
                   rel="noopener"
                   className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-600"

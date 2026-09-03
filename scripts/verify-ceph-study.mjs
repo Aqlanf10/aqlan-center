@@ -228,6 +228,74 @@ try {
   check("ولا تُرى فيها دراسةُ حالةٍ أخرى",
     (await db.listCaseStudies(strangerCase.id)).length === 0);
 
+  console.log("\n  ── معايير الدراسة تُختار بجنس المريض ──");
+
+  /*
+   * معيار Wits ذكورًا ‏١ وإناثًا ‏٠، ومليمترٌ هنا يقلب حكمًا.
+   *
+   * وكانت معايير الدراسة تُقرأ **بلا جنس** فيسقط صفُّ الإناث ويُطبَّق معيار
+   * الذكور على مريضةٍ — في ورقةٍ موقَّعة. وشاشةُ التتبّع كانت تقرؤه صحيحًا،
+   * فيفترق الرقمان دون أن يُرى.
+   */
+  const wits = await db.getPool().query(
+    `SELECT sex, mean FROM ceph_reference_values v
+       JOIN ceph_reference_sets s ON s.id = v.set_id
+      WHERE s.is_default AND v.measurement = 'WITS' ORDER BY sex`);
+  check("المرجع يفرّق بين الجنسين في Wits", wits.rows.length === 2,
+    wits.rows.map((row) => `${row.sex}=${row.mean}`).join("، "));
+
+  const femaleNorms = await db.referenceNorms("female");
+  const maleNorms = await db.referenceNorms("male");
+  check("ومعيارهما مختلف فعلًا",
+    Number(femaleNorms.WITS.mean) !== Number(maleNorms.WITS.mean),
+    `أنثى ${femaleNorms.WITS.mean} · ذكر ${maleNorms.WITS.mean}`);
+
+  /*
+   * وأشعّةٌ ثالثة بمعالمِ مستوى الإطباق ومعايرة — فـWits **يُحسب فعلًا**.
+   *
+   * وبلا هذا يمرّ الفحص بالصدفة: Wits لا يُحسب أصلًا فيتساوى غيابُه بغيابه
+   * ويُقال «توافقا». وفحصٌ يمرّ بلا شيء يفحصه أسوأ من لا فحص.
+   */
+  const witsPoints = {
+    ...NORMAL,
+    U1T: { x: 0.60, y: 0.62 }, L1T: { x: 0.59, y: 0.64 },
+    U6: { x: 0.36, y: 0.60 }, L6: { x: 0.36, y: 0.62 },
+  };
+  const witsStored = await files.putFile(Buffer.concat([PNG, Buffer.from([7])]), "png");
+  const witsXray = await db.recordDocument({
+    patientId: patient.id, visitId: null, kind: "xray", title: "أشعّة Wits",
+    mimeType: "image/png", sizeBytes: witsStored.sizeBytes, sha256: witsStored.sha256,
+    storageKey: witsStored.key, note: null, takenOn: "2026-09-02", uploadedBy: "فحص",
+    imageWidth: 300, imageHeight: 300,
+  });
+  await db.saveCephTracing({
+    documentId: witsXray.id, points: witsPoints,
+    // المعايرة شرطُ القياس الخطّي — وبلاها لا يُحسب Wits.
+    calibration: { from: { x: 0.1, y: 0.1 }, to: { x: 0.5, y: 0.1 }, millimetres: 40 },
+    note: null, actor: "فحص",
+  });
+  const witsStudy = await db.createCephStudy({
+    documentId: witsXray.id, phase: "followup", orthoCaseId: null,
+    title: null, takenOn: null, note: null, actor: "فحص",
+  });
+  await db.approveCephStudy({ id: witsStudy.id, actor: "د. عقلان" });
+
+  const witsInStudy = (await db.cephStudyAnalysis(witsStudy.id)).analysis
+    .measurements.find((m) => m.key === "Wits");
+  const witsOnScreen = (await db.getCephTracing(witsXray.id, 1)).analysis
+    .measurements.find((m) => m.key === "Wits");
+
+  // أوّلًا: أنه يُحسب أصلًا — وإلّا فما تحته يمرّ بلا شيء يفحصه.
+  check("Wits يُحسب على هذه الأشعّة", Boolean(witsInStudy?.norm),
+    witsInStudy ? `${witsInStudy.value.toFixed(2)} مم` : "لا يُحسب");
+  check("والدراسة تقرأ معيار الأنثى كما تقرؤه الشاشة — لا معيار الذكور",
+    (witsInStudy?.norm?.mean ?? null) === (witsOnScreen?.norm?.mean ?? null),
+    `الدراسة ${witsInStudy?.norm?.mean ?? "—"} · الشاشة ${witsOnScreen?.norm?.mean ?? "—"}`);
+  check("وهو معيار الإناث لا معيار الذكور",
+    witsInStudy?.norm?.mean === Number(femaleNorms.WITS.mean)
+      && witsInStudy?.norm?.mean !== Number(maleNorms.WITS.mean),
+    `${witsInStudy?.norm?.mean}`);
+
   console.log("\n  ── نسبةُ الأشعّة تدخل الحساب: الورقة تقول ما تقوله الشاشة ──");
 
   /*

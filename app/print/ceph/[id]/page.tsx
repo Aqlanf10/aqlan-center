@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import {
-  getCephTracing, getPatient, getPatientDocument, getSettingsSafe, printCount,
+  cephStudyAnalysis, getCephTracing, getPatient, getPatientDocument, getSettingsSafe, printCount,
 } from "@/lib/db";
+import { STUDY_PHASE_TEXT, STUDY_STATUS_TEXT } from "@/lib/cephStudy";
 import {
   LANDMARKS, LANDMARK_MANUAL, SEVERITY_LABEL, SKELETAL_LABEL, VERTICAL_LABEL,
   formatMeasurement, referenceLines, say, severityOf, zScore,
@@ -30,7 +31,7 @@ export default async function CephReportPage({
   params, searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ lang?: string }>;
+  searchParams: Promise<{ lang?: string; study?: string }>;
 }) {
   // التقرير تشخيصٌ سريري — للطبيب والمدير، لا للاستقبال. وصفحة الطباعة بابٌ
   // خلفي إلى التشخيص لو تُركت مفتوحة لكل من يملك جلسة.
@@ -41,9 +42,22 @@ export default async function CephReportPage({
   const id = Number(rawId);
   if (!Number.isInteger(id) || id <= 0) notFound();
 
-  const { lang: rawLang } = await searchParams;
+  const { lang: rawLang, study: rawStudy } = await searchParams;
   const lang: Lang = rawLang === "en" ? "en" : "ar";
   const rtl = lang === "ar";
+
+  /*
+   * التقرير يُطبع من **الدراسة** متى طُلبت، ومن التتبّع الحيّ متى لم تُطلب.
+   *
+   * وبلا هذا كان زرّ التقرير في ملف المريض يفتح تتبّع الصورة الحالي مهما كانت
+   * الدراسة معتمدة — فتخرج على الورقة أرقامٌ غيرُ التي وُقِّعت. والدراسة المعتمدة
+   * لا تتغيّر تحت من اعتمدها؛ **وورقتُها كذلك**.
+   */
+  const studyId = Number(rawStudy);
+  const wanted = Number.isInteger(studyId) && studyId > 0 ? studyId : null;
+  const reading = wanted ? await cephStudyAnalysis(wanted) : null;
+  // دراسةٌ لا وجود لها، أو تخصّ صورةً أخرى: لا تُطبع على هذه الأشعّة.
+  if (wanted && (!reading || reading.study.documentId !== id)) notFound();
 
   const [tracing, document, settings] = await Promise.all([
     getCephTracing(id), getPatientDocument(id), getSettingsSafe(),
@@ -52,9 +66,20 @@ export default async function CephReportPage({
   const patient = await getPatient(tracing.patientId);
   if (!patient) notFound();
 
-  const printed = await printCount("ceph", id);
-  const { analysis } = tracing;
-  const lines = referenceLines(tracing.points);
+
+  const study = reading?.study ?? null;
+  /*
+   * هويّة الطبعة تشمل الدراسة.
+   *
+   * وأشعّةٌ واحدة قد تحمل إصدارين: بلا هذا تُحسب أوّلُ طبعةٍ للإصدار الثاني
+   * إعادةَ طباعة، ولا يُعرف من السجل أيّ إصدارٍ طُبع. و«نسخة معاد طباعتها»
+   * ادّعاءٌ على الورقة — فيجب أن يصدق.
+   */
+  const printKey = study ? `${id}:${study.id}` : String(id);
+  const printed = await printCount("ceph", printKey);
+  const points = reading ? reading.points : tracing.points;
+  const analysis = reading ? reading.analysis : tracing.analysis;
+  const lines = referenceLines(points);
 
   const T = {
     title: { ar: "تقرير التحليل السيفالومتري", en: "Cephalometric Analysis Report" },
@@ -88,6 +113,17 @@ export default async function CephReportPage({
       ar: `تعريفات ${LANDMARKS.filter((item) => !item.source).length} معلمًا من الدليل السريري المعتمد ${LANDMARK_MANUAL}؛ وما عداها من الأدبيات المنشورة، وكلٌّ بمرجعه في الجدول.`,
       en: `${LANDMARKS.filter((item) => !item.source).length} landmark definitions come from the approved clinical manual ${LANDMARK_MANUAL}; the rest come from published literature, each cited in the table.`,
     },
+    study: { ar: "الدراسة", en: "Study" },
+    revision: { ar: "إصدار", en: "Revision" },
+    approvedBy: { ar: "اعتمدها", en: "Approved by" },
+    liveNote: {
+      ar: "هذه قراءةُ التتبّع الحالي للصورة، لا دراسةً معتمدة.",
+      en: "This reads the image's current tracing; it is not an approved study.",
+    },
+    driftNote: {
+      ar: "أرقام هذه الورقة أرقامُ يوم الاعتماد — وتتبّع الصورة تغيّر بعده.",
+      en: "The figures on this sheet are those of the approval date; the image tracing has changed since.",
+    },
     disclaimer: {
       ar: "هذا التقرير قراءةُ قياساتٍ تُشتقّ من معالمَ وضعها الطبيب بيده. يُقرأ مع الفحص السريري وبقيّة السجلات، ولا يُتّخذ وحده أساسًا لقرار علاجي.",
       en: "This report reads measurements derived from landmarks placed by the clinician. It is to be read with the clinical examination and the rest of the record, and is not on its own a basis for a treatment decision.",
@@ -116,10 +152,44 @@ export default async function CephReportPage({
           {age !== null ? <span>{say(T.age, lang)}: {age} {say(T.years, lang)}</span> : null}
           {document.takenOn ? <span>{say(T.xrayDate, lang)}: {friendlyDateLong(document.takenOn)}</span> : null}
         </div>
-        <div className="line">
-          <span>{say(T.tracedBy, lang)}: {tracing.updatedBy ?? tracing.tracedBy}</span>
-          <span>{say(T.tracedAt, lang)}: {friendlyDateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10))}</span>
-        </div>
+        {/*
+          نسبةُ الورقة إلى من وقّعها.
+
+          والدراسة المعتمدة أرقامُها أرقامُ يوم الاعتماد — فنسبتُها إلى آخر من
+          عدّل التتبّع بعده تنسب عملًا إلى غير صاحبه، وتؤرّخ ورقةً بتاريخٍ لم
+          تُوقَّع فيه. فمن يقرأ الورقة بعد سنتين يجد **من اعتمدها ومتى**.
+        */}
+        {study?.approvedBy ? null : (
+          <div className="line">
+            <span>{say(T.tracedBy, lang)}: {tracing.updatedBy ?? tracing.tracedBy}</span>
+            <span>{say(T.tracedAt, lang)}: {friendlyDateLong((tracing.updatedAt ?? tracing.tracedAt).slice(0, 10))}</span>
+          </div>
+        )}
+
+        {/*
+          هويّة الورقة: أهي دراسةٌ معتمدة أم قراءةُ تتبّعٍ حالي؟ ورقةٌ لا تقول
+          ذلك تُقرأ بعد سنتين على أنها ما ليست هي.
+        */}
+        {study ? (
+          <div className="line">
+            <span>
+              {say(T.study, lang)}: {say(STUDY_PHASE_TEXT[study.phase], lang)}
+              {" · "}{say(STUDY_STATUS_TEXT[study.status], lang)}
+              {" · "}{say(T.revision, lang)} {study.revision}
+            </span>
+            {study.approvedBy ? (
+              <span>
+                {say(T.approvedBy, lang)}: {study.approvedBy}
+                {study.approvedAt ? ` · ${friendlyDateLong(study.approvedAt.slice(0, 10))}` : ""}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <p className="doc-meta">{say(T.liveNote, lang)}</p>
+        )}
+        {study?.drifted ? (
+          <p className="doc-meta"><strong>{say(T.driftNote, lang)}</strong></p>
+        ) : null}
 
         <div className="rule" />
 
@@ -142,7 +212,7 @@ export default async function CephReportPage({
             ))}
           </svg>
           {LANDMARKS.map((item) => {
-            const point = tracing.points[item.code];
+            const point = points[item.code];
             if (!point) return null;
             return (
               <span key={item.code} className="ceph-mark"
@@ -224,7 +294,16 @@ export default async function CephReportPage({
           <span>{analysis.vertical ? say(VERTICAL_LABEL[analysis.vertical], lang) : say(T.undecided, lang)}</span>
         </p>
 
-        {tracing.note ? <p className="doc-meta">{tracing.note}</p> : null}
+        {/*
+          الملاحظة تتبع مصدر الأرقام: ملاحظةُ الدراسة على ورقة الدراسة، وملاحظةُ
+          التتبّع على ورقة التتبّع. وإلحاقُ ملاحظةٍ كُتبت بعد الاعتماد بورقةٍ
+          موقَّعة يُضيف إلى الوثيقة ما لم يكن فيها يوم وُقِّعت.
+        */}
+        {study ? (
+          study.note ? <p className="doc-meta">{study.note}</p> : null
+        ) : (
+          tracing.note ? <p className="doc-meta">{tracing.note}</p> : null
+        )}
 
         <div className="rule-light" />
         <p className="doc-meta">{say(T.manualNote, lang)}</p>
@@ -232,7 +311,7 @@ export default async function CephReportPage({
 
         <PrintFooter settings={settings} />
       </div>
-      <PrintButton docType="ceph" docId={id} />
+      <PrintButton docType="ceph" docId={printKey} />
     </main>
   );
 }
