@@ -19,6 +19,9 @@ import {
   skeletalClass,
   verdictFor,
   NORMS,
+  ADULT_AGE,
+  ageFromBirthYear,
+  applicableNorm,
   type Tracing,
 } from "../lib/ceph";
 
@@ -676,5 +679,226 @@ describe("النمط العمودي — من قياسين لا من واحد", (
 
   it("والوجه المصنوع متوازنٌ عموديًّا", () => {
     expect(analyse({ tracing: FACE_MM }).vertical).toBe("balanced");
+  });
+});
+
+/*
+ * McNamara وSND — منقولةٌ من أرشيف المالك بتصحيح.
+ *
+ * والمنقولُ منه يقيس بُعد A وPog عن عمود N بدالّةٍ **تثبّت الإشارة على محور
+ * الصورة** — فتخرج قياساتُه معكوسةً على كل أشعّةٍ يواجه فيها الوجه اليسار. وهنا
+ * الجهة من **التشريح**: الأمام هو الجانب المقابل لـPo، وPo خلفيّةٌ بالتعريف.
+ */
+
+/** وجهٌ فيه Co — لازمة لأطوال McNamara — على الإطار المصنوع نفسه. */
+const FACE_MCN: Tracing = {
+  ...FACE_MM,
+  // اللقمة: خلف Po وأعلى قليلًا، كما هي تشريحيًّا.
+  Co: frame(-8, 8),
+};
+
+describe("McNamara — أطوالٌ فعلية لا زوايا", () => {
+  it("الطولان يُقاسان بالمليمتر ولا يظهران بلا معايرة", () => {
+    const plain = analyse({ tracing: FACE_MCN });
+    expect(plain.measurements.find((m) => m.key === "Co-A")).toBeUndefined();
+    expect(plain.measurements.find((m) => m.key === "Co-Gn")).toBeUndefined();
+
+    const scaled = analyse({ tracing: FACE_MCN, calibration: CAL });
+    expect(scaled.measurements.find((m) => m.key === "Co-A")?.unit).toBe("mm");
+    expect(scaled.measurements.find((m) => m.key === "Co-Gn")?.unit).toBe("mm");
+  });
+
+  it("والفرق بينهما هو الطرح لا رقمٌ ثالث يُحسب على حدة", () => {
+    // رقمان لحقيقةٍ واحدة يفترقان: لو حُسب الفرق من نقاطٍ أخرى لاختلف عن الطرح.
+    const long = mmValue(FACE_MCN, "Co-Gn");
+    const short = mmValue(FACE_MCN, "Co-A");
+    expect(mmValue(FACE_MCN, "MM-diff")).toBeCloseTo(long - short, 9);
+  });
+
+  it("وطولُ الفكّ السفلي أكبر من العلوي على وجهٍ سويّ", () => {
+    expect(mmValue(FACE_MCN, "Co-Gn")).toBeGreaterThan(mmValue(FACE_MCN, "Co-A"));
+  });
+
+  it("وبُعدُ A عن عمود N يقيس الإزاحة الأفقية عنه بمقدارها", () => {
+    /*
+     * عمود N على فرانكفورت في هذا الإطار **رأسيٌّ** (فرانكفورت أفقي بالبناء)،
+     * فالبُعد عنه هو فرق x بين A وN. وA في الوجه المصنوع خلفه بقليل — وهو ما
+     * يقوله الرقم، وأوّل اشتراطٍ كتبتُه («موجبٌ دائمًا») كان خطأً في الاشتراط
+     * لا في الحساب.
+     */
+    const behind = mmValue(FACE_MCN, "A-NPerp");
+    expect(behind).toBeLessThan(0);
+
+    // ويُدفع A خمسة أمامًا فينقلب الموجب — والفرق خمسة بالضبط.
+    const forward: Tracing = { ...FACE_MCN, A: frame(89.6 + 5, -21.35) };
+    const ahead = mmValue(forward, "A-NPerp");
+    expect(ahead).toBeGreaterThan(0);
+    expect(ahead - behind).toBeCloseTo(5, 1);
+  });
+
+  it("**والإشارة من التشريح لا من محور الصورة** — الصورة المعكوسة تعطي الرقم نفسه", () => {
+    /*
+     * وهذا هو العطب الذي وجدتُه في المستودع المنقول عنه: دالّتُه تثبّت الإشارة
+     * على محور الصورة («الوجه يمين الصورة فالأمام شرقًا»)، فتخرج القياسات
+     * الموقَّعة معكوسةً على كل أشعّةٍ يواجه فيها الوجه اليسار.
+     */
+    const mirrored: Tracing = Object.fromEntries(
+      Object.entries(FACE_MCN).map(([code, point]) => [code, { x: 1 - point!.x, y: point!.y }]),
+    ) as Tracing;
+    const mirroredCal = {
+      ...CAL,
+      from: { x: 1 - CAL.from.x, y: CAL.from.y },
+      to: { x: 1 - CAL.to.x, y: CAL.to.y },
+    };
+    for (const key of ["A-NPerp", "Pog-NPerp", "Co-A", "Co-Gn", "MM-diff"]) {
+      expect(mmValue(mirrored, key, mirroredCal), key)
+        .toBeCloseTo(mmValue(FACE_MCN, key), 8);
+    }
+  });
+
+  it("ونسبة LAFH تُحسب بلا معايرة — المقياس يسقط بالقسمة", () => {
+    /*
+     * والمنقولُ منه يحوّل الطولين إلى مليمترات ثم يقسمهما، فتمتنع نسبتُه بلا
+     * معايرة بلا سبب — والنسبة لا تحتاج مليمترًا لتصحّ.
+     */
+    const plain = analyse({ tracing: FACE_MCN });
+    const lafh = plain.measurements.find((m) => m.key === "LAFH");
+    expect(lafh?.unit).toBe("ratio");
+    expect(lafh!.value).toBeGreaterThan(0);
+    // والمعايرة لا تغيّرها.
+    expect(mmValue(FACE_MCN, "LAFH")).toBeCloseTo(lafh!.value, 9);
+  });
+
+  it("وهي ANS-Me من N-Me بالضبط", () => {
+    const total = mmValue(FACE_MCN, "N-Me");
+    const lower = mmValue(FACE_MCN, "ANS-Me");
+    expect(mmValue(FACE_MCN, "LAFH")).toBeCloseTo((lower / total) * 100, 6);
+  });
+
+  it("وكلّها تحمل اسم تحليلها — فتُقرأ مجموعةً كما في المراجع", () => {
+    const named = analyse({ tracing: FACE_MCN, calibration: CAL }).measurements
+      .filter((m) => m.analysis === "McNamara").map((m) => m.key).sort();
+    expect(named).toEqual(["A-NPerp", "Co-A", "Co-Gn", "LAFH", "MM-diff", "Pog-NPerp"]);
+  });
+});
+
+describe("SND — موضع وسط الارتفاق", () => {
+  const FACE_D: Tracing = { ...FACE_MCN, D: frame(78, -60) };
+
+  it("يُحسب حين تُوضع D، ولا يُحسب بدونها", () => {
+    expect(analyse({ tracing: FACE_MCN }).measurements.find((m) => m.key === "SND")).toBeUndefined();
+    expect(measured(FACE_D, "SND")).toBeGreaterThan(0);
+  });
+
+  it("وهو أقلّ من SNB — فـD خلف B وأسفل منه على الارتفاق", () => {
+    // وهذا هو معنى القياس: يُقرأ عند وسط الارتفاق لا عند قمّته.
+    expect(measured(FACE_D, "SND")).toBeLessThan(measured(FACE_D, "SNB"));
+  });
+
+  it("وباسم تحليله Steiner", () => {
+    const snd = analyse({ tracing: FACE_D }).measurements.find((m) => m.key === "SND");
+    expect(snd?.analysis).toBe("Steiner");
+    expect(snd?.unit).toBe("deg");
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * معايير البالغين على وجهٍ ينمو
+ *
+ * وهذا أخطرُ ما في أطوال McNamara: الرقم صحيح والحكم كاذب. طفلٌ في التاسعة
+ * فكُّه العلوي ٨٥ مم — وهو سويٌّ تمامًا لعمره — ومعيار البالغين ٩٤±٥، فيخرج
+ * على ورقةٍ موقَّعة «منخفض»، ويُقرأ نقصًا فكّيًّا يستدعي جهاز نموّ أو جراحة.
+ *
+ * فالفحص هنا ليس على القيمة — القيمة لا تتغيّر — بل على **ما يُقال عنها**.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("معايير البالغين لا تُطبَّق على وجهٍ ينمو", () => {
+  const of = (key: string, ageYears: number | null) =>
+    analyse({ tracing: FACE_MCN, calibration: CAL, ageYears })
+      .measurements.find((m) => m.key === key);
+
+  const ADULT_ONLY = ["Co-A", "Co-Gn", "MM-diff", "A-NPerp", "Pog-NPerp"];
+
+  it("البالغ يُحكم عليه — المعيار حاضر والحكم معه", () => {
+    for (const key of ADULT_ONLY) {
+      const m = of(key, 30);
+      expect(m?.norm, key).toBeTruthy();
+      expect(m?.verdict, key).toBeTruthy();
+      expect(m?.normNote, key).toBeUndefined();
+    }
+  });
+
+  it("والطفل يُقاس ولا يُحكم عليه — والقيمة هي هي", () => {
+    for (const key of ADULT_ONLY) {
+      const child = of(key, 9);
+      const adult = of(key, 30);
+      // القيمة لا تتغيّر بالعمر — المقياس واحد، وإنما يُحجب الحكم وحده.
+      expect(child?.value, key).toBeCloseTo(adult!.value, 12);
+      expect(child?.norm, key).toBeNull();
+      expect(child?.verdict, key).toBeNull();
+      expect(child?.normNote?.ar, key).toContain("للبالغين");
+      expect(child?.normNote?.ar, key).toContain("9");
+    }
+  });
+
+  it("وعمرٌ غير مسجَّل يُعامَل معاملة «قد يكون طفلًا»", () => {
+    for (const key of ADULT_ONLY) {
+      const m = of(key, null);
+      expect(m?.norm, key).toBeNull();
+      expect(m?.verdict, key).toBeNull();
+      expect(m?.normNote?.ar, key).toContain("غير مسجَّل");
+    }
+  });
+
+  it("وعند الحدّ: ثمانية عشر يُحكم عليها وسبعة عشر لا", () => {
+    expect(of("Co-A", ADULT_AGE)?.verdict).toBeTruthy();
+    expect(of("Co-A", ADULT_AGE - 1)?.verdict).toBeNull();
+  });
+
+  it("والقياسات التي لا تخصّ البالغين وحدهم لا تُمسّ", () => {
+    // LAFH نسبةٌ لا طول، وبروز القاطع معياره ليس موسومًا للبالغين.
+    // ولا `continue` هنا: فحصٌ يمرّ لأنّ القياس غائب فحصٌ يمرّ بالصدفة.
+    for (const key of ["LAFH", "U1-NA-mm"]) {
+      const child = of(key, 9);
+      expect(child, key).toBeDefined();
+      expect(child!.norm, key).toBeTruthy();
+      expect(child!.verdict, key).toBeTruthy();
+    }
+  });
+
+  it("والوسم على المعيار نفسه — فأيّ معيارٍ للبالغين يُحجب بالقاعدة نفسها", () => {
+    for (const key of ["MAX_LEN", "MAND_LEN", "MM_DIFF", "A_NPERP", "POG_NPERP"]) {
+      expect(DEFAULT_NORMS[key as keyof typeof DEFAULT_NORMS].adultOnly, key).toBe(true);
+    }
+    expect(DEFAULT_NORMS.LAFH.adultOnly).toBeUndefined();
+    expect(DEFAULT_NORMS.SNA.adultOnly).toBeUndefined();
+  });
+
+  it("والحجب دالّةٌ مستقلّة تُختبر وحدها", () => {
+    const adult = { mean: 94, tolerance: 5, source: "س", adultOnly: true } as const;
+    const any = { mean: 82, tolerance: 2, source: "س" };
+    expect(applicableNorm(adult, 30).norm).toBe(adult);
+    expect(applicableNorm(adult, 9).norm).toBeNull();
+    expect(applicableNorm(adult, null).norm).toBeNull();
+    expect(applicableNorm(any, 9).norm).toBe(any);
+    expect(applicableNorm(null, 30).norm).toBeNull();
+  });
+});
+
+describe("العمر من سنة الميلاد", () => {
+  it("يُحسب بفارق السنتين", () => {
+    expect(ageFromBirthYear(2008, "2026-09-03")).toBe(18);
+    expect(ageFromBirthYear(2017, "2026-01-01")).toBe(9);
+  });
+
+  it("ويُردّ لا شيء حين لا يُعرف أو يستحيل", () => {
+    expect(ageFromBirthYear(null, "2026-09-03")).toBeNull();
+    expect(ageFromBirthYear(2008, null)).toBeNull();
+    expect(ageFromBirthYear(2008, "")).toBeNull();
+    // سنةٌ بعد التصوير — بيانٌ فاسد، ورقمٌ فاسد أسوأ من لا رقم.
+    expect(ageFromBirthYear(2030, "2026-09-03")).toBeNull();
+    expect(ageFromBirthYear(1800, "2026-09-03")).toBeNull();
+    expect(ageFromBirthYear(2008.5, "2026-09-03")).toBeNull();
   });
 });

@@ -609,6 +609,10 @@ export function CephTracer({ documentId, title, onClose, canWrite }: Props) {
                           </span>
                         </>
                       ) : null}
+                      {/* ولماذا امتنع الحكم — كما على الورقة المطبوعة. */}
+                      {!item.verdict && item.normNote
+                        ? <>{" · "}<span className="text-amber-700">{say(item.normNote, lang)}</span></>
+                        : null}
                     </p>
                   </li>,
                 ])}

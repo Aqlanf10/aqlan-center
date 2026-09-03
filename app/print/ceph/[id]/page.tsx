@@ -272,6 +272,15 @@ export default async function CephReportPage({
                         {severity
                           ? <>{say(SEVERITY_LABEL[severity], lang)} <span dir="ltr">(Z {z!.toFixed(1)})</span></>
                           : say(T.unread, lang)}
+                        {/*
+                          * ولماذا لا حكم — يُقال على الورقة نفسها.
+                          *
+                          * وخانةٌ فارغة تحت «القراءة» تُقرأ إهمالًا لا امتناعًا،
+                          * فيبحث القارئ عن الحكم في مكانٍ آخر أو يفترضه سويًّا.
+                          */}
+                        {!severity && item.normNote
+                          ? <div className="hint">{say(item.normNote, lang)}</div>
+                          : null}
                       </td>
                     </tr>
                   );

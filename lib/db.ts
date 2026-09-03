@@ -6494,7 +6494,7 @@ export async function closeOrthoCase(input: {
 // ─── التتبّع السيفالومتري ────────────────────────────────────────────────────
 
 import {
-  DEFAULT_NORMS, analyse, isLandmarkCode,
+  DEFAULT_NORMS, analyse, isLandmarkCode, ageFromBirthYear,
   type Analysis, type Calibration, type Norm, type Tracing,
 } from "./ceph";
 
@@ -6551,7 +6551,7 @@ const toTracing = (row: {
   id: number; document_id: number; patient_id: number; points: unknown;
   calibration: unknown; note: string | null; traced_by: string; traced_at: Date;
   updated_by: string | null; updated_at: Date | null; aspect?: number;
-  norms?: Record<string, Norm>;
+  norms?: Record<string, Norm>; ageYears?: number | null;
 }): CephTracing => {
   const points = sanitizeTracing(row.points);
   const calibration = sanitizeCalibration(row.calibration);
@@ -6566,7 +6566,10 @@ const toTracing = (row: {
     tracedAt: row.traced_at.toISOString(),
     updatedBy: row.updated_by,
     updatedAt: row.updated_at ? row.updated_at.toISOString() : null,
-    analysis: analyse({ tracing: points, calibration, aspect: row.aspect, norms: row.norms }),
+    analysis: analyse({
+      tracing: points, calibration, aspect: row.aspect, norms: row.norms,
+      ageYears: row.ageYears ?? null,
+    }),
   };
 };
 
@@ -6750,9 +6753,10 @@ export async function getCephTracing(documentId: number, aspect?: number): Promi
   // جنس المريض يدخل اختيار المعيار — ومعيار Wits ذكورًا غيرُه إناثًا بمليمتر،
   // ومليمترٌ هنا يقلب حكمًا. فيُقرأ من ملفّه لا يُسأل عنه الطبيب من جديد.
   const { rows } = await getPool().query<{
-    gender: string; image_width: number | null; image_height: number | null;
+    gender: string; birth_year: number | null;
+    image_width: number | null; image_height: number | null;
   }>(
-    `SELECT p.gender, d.image_width, d.image_height FROM ceph_tracings t
+    `SELECT p.gender, p.birth_year, d.image_width, d.image_height FROM ceph_tracings t
        JOIN patients p ON p.id = t.patient_id
        JOIN patient_documents d ON d.id = t.document_id
       WHERE t.document_id = $1`,
@@ -6773,7 +6777,13 @@ export async function getCephTracing(documentId: number, aspect?: number): Promi
     width: rows[0]?.image_width ?? null, height: rows[0]?.image_height ?? null,
   });
   const effective = aspect && aspect > 0 ? aspect : stored;
-  return tracings[0] ? toTracing({ ...tracings[0], aspect: effective, norms }) : null;
+  const ageYears = ageFromBirthYear(
+    rows[0]?.birth_year ?? null,
+    clinicDateString(new Date(), CLINIC_TIME_ZONE),
+  );
+  return tracings[0]
+    ? toTracing({ ...tracings[0], aspect: effective, norms, ageYears })
+    : null;
 }
 
 /** جنس صاحب الصورة — تختاره الشاشة به معيارها كما يختاره الخادم. */
@@ -7511,7 +7521,7 @@ export interface CephStudy {
 }
 
 const STUDY_SELECT = `
-  SELECT s.id, s.patient_id, p.full_name AS patient_name, p.gender, s.document_id,
+  SELECT s.id, s.patient_id, p.full_name AS patient_name, p.gender, p.birth_year, s.document_id,
          d.title AS document_title, s.ortho_case_id, s.phase, s.status, s.revision,
          s.title, s.taken_on, s.note, s.snapshot_points, s.snapshot_calibration,
          s.approved_by, s.approved_at, s.created_by, s.created_at,
@@ -7521,6 +7531,21 @@ const STUDY_SELECT = `
     JOIN patients p ON p.id = s.patient_id
     JOIN patient_documents d ON d.id = s.document_id
     LEFT JOIN ceph_tracings t ON t.document_id = s.document_id`;
+
+/**
+ * اليوم الذي تُنسب إليه الدراسة — يوم التصوير إن سُجّل، وإلّا يوم إنشائها.
+ *
+ * ولا يُشتقّ من `created_at` بـ`toISOString`: العيادة على ‎+٣‎، فما بعد التاسعة
+ * مساءً يُحسب اليوم التالي بتوقيت UTC. والسنة وحدها هي المطلوبة هنا، لكن
+ * الانزياح يقع على رأس السنة فيخطئ العمر سنةً كاملة.
+ */
+const studyDateString = (row: Record<string, unknown>): string | null => {
+  const taken = row.taken_on;
+  if (taken instanceof Date) return clinicDateString(taken, CLINIC_TIME_ZONE);
+  if (typeof taken === "string" && taken.length >= 4) return taken;
+  const created = row.created_at;
+  return created instanceof Date ? clinicDateString(created, CLINIC_TIME_ZONE) : null;
+};
 
 /** النسبة التي تُحسب بها زوايا الدراسة — من أبعاد أشعّتها المحفوظة. */
 const studyAspect = (row: Record<string, unknown>): number => aspectOf({
@@ -7613,7 +7638,17 @@ export async function cephStudyAnalysis(id: number): Promise<
     // النسبة تخرج مع القراءة: التراكب يحتاجها كما يحتاجها التحليل، ولا تُحسب
     // مرّتين من مصدرين فتفترقا.
     aspect: studyAspect(row),
-    analysis: analyse({ tracing: points, calibration, norms, aspect: studyAspect(row) }),
+    analysis: analyse({
+      tracing: points, calibration, norms, aspect: studyAspect(row),
+      /*
+       * العمر يوم الأشعّة لا اليوم — دراسةٌ قديمة لطفلٍ صار بالغًا تبقى دراسة
+       * طفل، وإعادة قراءتها بعمره الحالي تُلبسها أحكامًا لم تكن لها.
+       */
+      ageYears: ageFromBirthYear(
+        (row.birth_year as number | null) ?? null,
+        studyDateString(row),
+      ),
+    }),
   };
 }
 
