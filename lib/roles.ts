@@ -45,3 +45,15 @@ export function isAdmin(role: string | undefined | null): boolean {
 export function canHandleMoney(role: string | undefined | null): boolean {
   return role === "admin" || role === "reception";
 }
+
+/**
+ * من يعمل السريريّ: الطبيب والمدير. الاستقبال لا.
+ *
+ * وهو مقابل `canHandleMoney` تمامًا — والتشخيص والوصفة والتتبّع السيفالومتري
+ * كلُّها منه. وكان يُكتب `isAdmin(role) || role === "doctor"` في كل موضع، فسؤالٌ
+ * واحد له خمس إجابات مكتوبة بأيدٍ مختلفة: يوم يتغيّر الجواب — أو يُنسى موضع —
+ * تفتح شاشةٌ ما يمنعه مسارُها، أو يمنع مسارٌ ما تفتحه شاشتُه.
+ */
+export function canTreat(role: string | undefined | null): boolean {
+  return role === "admin" || role === "doctor";
+}

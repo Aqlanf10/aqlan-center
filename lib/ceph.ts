@@ -635,29 +635,6 @@ export function analysisFromSource(source: string): string | null {
 export const ADULT_AGE = 18;
 
 /**
- * عمر المريض يوم الأشعّة — من سنة الميلاد وحدها.
- *
- * والملفّ يحفظ السنة لا التاريخ الكامل، فالعمر مضبوطٌ إلى سنة: من وُلد في
- * ٢٠٠٨ وصُوّر في ٢٠٢٦ عمرُه ١٧ أو ١٨ بحسب شهر ميلاده. ونُعيد **الأكبر**
- * الممكن (١٨) — لأنّ الأصغر يحجب الحكم عن بالغين كثيرين، والفرق عند الحدّ
- * وحده وقد اكتمل النموّ فيه تقريبًا. والسنة المستقبلية أو غير المعقولة تُردّ
- * `null` — رقمٌ فاسد أسوأ من لا رقم.
- *
- * @param onDate تاريخ الأشعّة بصيغة `YYYY-MM-DD` بتوقيت العيادة.
- */
-export function ageFromBirthYear(
-  birthYear: number | null | undefined,
-  onDate: string | null | undefined,
-): number | null {
-  if (typeof birthYear !== "number" || !Number.isInteger(birthYear)) return null;
-  if (birthYear < 1900 || birthYear > 2200) return null;
-  const year = Number(String(onDate ?? "").slice(0, 4));
-  if (!Number.isInteger(year) || year < 1900 || year > 2200) return null;
-  const age = year - birthYear;
-  return age >= 0 && age <= 130 ? age : null;
-}
-
-/**
  * المعيار المنطبق على هذا المريض — أو لا معيار.
  *
  * وحجبُ المعيار ليس نقصًا في التحليل بل شرطُ صدقه: القياس يُعرض بقيمته كاملةً

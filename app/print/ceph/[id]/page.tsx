@@ -5,10 +5,11 @@ import {
 import { STUDY_PHASE_TEXT, STUDY_STATUS_TEXT } from "@/lib/cephStudy";
 import {
   LANDMARKS, LANDMARK_MANUAL, SEVERITY_LABEL, SKELETAL_LABEL, VERTICAL_LABEL,
-  ageFromBirthYear, formatMeasurement, groupByAnalysis, referenceLines, say, severityOf, zScore,
+  formatMeasurement, groupByAnalysis, referenceLines, say, severityOf, zScore,
   type Lang,
 } from "@/lib/ceph";
 import { dateLong } from "@/lib/reminders";
+import { ageFromBirthYear } from "@/lib/patient";
 import { PrintHeader, PrintFooter } from "@/components/PrintHeader";
 import { PrintButton, ReprintMark } from "@/components/PrintButton";
 import { isAdmin } from "@/lib/roles";

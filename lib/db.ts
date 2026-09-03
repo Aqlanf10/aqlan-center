@@ -567,6 +567,34 @@ export function ensureSchema(): Promise<void> {
        * في كل هذا النظام. وتجميدُ الزوايا يعني رقمين لحقيقةٍ واحدة، ويومَ تُصحَّح
        * معادلةٌ لا يُصحَّح المحفوظ — فيبقى في الملف رقمٌ يُعرف أنه خطأ ولا يُمسّ.
        */
+      /*
+       * الوصفات الطبية — وثائقُ تخرج من المركز في يد المريض.
+       *
+       * والأدوية في عمود items مجموعةً لا في جدولٍ ثانٍ: هي محتوى الوثيقة لا
+       * كياناتٌ تُستعلم أو تُربط، وتُقرأ وتُطبع كتلةً واحدة كما صدرت.
+       *
+       * ولا تعديل بعد الإصدار: لا عمود يُحدَّث إلّا أعمدة الإبطال. فنسخةُ
+       * المريض ونسخةُ الملف تبقيان واحدة.
+       */
+      CREATE TABLE IF NOT EXISTS prescriptions (
+        id                SERIAL PRIMARY KEY,
+        patient_id        INTEGER     NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
+        visit_id          INTEGER     REFERENCES visits(id) ON DELETE SET NULL,
+        diagnosis         TEXT        NOT NULL DEFAULT '',
+        notes             TEXT        NOT NULL DEFAULT '',
+        instructions_lang TEXT        NOT NULL DEFAULT 'both',
+        items             JSONB       NOT NULL,
+        issued_by         TEXT        NOT NULL,
+        issued_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        voided_by         TEXT,
+        voided_at         TIMESTAMPTZ,
+        void_reason       TEXT
+      );
+      CREATE INDEX IF NOT EXISTS prescriptions_patient_idx
+        ON prescriptions (patient_id, issued_at DESC);
+      CREATE INDEX IF NOT EXISTS prescriptions_visit_idx
+        ON prescriptions (visit_id);
+
       CREATE TABLE IF NOT EXISTS ceph_studies (
         id             SERIAL PRIMARY KEY,
         patient_id     INTEGER     NOT NULL REFERENCES patients(id) ON DELETE RESTRICT,
@@ -1412,6 +1440,7 @@ import { type IntakeAnswers } from "./intake";
 import { CONFIRM_REFUSAL, confirmVerdict } from "./portal";
 import type { Appointment, AppointmentStatus } from "./schedule";
 
+import { ageFromBirthYear } from "./patient";
 import type { Gender, Patient, PatientInput } from "./patient";
 import type { CandidatePatient } from "./duplicates";
 
@@ -6494,7 +6523,7 @@ export async function closeOrthoCase(input: {
 // ─── التتبّع السيفالومتري ────────────────────────────────────────────────────
 
 import {
-  DEFAULT_NORMS, analyse, isLandmarkCode, ageFromBirthYear,
+  DEFAULT_NORMS, analyse, isLandmarkCode,
   type Analysis, type Calibration, type Norm, type Tracing,
 } from "./ceph";
 
@@ -7812,4 +7841,134 @@ export async function linkStudyToCase(input: {
   await getPool().query(
     `UPDATE ceph_studies SET ortho_case_id = $2 WHERE id = $1`, [input.id, input.orthoCaseId]);
   return { ok: true };
+}
+
+// ─── الوصفات الطبية ──────────────────────────────────────────────────────────
+
+import {
+  isInstructionsLang, sanitizeRxItems,
+  type InstructionsLang, type Prescription, type PrescriptionDraft, type RxItem,
+} from "./prescription";
+
+const RX_SELECT = `
+  SELECT r.id, r.patient_id, p.full_name AS patient_name, p.patient_number,
+         r.visit_id, r.diagnosis, r.notes, r.instructions_lang, r.items,
+         r.issued_by, r.issued_at, r.voided_by, r.voided_at, r.void_reason
+    FROM prescriptions r
+    JOIN patients p ON p.id = r.patient_id`;
+
+/**
+ * صفٌّ من القاعدة إلى وصفة.
+ *
+ * والأدوية تمرّ بالمُنقّي من جديد وإن كُتبت به عند الحفظ: صفٌّ قديم قد يكون
+ * حُفظ قبل أن يوجد المُنقّي، وقراءةٌ تثق بما في القاعدة تطبع ما لا شكل له.
+ */
+const toPrescription = (row: Record<string, unknown>): Prescription => ({
+  id: row.id as number,
+  patientId: row.patient_id as number,
+  patientName: row.patient_name as string,
+  patientNumber: String(row.patient_number ?? ""),
+  visitId: (row.visit_id as number | null) ?? null,
+  diagnosis: (row.diagnosis as string | null) ?? "",
+  notes: (row.notes as string | null) ?? "",
+  instructionsLang: isInstructionsLang(row.instructions_lang)
+    ? (row.instructions_lang as InstructionsLang) : "both",
+  items: sanitizeRxItems(row.items),
+  issuedBy: row.issued_by as string,
+  issuedAt: (row.issued_at as Date).toISOString(),
+  voidedBy: (row.voided_by as string | null) ?? null,
+  voidedAt: row.voided_at ? (row.voided_at as Date).toISOString() : null,
+  voidReason: (row.void_reason as string | null) ?? null,
+});
+
+/** يصدر وصفة. والإصدار نهائي: لا تعديل بعده، وإنما إبطالٌ مُعلَّل. */
+export async function createPrescription(
+  draft: PrescriptionDraft, actor: string,
+): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+
+  const { rows: patients } = await getPool().query<{ id: number }>(
+    `SELECT id FROM patients WHERE id = $1`, [draft.patientId]);
+  if (!patients[0]) return { ok: false, message: "المريض غير موجود." };
+
+  if (draft.visitId !== null) {
+    const { rows: visits } = await getPool().query<{ patient_id: number }>(
+      `SELECT patient_id FROM visits WHERE id = $1`, [draft.visitId]);
+    if (!visits[0]) return { ok: false, message: "الزيارة غير موجودة." };
+    /*
+     * زيارةُ مريضٍ آخر: الوصفة تُنسب إلى زيارةٍ ليست له، فتظهر في ملف غيره.
+     * وهذا خطأٌ لا يُكتشف إلّا بعد أن يُبنى عليه.
+     */
+    if (visits[0].patient_id !== draft.patientId) {
+      return { ok: false, message: "الزيارة ليست لهذا المريض." };
+    }
+  }
+
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO prescriptions
+       (patient_id, visit_id, diagnosis, notes, instructions_lang, items, issued_by)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING id`,
+    [
+      draft.patientId, draft.visitId, draft.diagnosis, draft.notes,
+      draft.instructionsLang, JSON.stringify(draft.items), actor,
+    ],
+  );
+  return { ok: true, id: rows[0].id };
+}
+
+/** وصفاتُ مريض — الأحدث أوّلًا، والمُبطَلة تبقى فيها ولا تُخفى. */
+export async function listPatientPrescriptions(patientId: number): Promise<Prescription[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `${RX_SELECT} WHERE r.patient_id = $1 ORDER BY r.issued_at DESC, r.id DESC`, [patientId]);
+  return rows.map(toPrescription);
+}
+
+export async function getPrescription(id: number): Promise<Prescription | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query(`${RX_SELECT} WHERE r.id = $1`, [id]);
+  return rows[0] ? toPrescription(rows[0]) : null;
+}
+
+/**
+ * يُبطل وصفة.
+ *
+ * والشرط `voided_at IS NULL` في الجملة نفسها لا قبلها: قراءةٌ ثم كتابة تسمح
+ * لطلبين متزامنين أن يُبطلا الوصفة مرّتين، فيُكتب آخرُهما فوق سبب أوّلهما.
+ */
+export async function voidPrescription(input: {
+  id: number; reason: string; actor: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE prescriptions
+        SET voided_at = NOW(), voided_by = $2, void_reason = $3
+      WHERE id = $1 AND voided_at IS NULL`,
+    [input.id, input.actor, input.reason],
+  );
+  if (!rowCount) return { ok: false, message: "الوصفة غير موجودة أو مُبطَلة أصلًا." };
+  return { ok: true };
+}
+
+/**
+ * أدويةٌ سبق أن وُصفت — تُقترح على من يكتب وصفةً جديدة.
+ *
+ * ومشتقّةٌ من الوصفات لا مكتوبةٌ في قائمةٍ ثابتة: قائمةٌ ثابتة تشيخ ولا تعرف
+ * ما يصفه هذا الطبيب فعلًا، والمشتقّة تتعلّم من عمله ويقلّ بها النقر.
+ */
+export async function prescribedBefore(limit = 60): Promise<RxItem[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ items: unknown }>(
+    `SELECT items FROM prescriptions
+      WHERE voided_at IS NULL ORDER BY issued_at DESC LIMIT 200`);
+  const seen = new Map<string, RxItem>();
+  for (const row of rows) {
+    for (const item of sanitizeRxItems(row.items)) {
+      // الاسم مفتاحًا بلا حالة أحرف: `Augmentin` و`augmentin` دواءٌ واحد.
+      const key = item.name.toLocaleLowerCase();
+      if (!seen.has(key)) seen.set(key, item);
+      if (seen.size >= limit) return [...seen.values()];
+    }
+  }
+  return [...seen.values()];
 }

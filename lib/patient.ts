@@ -36,13 +36,34 @@ export type PatientInput = Omit<Patient, "id" | "patientNumber" | "createdAt">;
 
 /** أصغر وأكبر سنة ميلاد مقبولة — تمنع «1092» و«2126» من الدخول بخطأ مطبعي. */
 export const MIN_BIRTH_YEAR = 1900;
+/** وأقصى ما يُقبل — يمنع سنةً في المستقبل البعيد من أن تصير عمرًا سالبًا. */
+export const MAX_BIRTH_YEAR = 2200;
 
-export function ageFromBirthYear(birthYear: number | null, today: string): number | null {
-  if (!birthYear) return null;
-  const year = Number(today.slice(0, 4));
-  if (!Number.isFinite(year)) return null;
+/**
+ * العمر من سنة الميلاد — الدالّة الوحيدة في النظام.
+ *
+ * والملفّ يحفظ السنة لا التاريخ الكامل، فالعمر مضبوطٌ إلى سنة: من وُلد في
+ * ٢٠٠٨ وصُوّر في ٢٠٢٦ عمرُه ١٧ أو ١٨ بحسب شهر ميلاده. ونُعيد الأكبر الممكن.
+ *
+ * ورقمٌ فاسد أسوأ من لا رقم، فتُردّ سنةُ ميلادٍ بعد التاريخ المسؤول عنه، أو
+ * خارج المدى، أو غير صحيحة.
+ *
+ * **ولا حساب ثانٍ لها في مكانٍ آخر**: عليها يُبنى ما يُطبع من عمرٍ على الورقة
+ * وما يُحجب من معايير البالغين في التحليل السيفالومتري. وحسابان يفترقان عند
+ * الحدّ، فتقول الورقة عمرًا ويحجب التحليل حكمه بعمرٍ غيره.
+ *
+ * @param on التاريخ المسؤول عنه بصيغة `YYYY-MM-DD` بتوقيت العيادة — لا `toISOString`.
+ */
+export function ageFromBirthYear(
+  birthYear: number | null | undefined,
+  on: string | null | undefined,
+): number | null {
+  if (typeof birthYear !== "number" || !Number.isInteger(birthYear)) return null;
+  if (birthYear < MIN_BIRTH_YEAR || birthYear > MAX_BIRTH_YEAR) return null;
+  const year = Number(String(on ?? "").slice(0, 4));
+  if (!Number.isInteger(year) || year < MIN_BIRTH_YEAR || year > MAX_BIRTH_YEAR) return null;
   const age = year - birthYear;
-  return age >= 0 && age < 130 ? age : null;
+  return age >= 0 && age <= 130 ? age : null;
 }
 
 /** «34 سنة» / «سنة واحدة» / «سنتان» — العربية تعدّ على صيغ لا على واحدة. */

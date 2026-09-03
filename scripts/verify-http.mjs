@@ -110,6 +110,44 @@ try {
   check('an unknown action is refused',
     (await patch('/api/ceph/studies/1',d,{action:'delete'})).status===400);
 
+  // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
+  const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
+  const rxPath=`/api/patients/${rxPatient.id}/prescriptions`;
+  check('prescriptions denied without a session',(await request(rxPath)).status===401);
+  check('reception cannot read a prescription — it is a diagnosis, not a receipt',(await request(rxPath,reception)).status===403);
+  check('nor write one',(await request(rxPath,reception,{items:[{name:'Amoxicillin'}]},{origin:base})).status===403);
+  check('a prescription with no drug is refused, not saved empty',
+    (await request(rxPath,d,{items:[]},{origin:base})).status===400);
+  check('a line with a dose but no drug name is not a drug',
+    (await request(rxPath,d,{items:[{dose:'500mg'}]},{origin:base})).status===400);
+  check('an unknown instructions language is refused, not silently defaulted',
+    (await request(rxPath,d,{items:[{name:'Amoxicillin'}],instructionsLang:'fr'},{origin:base})).status===400);
+  const issued=await request(rxPath,d,{items:[{name:'Amoxicillin',dose:'500mg',frequency:'every 8 hours'}],diagnosis:'خراج سنّي'},{origin:base});
+  check('the doctor issues one',issued.status===201);
+  const rxId=(await issued.json()).id;
+  // زيارةُ مريضٍ آخر: الوصفة تُنسب إلى ملفٍ ليس ملفَها.
+  check("a visit that belongs to another patient is refused",
+    (await request(rxPath,d,{items:[{name:'Brufen'}],visitId:999999},{origin:base})).status===400);
+  check('the paper is a doctor page — reception is not let in',(await fetch(base+`/print/prescription/${rxId}`,{headers:{cookie:reception},redirect:'manual'})).status===404);
+  const paper=await fetch(base+`/print/prescription/${rxId}`,{headers:{cookie:d},redirect:'manual'});
+  check('and the doctor gets it',paper.status===200);
+  const paperHtml=await paper.text();
+  check('the sheet carries the drug that was saved',paperHtml.includes('Amoxicillin'));
+  // أهمّ سطرٍ في الورقة — يُقرأ من الملف لا من ذاكرة من يكتب.
+  check("and the patient's allergy from the file",paperHtml.includes('حساسية من البنسلين'));
+  check('a prescription that does not exist is 404, not an invented sample',
+    (await fetch(base+'/print/prescription/999999',{headers:{cookie:d},redirect:'manual'})).status===404);
+  check('voiding needs a reason that will still read in a year',
+    (await request(`/api/prescriptions/${rxId}/void`,d,{reason:'خطأ'},{origin:base})).status===400);
+  check('reception cannot void one',(await request(`/api/prescriptions/${rxId}/void`,reception,{reason:'سببٌ كافٍ للإبطال'},{origin:base})).status===403);
+  check('the doctor voids it with a reason',
+    (await request(`/api/prescriptions/${rxId}/void`,d,{reason:'تغيّرت الخطة بعد الأشعة'},{origin:base})).status===200);
+  check('and it is not voided twice',
+    (await request(`/api/prescriptions/${rxId}/void`,d,{reason:'تغيّرت الخطة بعد الأشعة'},{origin:base})).status===400);
+  const voidedHtml=await (await fetch(base+`/print/prescription/${rxId}`,{headers:{cookie:d},redirect:'manual'})).text();
+  check('the voided sheet still prints, stamped and reasoned',
+    voidedHtml.includes('مُبطَلة')&&voidedHtml.includes('تغيّرت الخطة بعد الأشعة'));
+
   // ── الرسائل الداخلية: خيطُ اثنين لا يُفتح لثالث ──
   check('messages denied without a session',(await request('/api/messages?conversations=1')).status===401);
   check('a portal cookie opens no staff message',(await request('/api/messages?conversations=1',portalCookie)).status===401);
