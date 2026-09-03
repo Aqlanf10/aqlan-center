@@ -34,7 +34,8 @@ const page = await context.newPage();
 page.on("pageerror", (e) => console.log("[خطأ صفحة]", String(e).slice(0, 160)));
 
 let failed = false;
-let openedByUs = false;
+/** رقمُ الوردية التي فتحتها هذه الرحلة — وحدها تُغلق، ولا شيء غيرها. */
+let ourShiftId = null;
 const say = (label, ok, extra = "") => {
   console.log(`   ${ok ? "✓" : "✗"} ${label}${extra ? ` — ${extra}` : ""}`);
   if (!ok) failed = true;
@@ -71,29 +72,48 @@ try {
 
   console.log("1) الوردية");
   const before = await api("/api/shifts");
-  const hadOpenShift = Boolean(before.body?.open);
-  say("قُرئت حالة الصندوق", before.status === 200,
-    hadOpenShift ? "وردية مفتوحة أصلًا" : "لا وردية");
+  say("قُرئت حالة الصندوق", before.status === 200);
 
-  if (!hadOpenShift) {
-    /*
-     * ولا قبضَ قبل الفتح — وهذا أوّل ما يُفحص لأنه الحارس الذي يمنع مالًا يدخل
-     * بلا وردية، فلا يظهر في أي إغلاق.
-     */
-    const early = await api("/api/payments", {
-      method: "POST",
-      body: JSON.stringify({ patientId: 1, amount: "100", currency: "YER", kind: "payment", method: "cash" }),
-    });
-    say("لا تُقبض دفعة قبل فتح الوردية", early.status === 409 || early.status === 400,
-      early.body?.message ?? `${early.status}`);
-
-    await page.getByRole("button", { name: "افتح الوردية" }).click();
-    await page.waitForTimeout(2000);
-    openedByUs = true;
-    say("فُتحت وردية", Boolean((await api("/api/shifts")).body?.open));
-  } else {
-    console.log("   (وردية مفتوحة أصلًا — لن تُغلق، ولن يُفحص منعُ القبض قبل الفتح)");
+  /*
+   * ورديةٌ مفتوحة أصلًا: **تُهجَر الرحلة كلّها**.
+   *
+   * وأوّل صيغةٍ كتبتُها كانت تكتفي بتخطّي الفتح ثم تمضي فتقبض وتصرف — والدفعة
+   * والمصروف يلتصقان بالوردية المفتوحة **أيًّا كانت**. فرحلةٌ تُشغَّل على جهازٍ
+   * موجَّهٍ إلى الإنتاج أثناء وردية كاشيرٍ حقيقية تدسّ فيها ١٥٬٠٠٠ قبضًا و٣٬٠٠٠
+   * صرفًا، فيختلّ جردُها ولا يُعرف السبب. وهذا أسوأ من إغلاقها.
+   */
+  if (before.body?.open) {
+    console.log("   ✗ وردية مفتوحة أصلًا — تُهجَر الرحلة، ولا تُدسّ حركاتٌ في صندوق أحد.");
+    console.log("     أغلقها من شاشة المالية ثم أعد التشغيل.");
+    process.exit(2);
   }
+
+  /*
+   * ولا قبضَ قبل الفتح — أوّل ما يُفحص، لأنه الحارس الذي يمنع مالًا يدخل بلا
+   * وردية فلا يظهر في أي إغلاق.
+   */
+  const early = await api("/api/payments", {
+    method: "POST",
+    body: JSON.stringify({ patientId: 1, amount: "100", currency: "YER", kind: "payment", method: "cash" }),
+  });
+  say("لا تُقبض دفعة قبل فتح الوردية", early.status === 409 || early.status === 400,
+    early.body?.message ?? `${early.status}`);
+
+  /*
+   * والفتح من المسار مباشرةً لا من الزرّ — لأن **الملكية تُشتقّ من جواب الفتح**.
+   * والزرّ لا يقول إن نجح: لو فتح زميلٌ ورديةً بين القراءة والنقر لردّ الخادم
+   * ٤٠٩، ولظنّت الرحلة أن الوردية لها فأغلقت وردية غيرها في النهاية.
+   */
+  const opened = await api("/api/shifts", { method: "POST", body: JSON.stringify({ opening: {} }) });
+  say("فُتحت وردية باسم الرحلة", opened.status === 201 && Number(opened.body?.id) > 0,
+    opened.body?.message ?? `${opened.status}`);
+  if (opened.status !== 201) {
+    console.log("   ✗ لم تُفتح وردية — تُهجَر الرحلة قبل أي حركة مالية.");
+    process.exit(2);
+  }
+  ourShiftId = Number(opened.body.id);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
 
   console.log("2) فاتورة ودفعة من ملف المريض");
   const name = "مريض المال " + Date.now().toString().slice(-5);
@@ -198,43 +218,71 @@ try {
   }
 
   console.log("5) الإغلاق بجرد");
-  if (openedByUs) {
+  {
     const state = await api("/api/shifts");
+    say("والوردية المفتوحة هي وردية الرحلة لا غيرها",
+      Number(state.body?.open?.id) === ourShiftId,
+      `${state.body?.open?.id} مقابل ${ourShiftId}`);
     const opening = Number(state.body?.open?.opening?.YER ?? 0);
     const expected = opening + Number(state.body?.totals?.byCurrency?.YER ?? 0)
       - Number(state.body?.expenseTotals?.byCurrency?.YER ?? 0);
 
     await page.getByRole("button", { name: "إغلاق الوردية وجرد الصندوق" }).click();
     await page.waitForTimeout(800);
-    // يُعدّ المتوقَّع بالضبط — فلا فرق، والفرق يظهر قبل الحفظ لا بعده.
     const counters = page.locator('input[placeholder="0"]');
+
+    /*
+     * يُعدّ **رقمٌ خاطئ أوّلًا** ليُرى أن الفرق يظهر فعلًا.
+     *
+     * وأوّل صيغةٍ كتبتُها كانت تعدّ المتوقَّع بالضبط ثم تشترط غياب «نقص» و«زيادة»
+     * — وهذا يمرّ حتى لو حُذفت ميزة الفرق كلّها من الشاشة. **فحصٌ يمرّ على غياب
+     * ما لم يُطلب إظهاره ليس فحصًا.**
+     */
+    await type(counters.first(), String(expected - 500));
+    await page.waitForTimeout(600);
+    const mismatch = await page.locator("body").innerText();
+    say("عدٌّ أقلّ من المتوقَّع يُظهر «نقص» قبل الحفظ", mismatch.includes("نقص"));
+    await counters.first().fill("");
+    await type(counters.first(), String(expected + 500));
+    await page.waitForTimeout(600);
+    say("وعدٌّ أكثر يُظهر «زيادة»",
+      (await page.locator("body").innerText()).includes("زيادة"));
+
+    await counters.first().fill("");
     await type(counters.first(), String(expected));
-    await page.waitForTimeout(500);
-    const beforeSave = await page.locator("body").innerText();
-    say("الفرق يظهر قبل الحفظ — ولا فرق هنا",
-      !beforeSave.includes("نقص") && !beforeSave.includes("زيادة"));
+    await page.waitForTimeout(600);
+    const exact = await page.locator("body").innerText();
+    say("والعدّ المطابق لا يُظهر فرقًا",
+      !exact.includes("نقص") && !exact.includes("زيادة"));
 
     await page.getByRole("button", { name: "أغلق الوردية" }).click();
     await page.waitForTimeout(2500);
     const closed = await api("/api/shifts");
-    say("أُغلقت الوردية", !closed.body?.open);
-    openedByUs = false;
-  } else {
-    console.log("   (الوردية لم تُفتح من هذه الرحلة — لا تُغلق)");
+    const reallyClosed = !closed.body?.open;
+    say("أُغلقت الوردية", reallyClosed);
+    // الملكية لا تُسقَط إلّا بعد التثبّت — وإلّا عُطِّل تنظيفُ `finally`.
+    if (reallyClosed) ourShiftId = null;
   }
 
   console.log(failed ? "\nسقطت الرحلة." : "\nرحلة المال اكتملت.");
 } finally {
-  // ما فتحته الرحلة تُغلقه — في النجاح وفي السقوط.
-  if (openedByUs) {
-    await page.evaluate(async () => {
+  /*
+   * ما فتحته الرحلة تُغلقه — في النجاح وفي السقوط، **وبرقمه**.
+   *
+   * والمسار يشترط `id` موجبًا ويردّ ٤٠٠ بدونه؛ وأوّل صيغةٍ كتبتُها أهملته
+   * وأهملت الجواب معًا — فكان «التنظيف المضمون» يترك الوردية مفتوحة بصمت.
+   */
+  if (ourShiftId) {
+    const result = await page.evaluate(async (id) => {
       const state = await (await fetch("/api/shifts")).json();
-      if (!state.open) return;
-      await fetch("/api/shifts", {
+      if (!state.open || state.open.id !== id) return "ليست لنا";
+      const response = await fetch("/api/shifts", {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ counted: {}, note: "إغلاق بعد سقوط رحلة المال" }),
+        body: JSON.stringify({ id, counted: {}, note: "إغلاق بعد سقوط رحلة المال" }),
       });
-    }).catch(() => {});
+      return response.ok ? "أُغلقت" : `تعذّر (${response.status})`;
+    }, ourShiftId).catch((error) => `تعذّر (${String(error).slice(0, 40)})`);
+    console.log(`   تنظيف: وردية ${ourShiftId} — ${result}`);
   }
   await context.close();
   await browser.close();
