@@ -1,4 +1,4 @@
-import { millimetresPerUnit, type Calibration, type Tracing, type TracedPoint } from "./ceph";
+import { millimetresPerUnit, type Bilingual, type Calibration, type Tracing, type TracedPoint } from "./ceph";
 
 /**
  * التراكب — رسمُ دراستين فوق بعضهما لتُرى الحركة بالعين.
@@ -46,7 +46,14 @@ export interface Superimposition {
 
 export type SuperimposeResult =
   | { ok: true; value: Superimposition }
-  | { ok: false; message: string };
+  /*
+   * وسببُ التعذّر بلغتين — لا بالعربية وحدها.
+   *
+   * فهو يخرج على الورقة الإنجليزية كما يخرج على الشاشة، وهناك يُقرأ بعد عنوانٍ
+   * إنجليزي — **وهو أحوج ما يكون إلى أن يُفهم**: الرسالة تقول ما ينقص وما
+   * يُفعل، لا «تعذّر».
+   */
+  | { ok: false; message: Bilingual };
 
 /** إلى فضاء الحساب: أفقيٌّ مضروبٌ في النسبة، ورأسيٌّ مقلوب — كما في التحليل. */
 const toAnalysis = (point: TracedPoint, aspect: number) => ({ x: point.x * aspect, y: -point.y });
@@ -69,20 +76,32 @@ export function superimposeOnSN(base: SuperimposeInput, target: SuperimposeInput
   if (!baseS || !baseN || !targetS || !targetN) {
     return {
       ok: false,
-      message: "التراكب يحتاج المعلمين S وN في الدراستين — ضعهما ثم أعد المحاولة.",
+      message: {
+        ar: "التراكب يحتاج المعلمين S وN في الدراستين — ضعهما ثم أعد المحاولة.",
+        en: "Superimposition needs landmarks S and N on both studies — place them and retry.",
+      },
     };
   }
 
   if (!base.calibration || !target.calibration) {
     return {
       ok: false,
-      message: "التراكب يحتاج معايرة الصورتين — بلا مقياسٍ معلوم لا يُعرف كم يساوي الفرق.",
+      message: {
+        ar: "التراكب يحتاج معايرة الصورتين — بلا مقياسٍ معلوم لا يُعرف كم يساوي الفرق.",
+        en: "Superimposition needs both images calibrated — without a known scale the difference has no size.",
+      },
     };
   }
   const baseMm = millimetresPerUnit(base.calibration, base.aspect);
   const targetMm = millimetresPerUnit(target.calibration, target.aspect);
   if (!baseMm || !targetMm) {
-    return { ok: false, message: "معايرة إحدى الصورتين غير صالحة." };
+    return {
+      ok: false,
+      message: {
+        ar: "معايرة إحدى الصورتين غير صالحة.",
+        en: "The calibration of one of the two images is not valid.",
+      },
+    };
   }
 
   // مقاسُ الثانية بوحدات الأولى: مليمترٌ واحد يجب أن يكون طولًا واحدًا في الرسمين.

@@ -107,6 +107,17 @@ html[data-reprint="true"] .reprint-mark {
 .ceph-image { display: block; max-width: 100%; max-height: 120mm; }
 .ceph-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 
+/*
+ * رسم التراكب — خطوطٌ بلا صورة تحتها.
+ *
+ * وارتفاعُه مقيَّدٌ لا عرضُه: الورقة A4 والرسم يجب أن يبقى مع الجدول على وجهٍ
+ * واحد. و`preserveAspectRatio` في العنصر نفسه يحفظ التناسب، فلا يُشدّ الرسم
+ * فتنحرف زاويةٌ عن التي في الجدول تحته.
+ */
+.ceph-superimpose {
+  display: block; width: auto; max-width: 100%; height: 85mm; margin: 2mm auto;
+}
+
 .ceph-mark { position: absolute; transform: translate(-50%, -50%); }
 /* دائرةٌ مفرغة لا مصمتة: المعلم يجب أن يبقى مرئيًّا تحتها لتُراجَع دقّة الوضع. */
 .ceph-dot {

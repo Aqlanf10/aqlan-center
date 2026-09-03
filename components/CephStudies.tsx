@@ -264,6 +264,26 @@ export function CephStudies({ patientId }: { patientId: number }) {
           >
             تراكب
           </button>
+          {/*
+            * ورقة «قبل وبعد».
+            *
+            * ورابطٌ لا زرّ: الصفحة تفتح في لسانٍ جديد وتُطبع من المتصفّح كبقيّة
+            * مستندات النظام. والترتيب لا يُرسل — الصفحة تفرضه زمنيًّا بنفسها،
+            * فلا يقلب ترتيبُ النقر «قبل» و«بعد» على الورقة.
+            */}
+          <a
+            href={pickedForCompare.length === 2
+              ? `/print/ceph-compare?first=${pickedForCompare[0]}&second=${pickedForCompare[1]}`
+              : undefined}
+            target="_blank"
+            rel="noreferrer"
+            aria-disabled={pickedForCompare.length !== 2}
+            className={`rounded-xl border border-navy-800 bg-white px-3 py-1.5 text-xs font-bold text-navy-900 ${
+              pickedForCompare.length === 2 ? "" : "pointer-events-none opacity-40"
+            }`}
+          >
+            اطبع المقارنة
+          </a>
           <button
             onClick={() => {
               setPickedForCompare([]); setComparison(null);
