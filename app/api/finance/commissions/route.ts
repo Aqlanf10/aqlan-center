@@ -26,9 +26,16 @@ export async function GET(request: Request) {
   const [start, end] = from <= to ? [from, to] : [to, from];
 
   try {
-    const [rows, settings] = await Promise.all([commissionReport(start, end), getSettings()]);
+    const [report, settings] = await Promise.all([commissionReport(start, end), getSettings()]);
     const base = settings["finance.base_currency"];
-    return NextResponse.json({ from: start, to: end, rows, baseCurrency: isCurrency(base) ? base : "YER" });
+    return NextResponse.json({
+      from: start, to: end,
+      rows: report.rows,
+      // الشاشة تقول على أيّ قاعدةٍ حُسب ما يعرضه — ولا يُترك القارئ يخمّن.
+      deductsLabCost: report.deductsLabCost,
+      unattributedLabCostMinor: report.unattributedLabCostMinor,
+      baseCurrency: isCurrency(base) ? base : "YER",
+    });
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل العمولات." }, { status: 500 });
   }

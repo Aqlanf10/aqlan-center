@@ -24,6 +24,7 @@ export type SettingKey =
   | "finance.rate.SAR"
   | "finance.rate.USD"
   | "finance.locked_before"
+  | "finance.commission_deducts_lab_cost"
   | "lab.default_days"
   | "ortho.adjust_weeks"
   | "ortho.retention_weeks"
@@ -53,6 +54,14 @@ export const SETTING_DEFAULTS: Record<SettingKey, string> = {
   "finance.rate.USD": "530",
   // فارغ = لا قفل. يُملأ بتاريخ فيصير كل ما قبله مقفلًا لا يُعدَّل.
   "finance.locked_before": "",
+  /*
+   * العمولة على صافي التحصيل بعد تكلفة المختبر — قرار المالك.
+   *
+   * وبلا الخصم تُدفع النسبة على مالٍ خرج أكثرُه إلى المختبر: تاجٌ بستّين ألفًا
+   * تكلفة تركيبه عشرون، ونسبة الطبيب أربعون بالمئة — فيُصرف له أربعةٌ وعشرون
+   * من أربعين هي كلُّ ما بقي للمركز، بدل ستّة عشر.
+   */
+  "finance.commission_deducts_lab_cost": "yes",
   "lab.default_days": "7",
   // مهلة الشدّ حين لا يحدّدها الطبيب في الزيارة: أربعة أسابيع هي الأشيع في التقويم
   // الثابت، والانقطاع الأطول يُطيل العلاج ويفكّ ما أُنجز.
@@ -141,6 +150,21 @@ export function rateFromSettings(
   return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
+/** القيم المقبولة لمفتاحٍ ثنائي. */
+const isYesNo = (value: string): boolean => value === "yes" || value === "no";
+
+/**
+ * قراءة مفتاحٍ ثنائي — في موضعٍ واحد.
+ *
+ * وقراءتان لمفتاحٍ واحد تفترقان: `=== "yes"` في مكان و`!== "no"` في آخر
+ * تعطيان جوابين متعاكسين على قيمةٍ فارغة أو غريبة.
+ */
+export function settingIsYes(
+  settings: Partial<Record<SettingKey, string>>, key: SettingKey,
+): boolean {
+  return (settings[key] ?? SETTING_DEFAULTS[key]).trim() === "yes";
+}
+
 /** حدود التحقق عند الحفظ — لكل مفتاح ما يُقبل فيه. */
 export function validateSetting(key: SettingKey, value: string): string | null {
   const trimmed = value.trim();
@@ -166,6 +190,16 @@ export function validateSetting(key: SettingKey, value: string): string | null {
     if (trimmed && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
       return "تاريخ القفل بصيغة 2026-08-31 أو اتركه فارغًا.";
     }
+  }
+  if (key === "finance.commission_deducts_lab_cost") {
+    /*
+     * `yes` أو `no` لا غير — ولا يُقبل «نعم» ولا فراغ.
+     *
+     * فمفتاحٌ يُقرأ «أهو yes؟» يجعل كلَّ ما سواه «لا»: من كتب «نعم» يظنّ أنّه
+     * فعّل الخصم، والحساب يقرؤها «لا» فيدفع للطبيب أكثر ممّا قرّر المالك، بلا
+     * رسالةٍ ولا أثر. والقيمةُ هنا تحكم مالًا يُصرف، فلا تُخمَّن.
+     */
+    if (!isYesNo(trimmed)) return "اكتب yes للخصم أو no لإيقافه.";
   }
   if (key === "lab.default_days") {
     const days = Number(trimmed);
@@ -204,6 +238,7 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: "finance.rate.SAR", label: "سعر الريال السعودي", hint: "كم ريالًا يمنيًا يساوي ريالًا سعوديًا اليوم", kind: "number", group: "finance" },
   { key: "finance.rate.USD", label: "سعر الدولار", hint: "كم ريالًا يمنيًا يساوي دولارًا اليوم", kind: "number", group: "finance" },
   { key: "finance.locked_before", label: "قفل الدفاتر قبل تاريخ", hint: "لا يُقبل قيد أو تعديل قبل هذا التاريخ. اتركه فارغًا لإلغاء القفل.", kind: "date", group: "finance" },
+  { key: "finance.commission_deducts_lab_cost", label: "خصم تكلفة المختبر من عمولة الطبيب", hint: "اكتب yes للخصم، أو no لتُحسب العمولة على المحصّل كاملًا. والخصم يُنسب بالطبيب المكتوب على أمر المختبر.", kind: "text", group: "finance" },
 
   { key: "clinic.chairs", label: "عدد الكراسي", hint: "يحكم الحجز والانتظار وشاشة الصالة", kind: "number", group: "operations" },
   { key: "clinic.day_start", label: "بداية الدوام", kind: "time", group: "operations" },

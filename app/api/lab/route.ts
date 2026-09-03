@@ -79,6 +79,20 @@ export async function POST(request: Request) {
   const labParties = new Set((await listParties("lab")).map((party) => party.id));
   const partyId = Number.isInteger(partyIdRaw) && labParties.has(partyIdRaw) ? partyIdRaw : null;
 
+  /*
+   * الطبيب الذي أمر بالعمل — تُخصم تكلفته من عمولته.
+   *
+   * ويُتحقّق أنّه طبيبٌ مسجَّل لا رقمٌ مُرسل: رقمُ جهةٍ أخرى — مختبرٍ أو موردٍ —
+   * يجعل تكلفةً تُخصم من عمولة من ليس طبيبًا، فتختفي من حساب الأطباء بلا أثر.
+   */
+  const doctorIdRaw = Number(source.doctorId);
+  const doctorParties = new Set((await listParties("doctor")).map((party) => party.id));
+  const doctorPartyId = Number.isInteger(doctorIdRaw) && doctorParties.has(doctorIdRaw)
+    ? doctorIdRaw : null;
+  if (source.doctorId !== undefined && String(source.doctorId).trim() !== "" && doctorPartyId === null) {
+    return NextResponse.json({ message: "اختر الطبيب من قائمة الأطباء." }, { status: 400 });
+  }
+
   let costMinor: number | null = null;
   let costCurrency: Currency | null = null;
   let exchangeRate = 1;
@@ -104,7 +118,7 @@ export async function POST(request: Request) {
   try {
     const created = await createLabOrder({
       patientId, labName, labPhone, workType, details, sentDate, dueDate, note,
-      partyId, costMinor, costCurrency, baseCurrency: base, exchangeRate,
+      partyId, doctorPartyId, costMinor, costCurrency, baseCurrency: base, exchangeRate,
       createdBy: session.username,
     });
     if (!created) return NextResponse.json({ message: "تعذّر حفظ العمل." }, { status: 500 });

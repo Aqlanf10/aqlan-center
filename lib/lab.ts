@@ -29,6 +29,14 @@ export interface LabOrder {
   receivedAt: string | null;
   deliveredAt: string | null;
   note: string | null;
+  /**
+   * الطبيب الذي أمر بالعمل — وعليه تُخصم تكلفته من عمولته.
+   *
+   * ويقبل الفراغ: أوامرُ ما قبل هذا الحقل لا طبيب لها، وتخمينُه عليها يخصم من
+   * طبيبٍ مالًا بحدسٍ لا بسجلّ.
+   */
+  doctorId: number | null;
+  doctorName: string | null;
 }
 
 export const LAB_STATUS_LABEL: Record<LabOrderStatus, string> = {

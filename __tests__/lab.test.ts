@@ -20,6 +20,8 @@ function order(over: Partial<LabOrder> & { id: number }): LabOrder {
     patientPhone: null,
     labName: "مختبر النور",
     labPhone: null,
+    doctorId: null,
+    doctorName: null,
     workType: "تاج",
     details: null,
     sentDate: "2026-08-20",

@@ -110,6 +110,23 @@ try {
   check('an unknown action is refused',
     (await patch('/api/ceph/studies/1',d,{action:'delete'})).status===400);
 
+  const rxPatientForLab=await db.createPatient({fullName:'مريض المختبر',phone:'770998877',altPhone:null,gender:'male',birthYear:1985,address:null,medicalAlert:null,note:null});
+  // ── خصم تكلفة المختبر من عمولة الطبيب ──
+  check('a lab order with a doctor id that is not a doctor is refused, not silently dropped',
+    (await request('/api/lab',a,{patientId:rxPatientForLab.id,labName:'مختبر الاختبار',workType:'تاج',sentDate:'2026-09-01',dueDate:'2026-09-08',doctorId:999999},{origin:base})).status===400);
+  const commissions=await (await request('/api/finance/commissions?from=2026-09-01&to=2026-09-30',a)).json();
+  check('the commissions screen says which rule it computed on',typeof commissions.deductsLabCost==='boolean');
+  check('and reports lab cost that carries no doctor rather than splitting it by guess',
+    typeof commissions.unattributedLabCostMinor==='number');
+  check('every row carries the deduction line, not just a total',
+    commissions.rows.every(r=>typeof r.labCostMinor==='number'&&typeof r.netEarnedMinor==='number'&&typeof r.uncoveredLabCostMinor==='number'));
+  // القيمة تحكم مالًا يُصرف، فلا تُخمَّن: «نعم» ليست yes.
+  check('the deduction setting refuses anything but yes or no',
+    (await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'نعم'})).status===400);
+  check('and accepts no',(await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'no'})).status===200);
+  check('and yes — the owner decided the deduction',
+    (await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'yes'})).status===200);
+
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
   const rxPath=`/api/patients/${rxPatient.id}/prescriptions`;

@@ -59,6 +59,8 @@ export default function LabPage() {
   const [labPhone, setLabPhone] = useState("");
   const [labParties, setLabParties] = useState<{ id: number; name: string }[]>([]);
   const [partyId, setPartyId] = useState("");
+  const [doctorId, setDoctorId] = useState("");
+  const [doctorParties, setDoctorParties] = useState<{ id: number; name: string }[]>([]);
   const [cost, setCost] = useState("");
   const [costCurrency, setCostCurrency] = useState<Currency>(
     isCurrency(baseSettingValue) ? baseSettingValue : "YER",
@@ -93,6 +95,16 @@ export default function LabPage() {
         const response = await fetch("/api/parties?kind=lab", { cache: "no-store" });
         if (response.ok) setLabParties(await response.json());
       } catch { /* القائمة تبقى فارغة والتكلفة تبقى اختيارية */ }
+    })();
+  }, []);
+
+  // والأطباء: على من كتب اسمه هنا تُخصم تكلفة العمل من عمولته.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch("/api/parties?kind=doctor", { cache: "no-store" });
+        if (response.ok) setDoctorParties(await response.json());
+      } catch { /* تبقى القائمة فارغة والحقل اختياريًّا */ }
     })();
   }, []);
 
@@ -135,7 +147,7 @@ export default function LabPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         patientId: patient.id, labName, labPhone, workType, details, sentDate, dueDate,
-        partyId: partyId || undefined, cost, costCurrency,
+        partyId: partyId || undefined, doctorId: doctorId || undefined, cost, costCurrency,
       }),
     }));
     if (ok) {
@@ -144,7 +156,7 @@ export default function LabPage() {
       setAdding(false);
       setFilter("outstanding");
     }
-  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, cost, costCurrency]);
+  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, doctorId, cost, costCurrency]);
 
   const summary = useMemo(() => labSummary(feed.orders, today), [feed.orders, today]);
   const visible = useMemo(
@@ -261,6 +273,25 @@ export default function LabPage() {
           >
             <option value="">— بلا تسجيل تكلفة —</option>
             {labParties.map((party) => (
+              <option key={party.id} value={party.id}>{party.name}</option>
+            ))}
+          </select>
+
+          {/*
+            * الطبيب الآمر بالعمل.
+            *
+            * وتكلفة التركيبة تُخصم من عمولته — قرار المالك. وتركُه فارغًا يترك
+            * التكلفة بلا نسبة: تظهر في شاشة العمولات «بلا طبيب» ولا تُخصم من
+            * أحد، ولا تُوزَّع بالحدس على من لم يثبت أنّه عملها.
+            */}
+          <label className="mb-1 block text-[11px] font-bold text-slate-500">الطبيب الآمر بالعمل (تُخصم تكلفته من عمولته)</label>
+          <select
+            value={doctorId}
+            onChange={(event) => setDoctorId(event.target.value)}
+            className="mb-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="">— بلا طبيب —</option>
+            {doctorParties.map((party) => (
               <option key={party.id} value={party.id}>{party.name}</option>
             ))}
           </select>
