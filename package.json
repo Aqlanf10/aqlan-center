@@ -41,6 +41,7 @@
     "verify:messages": "tsx scripts/verify-messages.mjs",
     "verify:ceph-study": "tsx scripts/verify-ceph-study.mjs",
     "journey:ceph-study": "node scripts/journeys/ceph-study.mjs",
+    "backfill:image-size": "tsx scripts/backfill-image-size.mjs",
     "journey:messages": "node scripts/journeys/messages.mjs",
     "journey:pwa": "node scripts/journeys/pwa.mjs",
     "icons": "node scripts/make-icons.mjs"

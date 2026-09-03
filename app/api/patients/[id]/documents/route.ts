@@ -5,6 +5,7 @@ import {
 import { putFile, storageStatus } from "@/lib/files";
 import { isAdmin } from "@/lib/roles";
 import { DEFAULT_MAX_BYTES, isDocumentKind, validateUpload } from "@/lib/storage";
+import { imageSize } from "@/lib/imageSize";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -90,12 +91,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const bytes = Buffer.from(await file.arrayBuffer());
     const stored = await putFile(bytes, check.extension);
+    /*
+     * أبعاد الصورة تُقرأ الآن وتُحفظ مع وصفها.
+     *
+     * معالم التتبّع كسورٌ من العرض والارتفاع، فنسبةُ الصورة تدخل حساب الزاوية.
+     * والخادم لم يكن يعرفها فكان تقرير الطباعة يحسب على ١: على أشعّةٍ ٤:٥ تُقاس
+     * FMA ٣٦٫٠° على الشاشة و٢٩٫٤° على الورقة.
+     */
+    const size = imageSize(bytes);
     const document = await recordDocument({
       patientId, visitId, kind, title,
       mimeType: file.type,
       sizeBytes: stored.sizeBytes,
       sha256: stored.sha256,
       storageKey: stored.key,
+      imageWidth: size?.width ?? null,
+      imageHeight: size?.height ?? null,
       note: rawNote ? rawNote.slice(0, 300) : null,
       takenOn,
       uploadedBy: session.username,
