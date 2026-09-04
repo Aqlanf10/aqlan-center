@@ -479,6 +479,21 @@ try {
   check('the card does not leak the medical alert',!cardHtml.includes('حساسية من اللاتكس'));
   // وتحمل تاريخ طبعها: بطاقةٌ بلا تاريخٍ تُقرأ بعد ستة أشهر على أنها اليوم.
   check('the card says when it was printed',cardHtml.includes('طُبعت في'));
+  /*
+   * وتاريخ التسجيل بتوقيت العيادة كتاريخ الطبع تمامًا.
+   *
+   * فـ`createdAt` طابعٌ بتوقيت غرينتش، وقصُّ عشرة أحرفٍ منه يعطي **اليوم السابق**
+   * لمن سُجّل بين منتصف الليل والثالثة فجرًا باليمن (+٣) — والعيادة تسجّل في تلك
+   * الساعات في ليالي رمضان. والفخّ مكتوبٌ في `CLAUDE.md` بعينه.
+   */
+  const midnightPatient=await db.createPatient({fullName:'مريض منتصف الليل',phone:'770998877',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:null,note:null});
+  // الواحدة والنصف فجرًا بتوقيت العيادة = 22:30 من اليوم السابق بغرينتش.
+  await db.getPool().query("UPDATE patients SET created_at = $2 WHERE id = $1",[midnightPatient.id,'2026-03-15T22:30:00Z']);
+  const midnightHtml=await (await request(`/print/patient-card/${midnightPatient.id}`,reception)).text();
+  // والصيغة «16/03/2026» لا ISO — `friendlyDateLong` يوم/شهر/سنة.
+  check('the registration date is the clinic day, not the UTC one that reads a day early',
+    midnightHtml.includes('16/03/2026')&&!midnightHtml.includes('15/03/2026'),
+    midnightHtml.includes('15/03/2026')?'طُبع 15/03 — يومًا قبل التسجيل':'لم يظهر أيّ من التاريخين');
   // ومريضٌ لا وجود له ٤٠٤، لا بطاقةً باسمٍ فارغ على ترويسة المركز.
   check('a patient that does not exist gets no card',(await request('/print/patient-card/99999999',reception)).status===404);
   // وطبعتها تُسجَّل بنوعها: نوعٌ يُسجَّل باسم آخر يفسد عدّاد المستندات المالية.

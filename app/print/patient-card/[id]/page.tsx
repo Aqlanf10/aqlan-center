@@ -62,7 +62,10 @@ export default async function PatientCardPage({ params }: { params: Promise<{ id
         </div>
         <div className="line">
           <span>تاريخ التسجيل</span>
-          <span>{friendlyDateLong(String(patient.createdAt).slice(0, 10))}</span>
+          {/* وبتوقيت العيادة كتاريخ الطبع تمامًا: `createdAt` طابعٌ بتوقيت غرينتش،
+              وقصُّ عشرة أحرفٍ منه يعطي اليوم السابق لمن سُجّل بين منتصف الليل
+              والثالثة فجرًا — والعيادة تسجّل في تلك الساعات في ليالي رمضان. */}
+          <span>{friendlyDateLong(clinicDateString(new Date(patient.createdAt), CLINIC_TIME_ZONE))}</span>
         </div>
 
         <div className="rule-light" />
