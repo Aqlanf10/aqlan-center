@@ -43,6 +43,17 @@ export default function LabSettingsPage() {
   const [serviceId, setServiceId] = useState("");
   const [cost, setCost] = useState("");
   const [from, setFrom] = useState(today);
+  /*
+   * السعرُ الجاري استبدالُه.
+   *
+   * ورفعُ المختبر سعره **أشيع ما يقع هنا**، ويُسجَّل يوم يقع. وكان مستحيلًا من
+   * الشاشة: «أغلقه اليوم» ينهي القديم اليوم، والجديد يبدأ اليوم، والحدّان
+   * شاملان — فيُردّ «يتداخل»، ولا زرَّ يُغلق القديم أمس.
+   *
+   * فالاستبدال فعلٌ واحد يُطلب صراحةً: الخادم يُغلق القديم في اليوم السابق
+   * لبدء الجديد ويُدخل الجديد في معاملةٍ واحدة.
+   */
+  const [replacing, setReplacing] = useState<LabPrice | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -90,9 +101,23 @@ export default function LabSettingsPage() {
   };
 
   const addPrice = async () => {
+    // ولا يُطلب الاستبدال إلّا على المختبر والعمل اللذين بدأ عليهما: تبديلُ
+    // القائمة بعد الضغط يجعل «استبدل» يُغلق سعر عملٍ آخر لم يُقصد.
+    const replace = replacing !== null
+      && replacing.partyId === Number(labId) && replacing.serviceId === Number(serviceId);
     if (await send("/api/lab/prices", "POST", {
       partyId: Number(labId), serviceId: Number(serviceId), cost, effectiveFrom: from,
-    })) setCost("");
+      ...(replace ? { replace: true } : {}),
+    })) { setCost(""); setReplacing(null); }
+  };
+
+  const startReplace = (price: LabPrice) => {
+    setReplacing(price);
+    setLabId(String(price.partyId));
+    setServiceId(String(price.serviceId));
+    setFrom(today);
+    setCost("");
+    setError(null);
   };
 
   const serviceName = (id: number) => services.find((one) => one.id === id)?.name ?? "—";
@@ -207,11 +232,24 @@ export default function LabSettingsPage() {
             className="rounded-xl border border-slate-300 px-2.5 py-1.5 text-sm"
           />
         </div>
+        {replacing ? (
+          <p className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-900">
+            استبدال سعر {labName(replacing.partyId)} · {serviceName(replacing.serviceId)}
+            {" "}({formatMoney(replacing.costMinor, replacing.currency as Currency)} من {replacing.effectiveFrom}):
+            {" "}يُغلق القديم في اليوم السابق لبدء الجديد، ويبقى في القائمة بتاريخه.
+            <button
+              onClick={() => setReplacing(null)}
+              className="mr-2 underline"
+            >
+              إلغاء الاستبدال
+            </button>
+          </p>
+        ) : null}
         <button
           onClick={() => void addPrice()} disabled={busy || !labId || !serviceId || !cost}
           className="rounded-xl bg-navy-900 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
         >
-          أضف السعر
+          {replacing ? "احفظ الاستبدال" : "أضف السعر"}
         </button>
 
         <ul className="mt-3 space-y-1.5">
@@ -234,6 +272,15 @@ export default function LabSettingsPage() {
                 ) : (
                   <span className="text-[10px] font-bold text-slate-400">غير ساري</span>
                 )}
+                {live ? (
+                  <button
+                    onClick={() => startReplace(price)}
+                    disabled={busy}
+                    className="text-[11px] font-bold text-navy-900 underline disabled:opacity-40"
+                  >
+                    استبدله بسعرٍ جديد
+                  </button>
+                ) : null}
                 {price.effectiveTo === null ? (
                   <button
                     onClick={() => void send(`/api/lab/prices/${price.id}`, "PATCH", { effectiveTo: today })}

@@ -80,19 +80,36 @@ export async function POST(request: Request) {
   const note = typeof source.note === "string" && source.note.trim()
     ? source.note.trim().slice(0, 300) : null;
 
+  /*
+   * الاستبدال: يُغلق السعر النافذ في اليوم السابق لبدء الجديد ثم يُدخله.
+   *
+   * وهو **أشيع سير عملٍ في الوحدة** — يرفع المختبر سعره فيُسجَّل اليوم — وكان
+   * مستحيلًا: الحدود شاملة، فإغلاق القديم اليوم وبدء الجديد اليوم يتداخلان،
+   * ولا سبيل في الشاشة لإغلاق القديم أمس.
+   *
+   * ويُطلب صراحةً ولا يُفترض: إغلاقُ سعرٍ قائم تغييرٌ في السجلّ المالي، وفعلُه
+   * صامتًا مع كل إضافةٍ يُنهي مدّةً لم يقصد المدير إنهاءها.
+   */
+  const replacePrevious = source.replace === true;
+
   try {
     const created = await createLabPrice({
       partyId, serviceId, costMinor, currency,
       effectiveFrom, effectiveTo: rawTo || null, note, actor: session.username,
+      replacePrevious,
     });
     // ٤٠٩ لا ٤٠٠: الطلب سليم والحالة القائمة هي التي تمنعه، والرسالة تقول ما يُفعل.
     if (!created.ok) return NextResponse.json({ message: created.message }, { status: 409 });
     await recordAudit({
       action: "lab.price", entity: "lab_price", entityId: created.id,
-      details: { المختبر: partyId, العمل: serviceId, السعر: costMinor, العملة: currency, من: effectiveFrom },
+      details: {
+        المختبر: partyId, العمل: serviceId, السعر: costMinor, العملة: currency, من: effectiveFrom,
+        // ما أُغلق ليبدأ هذا: الأثر يقول لماذا انتهت مدّةٌ لم يُغلقها أحد بيده.
+        ...(created.closedIds.length ? { أُغلق: created.closedIds } : {}),
+      },
       actor: session.username, actorRole: session.role,
     });
-    return NextResponse.json({ id: created.id }, { status: 201 });
+    return NextResponse.json({ id: created.id, closedIds: created.closedIds }, { status: 201 });
   } catch {
     return NextResponse.json({ message: "تعذّر حفظ السعر." }, { status: 500 });
   }

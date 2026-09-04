@@ -8,6 +8,7 @@ import { addDays, clinicDateString } from "@/lib/schedule";
 import { isAdmin } from "@/lib/roles";
 import { useSession } from "@/components/SessionProvider";
 import { formatMoney } from "@/lib/money";
+import { serviceForWorkType } from "@/lib/labCatalog";
 import {
   LAB_FILTER_LABEL,
   LAB_STATUS_LABEL,
@@ -64,7 +65,6 @@ export default function LabPage() {
   const [partyId, setPartyId] = useState("");
   const session = useSession();
   const [doctorId, setDoctorId] = useState("");
-  const [serviceId, setServiceId] = useState("");
   const [services, setServices] = useState<{ id: number; name: string; defaultDays: number }[]>([]);
   const [priceNotice, setPriceNotice] = useState<string | null>(null);
   const [doctorParties, setDoctorParties] = useState<{ id: number; name: string }[]>([]);
@@ -72,7 +72,17 @@ export default function LabPage() {
   const [costCurrency, setCostCurrency] = useState<Currency>(
     isCurrency(baseSettingValue) ? baseSettingValue : "YER",
   );
-  const [workType, setWorkType] = useState(WORK_TYPES[0]);
+  const [workType, setWorkType] = useState<string>(WORK_TYPES[0]);
+  /*
+   * رقم الخدمة **يُشتقّ من المعروض، ولا يُحفظ في حالةٍ تُملأ عند التغيير وحده.**
+   *
+   * فحين يحمل الكتالوج قيمةً قديمة — «تاج» — يحلّ خيارُ الكتالوج محلّ القديم
+   * بالقيمة المعروضة نفسها، فلا يقع `onChange`. ومن قبِل المعروض دون أن يلمسه
+   * كان يُرسله نصًّا حرًّا: يضيع ربط الخدمة، ومقارنةُ السعر المتّفق عليه،
+   * والمهلةُ الافتراضية — ولا يظهر على الشاشة ما يقول إنّ شيئًا ضاع.
+   */
+  const chosenService = useMemo(
+    () => serviceForWorkType(services, workType), [services, workType]);
   const [details, setDetails] = useState("");
   const [sentDate, setSentDate] = useState(today);
   const [dueDate, setDueDate] = useState(() => addDays(today, labDays));
@@ -173,7 +183,7 @@ export default function LabPage() {
       body: JSON.stringify({
         patientId: patient.id, labName, labPhone, workType, details, sentDate, dueDate,
         partyId: partyId || undefined, doctorId: doctorId || undefined,
-        serviceId: serviceId || undefined, cost, costCurrency,
+        serviceId: chosenService ? chosenService.id : undefined, cost, costCurrency,
       }),
     }));
     if (ok) {
@@ -195,7 +205,7 @@ export default function LabPage() {
       setAdding(false);
       setFilter("outstanding");
     }
-  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, doctorId, serviceId, cost, costCurrency]);
+  }, [act, patient, labName, labPhone, workType, details, sentDate, dueDate, today, labDays, partyId, doctorId, chosenService, cost, costCurrency]);
 
   const summary = useMemo(() => labSummary(feed.orders, today), [feed.orders, today]);
   const visible = useMemo(
@@ -283,8 +293,7 @@ export default function LabPage() {
                * والرقم هو ما يُقرأ به السعر المتّفق عليه — واسمُ العمل وحده لا
                * يكفي: مختبران قد يسمّيان العمل نفسه باسمين.
                */
-              const chosen = services.find((one) => one.name === event.target.value);
-              setServiceId(chosen ? String(chosen.id) : "");
+              const chosen = serviceForWorkType(services, event.target.value);
               if (chosen) setDueDate(addDays(sentDate, chosen.defaultDays));
             }}
             className="mb-3 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"

@@ -4,6 +4,7 @@ import { priceGap } from "@/lib/labCatalog";
 import { createLabOrder, getSettings, labCounts, listLabNames, listLabOrders, listParties } from "@/lib/db";
 import { isCurrency, parseAmount, type Currency } from "@/lib/money";
 import { toWhatsAppNumber } from "@/lib/reminders";
+import { isAdmin } from "@/lib/roles";
 import { rateFromSettings } from "@/lib/settings";
 import { requireSession } from "@/lib/session";
 
@@ -132,13 +133,22 @@ export async function POST(request: Request) {
       );
     }
     /*
-     * الفرق عن السعر المتّفق عليه يُقال ولا يُمنع.
+     * الفرق عن السعر المتّفق عليه يُقال ولا يُمنع — **وللمدير وحده.**
      *
      * فقد يتّفق الطبيب على سعرٍ خاصّ لحالة، أو يزيد المختبر لعملٍ مركّب. وإنما
      * فرقٌ يمرّ بلا أن يُرى مرّةً يمرّ كلَّ مرّة، وآخرُ الشهر يجد المالك فاتورةً
      * لا تشبه ما اتّفق عليه.
+     *
+     * **ولا يخرج شيءٌ منه لغير المدير.** فالسعر المتّفق عليه هو هامش العيادة في
+     * كل عمل، و`/api/lab/prices` تمنعه عن غير المدير لهذا السبب بعينه. وهذا
+     * المسار يُنشئ أمرًا بجلسةٍ أيًّا كان دورها — فلو خرج التنبيه فيه لصار بابًا
+     * خلفيًّا يُقرأ منه ما أُغلق في بابه: يرسل الطبيب تكلفةً ويقرأ المتّفق عليه.
+     *
+     * **ولا مقدارَ الفرق ولا مجرّدَ وقوعه**: المرسِل يعرف ما كتب، فالفرقُ معه
+     * يكشف المتّفق طرحًا. و«يختلف / لا يختلف» وحدها تكشفه بالتنصيف: أوامرُ
+     * تُنشأ بتكاليف متدرّجة حتى يسكت التنبيه، فيكون السعر هو آخر ما كُتب.
      */
-    if (service && partyId) {
+    if (service && partyId && isAdmin(session.role)) {
       const agreed = await agreedLabPrice(partyId, service.id, sentDate);
       if (agreed && agreed.currency === costCurrency) {
         const gap = priceGap(agreed.costMinor, costMinor);

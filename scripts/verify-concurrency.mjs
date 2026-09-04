@@ -98,6 +98,47 @@ try {
     if (invFailed[0]) console.error("  سبب الفشل:", invFailed[0].reason?.message);
   }
 
+  // ── أسعار مختبرٍ متزامنة ───────────────────────────────────────────────────
+  /*
+   * **أوّلُ سعرٍ لمختبرٍ وخدمة هو الحالة التي كان الفحص يفوتها.**
+   *
+   * فالتداخل كان يُمنع بقراءةٍ ثم كتابة داخل معاملة بقفل الصفوف — و`FOR UPDATE`
+   * لا يقفل إلّا ما وُجد. فطلبان متزامنان على زوجٍ لا سعر له يقرأ كلاهما مجموعة
+   * فارغة، فيمرّان معًا ويُدخلان مدّتين متداخلتين. ويومٌ له سعران يُحاسَب فيه
+   * المختبر بسعرٍ لا يُفهم من أين جاء.
+   *
+   * فيُطلق هنا خمسةٌ وعشرون طلبًا على الزوج نفسه دفعةً واحدة: يمرّ واحد ويُردّ
+   * الباقي، ولا يبقى في الجدول يومٌ يشمله سعران.
+   */
+  const priceLab = await db.createParty({
+    kind: "lab", name: "مختبر التزامن", phone: null, note: null, commissionPercent: 0,
+  });
+  const priceService = await db.createLabService({
+    name: "تاج التزامن", category: "prostho", defaultDays: 7, requiresShade: true, sortOrder: 100,
+  }, "تزامن");
+  const priced = await Promise.allSettled(
+    Array.from({ length: PARALLEL }, (_, i) => db.createLabPrice({
+      partyId: priceLab.id, serviceId: priceService.id, costMinor: 20_000 + i,
+      currency: "YER", effectiveFrom: "2026-01-01", effectiveTo: null,
+      note: null, actor: "تزامن",
+    })),
+  );
+  const priceThrew = priced.filter((r) => r.status === "rejected");
+  const accepted = priced.filter((r) => r.status === "fulfilled" && r.value.ok);
+  const { rows: clash } = await db.getPool().query(
+    `SELECT a.id, b.id FROM lab_prices a JOIN lab_prices b
+        ON a.party_id = b.party_id AND a.service_id = b.service_id AND a.id < b.id
+      WHERE a.effective_from <= COALESCE(b.effective_to, DATE '9999-12-31')
+        AND b.effective_from <= COALESCE(a.effective_to, DATE '9999-12-31')`,
+  );
+  console.log(`أسعار المختبر: ${accepted.length} قُبل، ` +
+              `${priced.length - accepted.length - priceThrew.length} رُدّ، ` +
+              `${priceThrew.length} سقط، ${clash.length} تداخلًا في الجدول`);
+  if (accepted.length !== 1 || priceThrew.length > 0 || clash.length > 0) {
+    failed = true;
+    if (priceThrew[0]) console.error("  سبب الفشل:", priceThrew[0].reason?.message);
+  }
+
   await db.getPool().end();
   console.log(failed ? "سقط الفحص." : "صمد الترقيم تحت التزامن بلا فشل ولا تكرار.");
 } catch (error) {

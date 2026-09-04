@@ -8161,7 +8161,7 @@ export async function setLabOrderDoctor(
 // ─── كتالوج أعمال المختبر وأسعارها ───────────────────────────────────────────
 
 import {
-  isLabCategory, overlaps, priceOn,
+  isLabCategory, overlaps, planReplacement, priceOn,
   type LabCategory, type LabPrice, type LabService, type ServiceDraft,
 } from "./labCatalog";
 
@@ -8265,31 +8265,73 @@ export async function listLabPrices(partyId?: number): Promise<LabPrice[]> {
 }
 
 /**
- * يضيف سعرًا بعد فحص التداخل.
+ * يضيف سعرًا بعد فحص التداخل — **والتسلسل من القاعدة لا من الفحص.**
  *
- * والفحص في المعاملة نفسها بقفل الصفوف: قراءةٌ ثم كتابة تسمح لطلبين متزامنين
- * أن يُدخلا مدّتين متداخلتين، فيصير للسعر جوابان في يومٍ واحد.
+ * وقفلُ الصفوف وحده لا يكفي: `FOR UPDATE` لا يقفل إلّا ما وُجد. فأوّلُ سعرٍ
+ * لمختبرٍ وخدمة يقرأه طلبان متزامنان مجموعةً فارغة، فيمرّ كلاهما من الفحص
+ * ويُدخلان مدّتين متداخلتين — وهي الحالة التي كُتب الفحص لمنعها. ولا صفَّ
+ * يُقفل ولا قيدَ فريد يمنع (المدد ليست قيمةً واحدة تتكرّر).
+ *
+ * فقفلٌ استشاريّ على مستوى المعاملة بمفتاح الزوج (المختبر، الخدمة): طلبان
+ * على الزوج نفسه يتسلسلان، والثاني يقرأ ما أدخله الأوّل فيُردّ «يتداخل».
+ * ويُختار على قيد `EXCLUDE` لأنّ الأخير يحتاج امتداد `btree_gist` — وامتدادٌ
+ * غير مثبَّت على قاعدة الإنتاج يجعل المخطط لا يُبنى أصلًا، وهو ثمنٌ أغلى من
+ * القفل. ويُرفع القفل بانتهاء المعاملة نجحت أو فشلت، فلا يبقى معلّقًا.
+ *
+ * و`replacePrevious` هو استبدال السعر النافذ: يُغلق ما بدأ قبل الجديد في
+ * اليوم السابق له، ثم يُدخل الجديد — في المعاملة نفسها وتحت القفل نفسه، فلا
+ * تبقى لحظةٌ بلا سعرٍ ولا لحظةٌ بسعرين.
  */
 export async function createLabPrice(input: {
   partyId: number; serviceId: number; costMinor: number; currency: string;
   effectiveFrom: string; effectiveTo: string | null; note: string | null; actor: string;
-}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  replacePrevious?: boolean;
+}): Promise<{ ok: true; id: number; closedIds: number[] } | { ok: false; message: string }> {
   await ensureSchema();
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
+    // قبل القراءة لا بعدها: قفلٌ بعد القراءة يترك الفجوة التي وقع فيها العطب.
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [input.partyId, input.serviceId]);
     const { rows: existing } = await client.query(
       `SELECT id, party_id, service_id, cost_minor, currency, effective_from, effective_to
          FROM lab_prices WHERE party_id = $1 AND service_id = $2 FOR UPDATE`,
       [input.partyId, input.serviceId],
     );
-    const verdict = overlaps(existing.map(toLabPrice), {
+    const candidate = {
       partyId: input.partyId, serviceId: input.serviceId,
       effectiveFrom: input.effectiveFrom, effectiveTo: input.effectiveTo,
-    });
+    };
+    const current = existing.map(toLabPrice);
+
+    let closedIds: number[] = [];
+    let closeOn = "";
+    let after = current;
+    if (input.replacePrevious) {
+      const plan = planReplacement(current, candidate);
+      if (plan.blocking) {
+        await client.query("ROLLBACK");
+        return {
+          ok: false,
+          message: `يوجد سعرٌ يبدأ في ${plan.blocking.effectiveFrom} — والاستبدال يُغلق ما بدأ قبل`
+            + ` ${input.effectiveFrom} وحده. اختر تاريخ بدءٍ بعد ${plan.blocking.effectiveFrom}.`,
+        };
+      }
+      closedIds = plan.closeIds;
+      closeOn = plan.closeOn;
+      after = plan.remaining;
+    }
+
+    const verdict = overlaps(after, candidate);
     if (!verdict.ok) {
       await client.query("ROLLBACK");
       return { ok: false, message: verdict.message };
+    }
+    if (closedIds.length > 0) {
+      await client.query(
+        `UPDATE lab_prices SET effective_to = $2::date WHERE id = ANY($1::int[])`,
+        [closedIds, closeOn],
+      );
     }
     const { rows } = await client.query<{ id: number }>(
       `INSERT INTO lab_prices
@@ -8301,7 +8343,7 @@ export async function createLabPrice(input: {
       ],
     );
     await client.query("COMMIT");
-    return { ok: true, id: rows[0].id };
+    return { ok: true, id: rows[0].id, closedIds };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

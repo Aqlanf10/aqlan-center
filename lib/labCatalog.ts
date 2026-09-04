@@ -15,6 +15,8 @@
  * السعر اليوم لا يغيّر أمرًا أُرسل الشهر الماضي.
  */
 
+import { addDays } from "./schedule";
+
 /** تصنيف العمل — يُجمَع به في التقارير. */
 export const LAB_CATEGORIES = ["prostho", "ortho", "surgical", "other"] as const;
 export type LabCategory = (typeof LAB_CATEGORIES)[number];
@@ -118,6 +120,64 @@ export function overlaps(
     }
   }
   return { ok: true };
+}
+
+/**
+ * خطّة استبدال سعرٍ نافذ: أيُّ الأسعار يُغلق ليبدأ الجديد من يومه.
+ *
+ * **وهذا أشيع ما يقع في الوحدة**: يرفع المختبر سعره فيُسجَّل اليوم. والحدود
+ * شاملة في الطرفين، فإغلاق القديم اليوم وبدء الجديد اليوم يجعلان يومًا واحدًا
+ * له سعران — وهو ما يمنعه `overlaps` بحقّ. فكان المالك يُردّ «يتداخل» في أشيع
+ * سير عملٍ عنده، ولا سبيل في الشاشة لإغلاق القديم أمس.
+ *
+ * فالإغلاق **في اليوم السابق لبدء الجديد**: يوم ينتهي ويوم يبدأ، ولا يضيع
+ * تاريخ القديم — يبقى صفُّه بتاريخ بدايته، وأوامرُ مدّته تُقرأ بسعرها.
+ *
+ * ولا يُغلق إلّا ما بدأ **قبل** الجديد: سعرٌ يبدأ في يومه أو بعده لا يُغلق في
+ * يومٍ سابقٍ لبدايته — لأنّ ذلك يجعل نهايته قبل بدايته، والقيد في القاعدة
+ * يمنعه. فيُردّ `blocking` ليُقال للمستعمِل أيُّ سعرٍ منع، لا «تعذّر الحفظ».
+ */
+export function planReplacement(
+  existing: readonly LabPrice[],
+  candidate: { partyId: number; serviceId: number; effectiveFrom: string; effectiveTo: string | null },
+): { closeIds: number[]; closeOn: string; remaining: LabPrice[]; blocking: LabPrice | null } {
+  const closeOn = addDays(candidate.effectiveFrom, -1);
+  const closeIds: number[] = [];
+  const remaining: LabPrice[] = [];
+  let blocking: LabPrice | null = null;
+
+  for (const price of existing) {
+    const samePair = price.partyId === candidate.partyId && price.serviceId === candidate.serviceId;
+    // ما لا يتداخل يبقى كما هو: الاستبدال يمسّ الساري لا كلَّ تاريخ المختبر.
+    const clashes = samePair
+      && !(candidate.effectiveFrom > (price.effectiveTo ?? "9999-12-31"))
+      && !((candidate.effectiveTo ?? "9999-12-31") < price.effectiveFrom);
+    if (!clashes) { remaining.push(price); continue; }
+    if (price.effectiveFrom <= closeOn) {
+      closeIds.push(price.id);
+      remaining.push({ ...price, effectiveTo: closeOn });
+      continue;
+    }
+    if (!blocking) blocking = price;
+    remaining.push(price);
+  }
+
+  return { closeIds, closeOn, remaining, blocking };
+}
+
+/**
+ * الخدمة التي يعنيها الاسمُ المعروض في قائمة نوع العمل.
+ *
+ * ورقمُ الخدمة **يُشتقّ من المعروض ولا يُحفظ على حدة**: القائمة تعرض الكتالوج
+ * أوّلًا والأنواع القديمة بعده، فحين يحمل الكتالوج قيمةً قديمة — «تاج» مثلًا —
+ * يحلّ خيارُ الكتالوج محلّ القديم بالقيمة المعروضة نفسها، فلا يقع `onChange`.
+ * فمن قبِل المعروض دون أن يلمسه أرسله نصًّا حرًّا: يضيع ربط الخدمة، ومقارنةُ
+ * السعر المتّفق عليه، والمهلةُ الافتراضية — ولا يظهر شيءٌ من ذلك على الشاشة.
+ */
+export function serviceForWorkType<T extends { id: number; name: string }>(
+  services: readonly T[], workType: string,
+): T | null {
+  return services.find((one) => one.name === workType) ?? null;
 }
 
 /**

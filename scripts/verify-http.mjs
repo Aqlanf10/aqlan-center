@@ -10,6 +10,7 @@ import { join,resolve,sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pgConnection } from '../lib/pgConnection.ts';
 import { hashPassword } from '../lib/auth.ts';
+import { addDays } from '../lib/schedule.ts';
 const original=process.env.DATABASE_URL;if(!original)throw Error('DATABASE_URL required');
 const name=`http_check_${Date.now()}`;const target=new URL(original);target.pathname=`/${name}`;
 const admin=new Client(pgConnection(original));await admin.connect();await admin.query(`CREATE DATABASE ${name}`);
@@ -155,6 +156,59 @@ try {
     orderBody.priceNotice&&orderBody.priceNotice.deltaMinor===5000&&orderBody.priceNotice.agreedMinor===26000);
   const matching=await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:svcId,sentDate:'2026-09-01',dueDate:'2026-09-11',partyId:lab.id,cost:'26000'},{origin:base});
   check('and an order at the agreed price raises nothing',(await matching.json()).priceNotice===null);
+
+  /*
+   * ── السعر المتّفق عليه لا يخرج لغير المدير ──
+   *
+   * فـ`/api/lab/prices` تمنعه عن الطبيب والاستقبال لأنه هامش العيادة في كل عمل.
+   * وهذا المسار يُنشئ أمرًا بأيّ جلسة — فلو خرج التنبيه فيه لصار بابًا خلفيًّا:
+   * يرسل الطبيب تكلفةً لا تطابق ويقرأ المتّفق عليه في الجواب.
+   *
+   * ولا يكفي حجب الرقم: المرسِل يعرف ما كتب، فالفرقُ معه يكشف المتّفق طرحًا،
+   * و«يختلف/لا يختلف» وحدها تكشفه بالتنصيف. فالجواب يُفحص كلُّه نصًّا.
+   */
+  for (const [who,cookie] of [['the doctor',d],['reception',reception]]) {
+    const sneak=await request('/api/lab',cookie,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:svcId,sentDate:'2026-09-01',dueDate:'2026-09-11',partyId:lab.id,cost:'31000'},{origin:base});
+    check(`${who} can still record a lab order with a cost`,sneak.status===201);
+    const text=await sneak.text();
+    // والفحص على الجواب كلِّه نصًّا: الرقم قد يخرج في حقلٍ أو في رسالة.
+    check(`**and the negotiated price never reaches ${who} — no number, no message, no gap to subtract**`,
+      JSON.parse(text).priceNotice===null&&!text.includes('26000')&&!text.includes('5000'));
+  }
+  check('while the admin still gets it — the notice is his, and it stays useful',
+    (await (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:svcId,sentDate:'2026-09-01',dueDate:'2026-09-11',partyId:lab.id,cost:'31000'},{origin:base})).json()).priceNotice.agreedMinor===26000);
+
+  /*
+   * ── استبدال سعرٍ نافذٍ اليوم ──
+   *
+   * وهو أشيع سير عملٍ في الوحدة: يرفع المختبر سعره فيُسجَّل اليوم. والحدود شاملة
+   * في الطرفين، فإغلاق القديم اليوم وبدء الجديد اليوم يتداخلان — وكانت الشاشة
+   * تُغلق اليوم وتبدأ اليوم، فلا سبيل فيها إلى إغلاق القديم أمس.
+   */
+  const todayText=new Date().toISOString().slice(0,10);
+  const yesterday=addDays(todayText,-1);
+  const livePrice=(await (await request(`/api/lab/prices?partyId=${lab.id}`,a)).json()).prices.find(p=>p.effectiveTo===null);
+  check('a price starting today is refused while the running one is open — bounds are inclusive',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'33000',effectiveFrom:todayText},{origin:base})).status===409);
+  check('**and closing it today does not help — that day would carry two prices**',
+    (await patch(`/api/lab/prices/${livePrice.id}`,a,{effectiveTo:todayText})).status===200
+    &&(await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'33000',effectiveFrom:todayText},{origin:base})).status===409);
+  const replaced=await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'33000',effectiveFrom:todayText,replace:true},{origin:base});
+  check('**the replacement goes through from the screen, with no trick**',replaced.status===201);
+  const replacedBody=await replaced.json();
+  check('and it says which period it ended — the trail explains a period nobody closed by hand',
+    replacedBody.closedIds.includes(livePrice.id));
+  const afterList=(await (await request(`/api/lab/prices?partyId=${lab.id}`,a)).json()).prices;
+  const oldRow=afterList.find(p=>p.id===livePrice.id),newRow=afterList.find(p=>p.id===replacedBody.id);
+  check('the old period ends the day before — a day ends and a day begins',oldRow.effectiveTo===yesterday);
+  check('and its history is untouched: same start, same price',
+    oldRow.effectiveFrom===livePrice.effectiveFrom&&oldRow.costMinor===livePrice.costMinor);
+  check('the new one runs from today, open-ended',newRow.effectiveFrom===todayText&&newRow.effectiveTo===null);
+  const sameDay=afterList.filter(p=>p.serviceId===svcId
+    &&p.effectiveFrom<=todayText&&(p.effectiveTo===null||p.effectiveTo>=todayText));
+  check('**and today carries exactly one price**',sameDay.length===1&&sameDay[0].id===replacedBody.id);
+  check('replacing what starts today is refused with what to do — an end before a start is no answer',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'34000',effectiveFrom:todayText,replace:true},{origin:base})).status===409);
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
 
