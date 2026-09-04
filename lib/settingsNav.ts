@@ -13,6 +13,7 @@ export interface SettingsTab {
 const TABS: SettingsTab[] = [
   { href: "/settings", label: "عام" },
   { href: "/settings/users", label: "المستخدمون والصلاحيات" },
+  { href: "/settings/lab", label: "أعمال المختبر وأسعارها" },
   { href: "/settings/ceph", label: "المعايير السيفالومترية" },
   { href: "/settings/audit", label: "سجل التدقيق" },
   { href: "/settings/export", label: "النسخ والتصدير" },

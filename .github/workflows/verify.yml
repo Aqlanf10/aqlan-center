@@ -37,6 +37,10 @@ jobs:
       - run: npm run audit:gate
       - run: npm run typecheck
       - run: npm test
+      # هل يُبنى المخطط من الصفر؟ لا تكشفه قاعدةٌ قائمة — الجدول الناقص فيها
+      # من قبل. وأسوأ وقتٍ لاكتشاف أنّ البرنامج لا يُثبَّت هو يوم استعادةٍ من
+      # نسخةٍ احتياطية بعد كارثة.
+      - run: npm run verify:schema
       - run: npm run verify:all
       - run: npm run build
       - run: npm run verify:http
