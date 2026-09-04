@@ -49,8 +49,27 @@ export async function GET() {
     async pull(controller) {
       try {
         const next = await iterator.next();
-        if (next.done) controller.close();
-        else controller.enqueue(encoder.encode(next.value));
+        if (next.done) {
+          /*
+           * وهنا وحده تُسجَّل **نسخةٌ اكتملت** — بعد آخر سطر، ولا قبله.
+           *
+           * فـ`backup.download` أعلاه لا يشهد بنسخة: يُكتب قبل أوّل بايت، ويكتبه
+           * أيضًا أرشيفُ الأشعّة وحده. فمن بدأ نسخةً ثمّ ألغاها، أو نزّل الأشعّة
+           * فقط، ترك ذلك الأثر نفسه — وقاعدةُ المرضى والمال لم تُنسخ.
+           *
+           * وما يشهد به هذا السطر بالضبط: أنّ الخادم أخرج الملفّ كاملًا وسحبه
+           * المتصفّح إلى آخره. ولا يشهد أنّه حُفظ سليمًا على جهاز المالك — ذلك
+           * لا يُثبته إلّا `npm run verify:backup` أو استعادةٌ فعلية.
+           */
+          await recordAudit({
+            action: "backup.complete",
+            entity: "database",
+            entityLabel: "نسخة قاعدة البيانات",
+            details: { التاريخ: date, الوقت: time },
+            actor: session.username, actorRole: session.role,
+          });
+          controller.close();
+        } else controller.enqueue(encoder.encode(next.value));
       } catch {
         // الملف الناقص أخطر من غيابه: من ينزّله يظنّه نسخة. فيُختم بسطر يُفشل
         // الاستعادة صراحةً — المعاملة تبقى مفتوحة بلا COMMIT ويقولها التعليق.

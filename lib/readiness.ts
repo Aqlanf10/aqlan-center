@@ -35,19 +35,54 @@ export interface ReadinessCheck {
   href?: string;
 }
 
+/**
+ * العملات التي لها سعر صرف يُحفظ في الإعدادات.
+ *
+ * ولكلٍّ صفٌّ مستقلّ في `settings` بتاريخ تعديلٍ مستقل: شاشةُ الإعدادات تحفظ
+ * الحقول المتغيّرة وحدها، فحفظُ سعر الدولار اليوم لا يمسّ صفّ الريال السعودي.
+ */
+export const RATE_CURRENCIES = ["SAR", "USD"] as const;
+export type RateCurrency = (typeof RATE_CURRENCIES)[number];
+
+export const RATE_CURRENCY_LABEL: Record<RateCurrency, string> = {
+  SAR: "الريال السعودي",
+  USD: "الدولار",
+};
+
 /** الوقائع التي تُبنى عليها الأحكام — تُجمع من القاعدة، وتُختبر هنا وحدها. */
 export interface ReadinessFacts {
   clinicName: string;
   clinicPhone: string;
   baseCurrency: string;
-  /** آخر يومٍ عُدِّل فيه سعر صرف — أو `null` إن لم يُعدَّل قط. */
-  ratesUpdatedOn: string | null;
+  /**
+   * آخر يومٍ حُفظ فيه سعرُ **كلِّ عملةٍ على حدة** — و`null` يعني أنّ مفتاحها لم
+   * يُكتب في `settings` قطّ.
+   *
+   * ولا يُجمعان في تاريخٍ واحد: `MAX` على الاثنين يجعل تحديثَ سعرٍ واحدٍ اليوم
+   * يستر رفيقَه القديم، فتُقيَّد دفعاتٌ بتلك العملة بسعرٍ بالٍ بلا تحذير.
+   */
+  ratesUpdatedOn: Record<RateCurrency, string | null>;
   activeUsersByRole: Record<string, number>;
   doctorCount: number;
   doctorsWithoutPercent: number;
   labPartyCount: number;
+  /** كل خدمةٍ نشطة في الدليل — مسعَّرةً كانت أو لا. */
   serviceCount: number;
-  /** آخر نسخة احتياطية نُزّلت — أو `null`. */
+  /**
+   * والنشطة **التي ضُبط سعرها** وحدها.
+   *
+   * فـ`importClinicCatalog` يُدرج دليل العيادة كلَّه بـ`price_configured = FALSE`،
+   * و`validateProcedures` يردّ أيًّا منها: «الخدمة موقوفة أو لم يُضبط سعرها بعد».
+   * فعدُّ الصفوف يقول «تسعون خدمة» ولا واحدةَ منها تُفوتَر.
+   */
+  servicesPriced: number;
+  /**
+   * آخر يومٍ **اكتمل** فيه بثُّ نسخةٍ للقاعدة أو نسخةٍ كاملة — أو `null`.
+   *
+   * ولا يُقرأ من `backup.download`: ذاك يُكتب قبل أوّل بايت، ويكتبه أيضًا أرشيفُ
+   * الأشعّة وحده. فنسخةٌ بُدئت ثمّ أُلغيت — أو أشعّةٌ نُزّلت بلا قاعدة — كانت
+   * تُغلق البند الحاجز وقاعدةُ المرضى والمال لم تُنسخ قطّ.
+   */
   lastBackupOn: string | null;
   /**
    * أرمزُ التنصيب حيٌّ؟ حيٌّ يعني: مضبوطًا وطولُه ١٦ حرفًا فأكثر — وهو بعينه
@@ -55,7 +90,12 @@ export interface ReadinessFacts {
    */
   setupTokenLive: boolean;
   /**
-   * عمرُ الوردية المفتوحة بالأيام — أو `null` إن لم تكن هناك مفتوحة.
+   * كم يومَ عيادةٍ عبرت الورديةُ المفتوحة — أو `null` إن لم تكن هناك مفتوحة.
+   *
+   * وهو **فرقُ التاريخين بتوقيت العيادة** لا طرحُ ثوانٍ: وردية فُتحت أمس مساءً
+   * وفُحصت اليوم صباحًا عمرُها ساعات، وقد جمعت قبضَ يومين في جردٍ واحد — وهو
+   * بعينه ما كُتب البند لأجله. وقسمةُ الثواني على ٨٦٤٠٠ كانت تعطيها صفرًا
+   * فتُسقط ذكرها. واليمن على +٣، فالحساب في القاعدة بمنطقة العيادة لا بـUTC.
    *
    * وهي واحدةٌ على الأكثر: `cashier_shifts_one_open` فهرسٌ فريد يمنع الثانية.
    * فعدُّها رقمًا يوهم بما لا يقع.
@@ -124,13 +164,31 @@ export function readinessChecks(facts: ReadinessFacts): ReadinessCheck[] {
     href: "/settings",
   });
 
-  const rateAge = daysSince(facts.ratesUpdatedOn, facts.today);
+  /*
+   * سعرُ كل عملةٍ يُحكم عليه وحده، والبند يأخذ **أسوأهما**.
+   *
+   * فشاشة الإعدادات تحفظ الحقول المتغيّرة وحدها: من صحّح سعر الدولار اليوم لم
+   * يمسّ صفّ الريال السعودي. وجمعُ التاريخين بـ`MAX` كان يجعل ذلك التصحيح يقول
+   * «تمام» عن سعرٍ سعوديٍّ عمرُه شهر — فتُقيَّد كلّ دفعةٍ به خطأً بلا تحذير.
+   *
+   * والغيابُ ليس محايدًا: مفتاحٌ لم يُحفظ قطّ يعني أنّ البرنامج يعمل بقيمةٍ
+   * افتراضيّة كُتبت في الكود، لا بقرارِ مالكٍ راجع السوق.
+   */
+  const rateRows = RATE_CURRENCIES.map((currency) => {
+    const on = facts.ratesUpdatedOn?.[currency] ?? null;
+    return { currency, age: daysSince(on, facts.today) };
+  });
   checks.push({
     key: "rates",
     title: "أسعار الصرف",
-    level: rateAge === null ? "warn" : rateAge > RATE_STALE_DAYS ? "warn" : "ok",
-    detail: rateAge === null ? "لم تُعدَّل بعد" : `عُدِّلت قبل ${rateAge} يومًا`,
-    why: "أسعار الصرف تتغيّر في اليمن أسبوعيًّا. وسعرٌ قديم يجعل كل دفعةٍ بالسعودي أو الدولار تُقيَّد بقيمةٍ خاطئة في الدفاتر.",
+    level: rateRows.some((one) => one.age === null || one.age > RATE_STALE_DAYS) ? "warn" : "ok",
+    detail: rateRows.map(({ currency, age }) =>
+      `${RATE_CURRENCY_LABEL[currency]}: ${
+        age === null ? "لم يُحفظ قط — على القيمة الافتراضية"
+          : age === 0 ? "حُدِّث اليوم"
+          : `قبل ${age} يومًا`}`).join(" · "),
+    why: "أسعار الصرف تتغيّر في اليمن أسبوعيًّا. وسعرٌ قديم يجعل كل دفعةٍ بتلك العملة تُقيَّد بقيمةٍ خاطئة في الدفاتر — "
+      + "وسعرٌ لم يُحفظ قط ليس «سليمًا»، بل قيمةٌ افتراضية لا قرارَ لك فيها.",
     href: "/settings",
   });
 
@@ -145,12 +203,22 @@ export function readinessChecks(facts: ReadinessFacts): ReadinessCheck[] {
     href: "/finance/parties",
   });
 
+  /*
+   * والمسعَّرة وحدها تُعدّ خدمة.
+   *
+   * فاستيراد دليل العيادة يُدرج نحوًا من تسعين صفًّا فعّالًا بلا سعر، ثم يردّها
+   * `validateProcedures` عند أوّل زيارة: «الخدمة موقوفة أو لم يُضبط سعرها بعد».
+   * فعدُّ الصفوف كان يقول «تمام» ولا خدمةَ تُختار في زيارة أصلًا.
+   *
+   * والرقمان معًا لأنّ أحدهما وحده يكذب: «٩٠ خدمة» تستر أنّ صفرًا منها مسعَّر،
+   * و«٣ مسعّرة» تستر أنّ سبعًا وثمانين تنتظر سعرًا.
+   */
   checks.push({
     key: "services",
     title: "دليل الخدمات وأسعارها",
-    level: facts.serviceCount === 0 ? "blocked" : "ok",
-    detail: `${facts.serviceCount} خدمة`,
-    why: "بلا خدمات مسعّرة لا تُفوتر زيارة، ولا يُبنى شيءٌ من المالية عليها.",
+    level: facts.servicesPriced === 0 ? "blocked" : "ok",
+    detail: `${facts.serviceCount} خدمة · ${facts.servicesPriced} مسعّرة`,
+    why: "الخدمة بلا سعرٍ مضبوط تُردّ عند إضافتها إلى الزيارة. فبلا خدمةٍ مسعّرةٍ واحدة لا تُفوتر زيارة، ولا يُبنى شيءٌ من المالية عليها.",
     href: "/finance/services",
   });
 
@@ -179,8 +247,12 @@ export function readinessChecks(facts: ReadinessFacts): ReadinessCheck[] {
     key: "backup",
     title: "النسخ الاحتياطي",
     level: backupAge === null ? "blocked" : backupAge > BACKUP_STALE_DAYS ? "warn" : "ok",
-    detail: backupAge === null ? "لم تُؤخذ نسخة بعد" : `آخر نسخة قبل ${backupAge} يومًا`,
-    why: "ملفّات المرضى وحساباتهم في قاعدةٍ واحدة. وبلا نسخةٍ خارجها، عطلٌ واحد يُنهي تاريخ المركز كلَّه.",
+    detail: backupAge === null ? "لم تكتمل نسخةٌ للقاعدة بعد"
+      : backupAge === 0 ? "اكتملت نسخةٌ اليوم"
+      : `آخر نسخةٍ مكتملة قبل ${backupAge} يومًا`,
+    why: "ملفّات المرضى وحساباتهم في قاعدةٍ واحدة. وبلا نسخةٍ خارجها، عطلٌ واحد يُنهي تاريخ المركز كلَّه. "
+      + "ولا يُحتسب هنا إلّا ما اكتمل بثّه للقاعدة أو للنسخة الكاملة — لا أرشيفُ الأشعّة وحده، ولا تنزيلٌ بُدئ ثم انقطع. "
+      + "وحدّ ما يشهد به السجل أنّ الخادم أخرج الملفّ كاملًا؛ أمّا سلامتُه على قرصك فلا يُثبتها إلّا استعادةٌ فعلية.",
     href: "/settings/export",
   });
 
@@ -189,8 +261,10 @@ export function readinessChecks(facts: ReadinessFacts): ReadinessCheck[] {
       key: "shifts",
       title: "وردية مفتوحة",
       level: "warn",
-      detail: `مفتوحة منذ ${facts.openShiftAgeDays} ${facts.openShiftAgeDays === 1 ? "يوم" : "يومًا"}`,
-      why: "الوردية المفتوحة تجمع قبض يومين في جردٍ واحد، فلا يُعرف فرقُ أيّ يومٍ وقع.",
+      detail: `فُتحت في يوم عملٍ سابق — قبل ${facts.openShiftAgeDays} ${
+        facts.openShiftAgeDays === 1 ? "يوم عيادة" : "أيام عيادة"} ولم تُغلق`,
+      why: "الوردية المفتوحة تجمع قبض يومين في جردٍ واحد، فلا يُعرف فرقُ أيّ يومٍ وقع. "
+        + "والعبرة بيوم العيادة لا بمرور أربعٍ وعشرين ساعة: وردية فُتحت أمس مساءً وفُحصت اليوم صباحًا عمرُها ساعات، وقد جمعت يومين.",
       href: "/finance",
     });
   }
