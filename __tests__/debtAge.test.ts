@@ -86,6 +86,76 @@ describe("عمر الدين", () => {
     expect(debtAge(patient, TODAY).since).toBe("2026-01-01");
   });
 
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * رصيدٌ افتتاحيّ أُدخل **اليوم** وفواتيرُ أقدم منه تاريخًا
+   *
+   * حقلُ التاريخ في شاشة الرصيد الافتتاحي اختياري، ومن تركه فارغًا وضع المسارُ
+   * تاريخ اليوم (`app/api/opening-balances/route.ts`). فيقع هذا كلَّ مرةٍ يُدخِل
+   * فيها المديرُ رصيدًا قديمًا على مريضٍ له فواتيرُ في النظام.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  it("**ورصيدٌ افتتاحيٌّ أُدخل اليوم يتقدّم على فاتورةٍ أقدم منه تاريخًا**", () => {
+    const patient = history({
+      // أُدخل اليوم لأن حقل التاريخ تُرك فارغًا — وعملُه سابقٌ للنظام كلِّه.
+      opening: { date: TODAY, minor: 20_000 },
+      invoices: [{ date: "2025-06-10", minor: 20_000 }],
+      payments: [{ date: TODAY, minor: 20_000, isRefund: false }],
+    });
+    // الافتتاحيُّ أوّلًا فتغطّيه الدفعة، وتبقى فاتورةُ ٢٠٢٥ هي غيرَ المسدَّدة.
+    expect(debtsInOrder(patient, TODAY)[0].date).toBe("2025-06-10");
+    expect(debtsInOrder(patient, TODAY).map((debt) => debt.minor)).toEqual([20_000, 20_000]);
+    const age = debtAge(patient, TODAY);
+    // وكان يقول «منذ صفر يومًا» فيُصنَّف دَينًا طازجًا لا يُطارَد.
+    expect(age.since).toBe("2025-06-10");
+    expect(age.ageDays).toBe(450);
+    expect(outstanding(patient, TODAY)).toBe(20_000);
+  });
+
+  it("ومن لم يدفع شيئًا لا يصير دينُه ابنَ يومه لأن الافتتاحيّ أُدخل اليوم", () => {
+    // تقديمُ الافتتاحيّ بتاريخ إدخاله وحده يقلب العمر من ٦٥٢ يومًا إلى صفر.
+    const patient = history({
+      opening: { date: TODAY, minor: 20_000 },
+      invoices: [{ date: "2024-11-20", minor: 50_000 }],
+    });
+    const age = debtAge(patient, TODAY);
+    expect(age.since).toBe("2024-11-20");
+    expect(age.ageDays).toBe(652);
+  });
+
+  it("وتاريخٌ افتتاحيٌّ كتبه المدير بيده يبقى على حاله — لا يُقدَّم ولا يُؤخَّر", () => {
+    const patient = history({
+      opening: { date: "2024-01-15", minor: 100_000 },
+      invoices: [{ date: "2026-08-27", minor: 40_000 }],
+    });
+    expect(debtsInOrder(patient, TODAY)[0].date).toBe("2024-01-15");
+    expect(debtAge(patient, TODAY).since).toBe("2024-01-15");
+  });
+
+  it("ومن سدّد افتتاحيَّه كاملًا يبقى عليه عمرُ فاتورة اليوم وحدها", () => {
+    const patient = history({
+      opening: { date: "2024-01-15", minor: 100_000 },
+      invoices: [{ date: TODAY, minor: 40_000 }],
+      payments: [{ date: TODAY, minor: 100_000, isRefund: false }],
+    });
+    const age = debtAge(patient, TODAY);
+    expect(age.since).toBe(TODAY);
+    expect(age.ageDays).toBe(0);
+    expect(outstanding(patient, TODAY)).toBe(40_000);
+  });
+
+  it("والترتيب لا يمسّ سجلَّ المريض — قراءةٌ لا تُعيد كتابة ما قرأت", () => {
+    const invoices = [
+      { date: "2026-08-27", minor: 40_000 },
+      { date: "2025-06-10", minor: 20_000 },
+    ];
+    const patient = history({ opening: { date: TODAY, minor: 20_000 }, invoices });
+    debtsInOrder(patient, TODAY);
+    expect(invoices[0].date).toBe("2026-08-27");
+    // وتاريخُ الافتتاحيّ المسجَّل يبقى كما كُتب في القاعدة.
+    expect(patient.opening?.date).toBe(TODAY);
+  });
+
   it("والاسترداد يزيد الدين لا ينقصه", () => {
     const patient = history({
       invoices: [{ date: "2026-06-05", minor: 30_000 }],

@@ -3782,10 +3782,34 @@ export interface DebtRow {
  * الرقم الذي يعرف به صاحب العيادة كم من ماله عند الناس. ومعه **عمر الدين**: مئة ألف
  * عمرها أسبوع شيء، ومئة ألف عمرها سنة شيء آخر تمامًا — الأولى تُحصَّل بمكالمة،
  * والثانية غالبًا لن تعود. وبلا العمر تبدو المديونية رقمًا واحدًا لا يُتصرَّف فيه.
+ *
+ * **والمجموعُ وتفصيلُه من لقطةٍ واحدة.** فالمبلغ يُقرأ في استعلامٍ مجمَّع، والعمرُ
+ * من ثلاثة استعلاماتٍ بعده. وكلُّ استعلامٍ على اتّصالٍ من المجمَّع يرى لقطةً
+ * مستقلّة، فدفعةٌ تُقيَّد بينها تترك المبلغ موجبًا من اللقطة الأولى بينما يرى حسابُ
+ * العمر الدفعةَ فيقول «لا دَين» — فيقع الصفّ في خانةٍ ليست له: مبلغٌ بلا تاريخ، أو
+ * تاريخٌ لا يوافق مبلغه. فالأربعة على اتّصالٍ واحد داخل معاملة `REPEATABLE READ`
+ * للقراءة وحدها: ما تراه أوّلُها تراه آخرُها.
+ *
+ * و`source` اتّصالٌ مخصَّص لا مجمَّع اتّصالات — يُمرَّر ليُقرأ التقرير داخل لقطة
+ * المتّصل، أو ليُثبَت أنّ اللقطة واحدة فعلًا.
  */
-export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
-  await ensureSchema();
-  const { rows } = await getPool().query<{
+export async function patientDebtReport(minDueMinor = 1, source?: PoolClient): Promise<DebtRow[]> {
+  if (!source) await ensureSchema();
+  const owned = source ? null : await getPool().connect();
+  const client = source ?? owned!;
+  try {
+    return await debtRowsInSnapshot(client, minDueMinor);
+  } finally {
+    // لقطةُ قراءةٍ لا أثر لها — تُغلق بالتراجع، ويعود الاتّصال إلى المجمَّع.
+    await client.query("ROLLBACK").catch(() => {});
+    owned?.release();
+  }
+}
+
+/** يفتح اللقطة ويقرأ التقرير كلَّه داخلها — لا استعلام خارجها. */
+async function debtRowsInSnapshot(client: PoolClient, minDueMinor: number): Promise<DebtRow[]> {
+  await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  const { rows } = await client.query<{
     patient_id: number; full_name: string; phone: string | null;
     billed: string; opening: string; collected: string; oldest: Date | null;
   }>(
@@ -3830,28 +3854,27 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
    * العيادي هو يومها لا اليوم التالي بتوقيت غرينتش.
    */
   const patientIds = rows.map((row) => row.patient_id);
-  const [{ rows: invoiceRows }, { rows: paymentRows }, { rows: openingRows }] = await Promise.all([
-    getPool().query<{ patient_id: number; day: string; amount: string }>(
-      `SELECT patient_id,
-              (created_at AT TIME ZONE $2)::date::text AS day,
-              GREATEST(0, total_minor - discount_minor) AS amount
-         FROM invoices
-        WHERE status <> 'cancelled' AND patient_id = ANY($1::int[])`,
-      [patientIds, CLINIC_TIME_ZONE],
-    ),
-    getPool().query<{ patient_id: number; day: string; amount: string; kind: string }>(
-      `SELECT patient_id,
-              (created_at AT TIME ZONE $2)::date::text AS day,
-              base_amount_minor AS amount, kind
-         FROM payments WHERE patient_id = ANY($1::int[])`,
-      [patientIds, CLINIC_TIME_ZONE],
-    ),
-    getPool().query<{ patient_id: number; day: string; amount: string }>(
-      `SELECT patient_id, as_of_date::text AS day, amount_minor AS amount
-         FROM patient_opening_balances WHERE patient_id = ANY($1::int[])`,
-      [patientIds],
-    ),
-  ]);
+  // اتّصالٌ واحد لا يحمل استعلامين معًا، فتتوالى الثلاثة داخل اللقطة نفسها.
+  const { rows: invoiceRows } = await client.query<{ patient_id: number; day: string; amount: string }>(
+    `SELECT patient_id,
+            (created_at AT TIME ZONE $2)::date::text AS day,
+            GREATEST(0, total_minor - discount_minor) AS amount
+       FROM invoices
+      WHERE status <> 'cancelled' AND patient_id = ANY($1::int[])`,
+    [patientIds, CLINIC_TIME_ZONE],
+  );
+  const { rows: paymentRows } = await client.query<{ patient_id: number; day: string; amount: string; kind: string }>(
+    `SELECT patient_id,
+            (created_at AT TIME ZONE $2)::date::text AS day,
+            base_amount_minor AS amount, kind
+       FROM payments WHERE patient_id = ANY($1::int[])`,
+    [patientIds, CLINIC_TIME_ZONE],
+  );
+  const { rows: openingRows } = await client.query<{ patient_id: number; day: string; amount: string }>(
+    `SELECT patient_id, as_of_date::text AS day, amount_minor AS amount
+       FROM patient_opening_balances WHERE patient_id = ANY($1::int[])`,
+    [patientIds],
+  );
 
   const histories = new Map<number, DebtHistory>();
   const historyOf = (id: number): DebtHistory => {

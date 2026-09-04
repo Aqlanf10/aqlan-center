@@ -28,6 +28,10 @@ export interface DebtHistory {
    *
    * فهو ما كان على المريض يوم دخل النظام، وعملُه تمّ قبله. وعدُّه أحدثَ من
    * فواتيرنا يجعل دينًا عمرُه سنتان يبدو ابن شهر.
+   *
+   * وتاريخُه **تاريخُ إدخالٍ لا تاريخُ نشأة**: حقلُ التاريخ في شاشة الرصيد
+   * الافتتاحي اختياري، ومن تركه فارغًا وضع المسارُ تاريخ اليوم. فالتاريخ
+   * المسجَّل سقفٌ لعمر هذا الدين لا حدُّه — والحقيقة أقدم منه دائمًا.
    */
   opening: DebtEntry | null;
   invoices: DebtEntry[];
@@ -45,27 +49,34 @@ export function paidUpTo(history: DebtHistory, asOf: string): number {
   return total;
 }
 
-/** ديونه مرتّبةً بالأقدم أوّلًا — والافتتاحي قبلها جميعًا عند تساوي التاريخ. */
+/**
+ * ديونه مرتّبةً بالأقدم أوّلًا — **والافتتاحي قبلها جميعًا مهما كان تاريخُه**.
+ *
+ * فالرصيد الافتتاحي عملٌ سابقٌ للنظام كلِّه، فهو أقدم من كل فاتورةٍ فيه
+ * بالضرورة. وتاريخُه المسجَّل تاريخُ إدخال: حقلُ التاريخ في شاشته اختياري، ومن
+ * تركه فارغًا وضع المسارُ تاريخ اليوم — فيُدخَل رصيدٌ افتتاحي اليوم على مريضٍ
+ * له فواتيرُ من العام الماضي.
+ *
+ * وترتيبٌ بالتاريخ وحده كان يضع تلك الفواتير قبله، فتُوزَّع دفعةٌ بقيمة
+ * الافتتاحيّ عليها أوّلًا، فيبقى الافتتاحيُّ وحده غيرَ مسدَّد ويقول التقرير إنّ
+ * عمر الدين يومٌ واحد — بينما الفاتورة القديمة هي التي لم تُسدَّد فعلًا.
+ *
+ * ولأنّ العمر يُقرأ من تاريخ أوّل دينٍ لم يُغطَّ، **يُخفَّض تاريخُ الافتتاحيّ إلى
+ * تاريخ أقدم فاتورةٍ إن سبقته**: نعلم يقينًا أنه أقدم منها ولا نعلم كم، فأقدمُ
+ * فاتورةٍ أصدقُ حدٍّ نملكه. وتركُه على يوم الإدخال يجعل دَينًا قديمًا ابنَ يومه،
+ * وتقديمُه بلا حدٍّ اختلاقُ تاريخٍ لا مصدر له.
+ */
 export function debtsInOrder(history: DebtHistory, asOf: string): DebtEntry[] {
-  const debts: DebtEntry[] = [];
-  if (history.opening && history.opening.date <= asOf && history.opening.minor > 0) {
-    debts.push(history.opening);
-  }
-  for (const invoice of history.invoices) {
-    if (invoice.date <= asOf && invoice.minor > 0) debts.push(invoice);
-  }
-  /*
-   * والافتتاحي أوّلًا عند تساوي اليوم.
-   *
-   * فقد يُسجَّل الرصيد الافتتاحي بتاريخ أوّل فاتورةٍ في النظام، وترتيبٌ يضعه
-   * بعدها يجعل عمر الدين يوم الفاتورة لا يوم الرصيد — وهو أقدم بالتعريف.
-   */
-  return debts.sort((one, two) => {
-    if (one.date !== two.date) return one.date < two.date ? -1 : 1;
-    if (one === history.opening) return -1;
-    if (two === history.opening) return 1;
-    return 0;
-  });
+  const invoices = history.invoices
+    .filter((invoice) => invoice.date <= asOf && invoice.minor > 0)
+    .sort((one, two) => (one.date === two.date ? 0 : one.date < two.date ? -1 : 1));
+
+  const opening = history.opening;
+  if (!opening || opening.date > asOf || opening.minor <= 0) return invoices;
+
+  const oldestInvoice = invoices[0]?.date;
+  const date = oldestInvoice && oldestInvoice < opening.date ? oldestInvoice : opening.date;
+  return [{ date, minor: opening.minor }, ...invoices];
 }
 
 const DAY = 86_400_000;
