@@ -278,6 +278,9 @@ try {
   const snap=await db.createPatient({fullName:'مريض اللقطة',phone:'770223344',altPhone:null,gender:'male',birthYear:1995,address:null,medicalAlert:null,note:null});
   await db.createInvoice({patientId:snap.id,baseCurrency:'YER',discountMinor:0,note:null,createdBy:'shots',items:[{serviceId:null,doctorId:null,description:'علاج اليوم',quantity:1,unitPriceMinor:40000}]});
   const snapshotClient=await db.getPool().connect();
+  // ومن يمرّر اتّصاله يفتح لقطته بنفسه: الدالّة لا تبدأ معاملةً على اتّصالٍ لا
+  // تملكه — ولو فعلت لألغى `ROLLBACK` في نهايتها معاملةَ من استدعاها.
+  await snapshotClient.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   let injected=false;
   const oneSnapshot={
     query:async(text,values)=>{
@@ -292,7 +295,7 @@ try {
   };
   let racedRow;
   try{racedRow=(await db.patientDebtReport(1,oneSnapshot)).find(r=>r.patientId===snap.id);}
-  finally{snapshotClient.release();}
+  finally{await snapshotClient.query('ROLLBACK').catch(()=>{});snapshotClient.release();}
   check('a payment really was committed between the total and its detail',injected);
   check('**and the report answers from one snapshot — an amount owed still carries the date it is owed from**',
     racedRow&&racedRow.dueMinor===40000&&racedRow.oldestUnpaidDate!==null,

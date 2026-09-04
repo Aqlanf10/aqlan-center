@@ -3790,25 +3790,27 @@ export interface DebtRow {
  * تاريخٌ لا يوافق مبلغه. فالأربعة على اتّصالٍ واحد داخل معاملة `REPEATABLE READ`
  * للقراءة وحدها: ما تراه أوّلُها تراه آخرُها.
  *
- * و`source` اتّصالٌ مخصَّص لا مجمَّع اتّصالات — يُمرَّر ليُقرأ التقرير داخل لقطة
- * المتّصل، أو ليُثبَت أنّ اللقطة واحدة فعلًا.
+ * و`source` اتّصالٌ مخصَّص لا مجمَّع اتّصالات، **ومن مرّره فتح لقطته وأغلقها بنفسه**:
+ * الدالّة لا تبدأ معاملةً على اتّصالٍ لا تملكه ولا تُنهيها. ولو فعلت لكان
+ * `ROLLBACK` في نهايتها يُلغي معاملةَ من استدعاها — يقرأ التقرير في جملة عملٍ
+ * أطول، فيضيع ما كتبه قبله بلا رسالةٍ ولا أثر. **والدالّة تدير ما تفتحه هي وحده.**
  */
 export async function patientDebtReport(minDueMinor = 1, source?: PoolClient): Promise<DebtRow[]> {
-  if (!source) await ensureSchema();
-  const owned = source ? null : await getPool().connect();
-  const client = source ?? owned!;
+  if (source) return debtRowsInSnapshot(source, minDueMinor);
+  await ensureSchema();
+  const client = await getPool().connect();
   try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     return await debtRowsInSnapshot(client, minDueMinor);
   } finally {
     // لقطةُ قراءةٍ لا أثر لها — تُغلق بالتراجع، ويعود الاتّصال إلى المجمَّع.
     await client.query("ROLLBACK").catch(() => {});
-    owned?.release();
+    client.release();
   }
 }
 
-/** يفتح اللقطة ويقرأ التقرير كلَّه داخلها — لا استعلام خارجها. */
+/** يقرأ التقرير كلَّه على اتّصالٍ واحد — لا استعلام خارجه، فاللقطة واحدة. */
 async function debtRowsInSnapshot(client: PoolClient, minDueMinor: number): Promise<DebtRow[]> {
-  await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   const { rows } = await client.query<{
     patient_id: number; full_name: string; phone: string | null;
     billed: string; opening: string; collected: string; oldest: Date | null;
