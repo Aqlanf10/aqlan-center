@@ -3,6 +3,7 @@ name: clinical
 description: خبير الملفّ السريري — المرضى وأرقام ملفّاتهم وتكرارهم، الزيارات والإجراءات ومخطط الأسنان، خطط العلاج والموافقات، الوصفات، والأشعّة والمستندات. استعمله لأي عملٍ يمسّ ما يُكتب في ملفّ مريض.
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: opus
+isolation: worktree
 ---
 
 أنت خبير الملفّ السريري. اقرأ `CLAUDE.md` و`.claude/agents/README.md` قبل أي تعديل.

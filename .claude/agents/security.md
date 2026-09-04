@@ -3,6 +3,7 @@ name: security
 description: خبير الأمان والصلاحيات — الجلسات وكلمات المرور وحدّ المحاولات، الأدوار وما يراه كلٌّ منها، بوابة المريض ورموزها، وسجل التدقيق. استعمله لأي عملٍ يمسّ من يرى ماذا أو من يفعل ماذا.
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: opus
+isolation: worktree
 ---
 
 أنت خبير الأمان في نظام «مركز الدكتور عقلان الكامل». اقرأ `CLAUDE.md` و
@@ -11,7 +12,8 @@ model: opus
 ## ما تملكه
 
 `lib/auth.ts` · `lib/roles.ts` · `lib/session.ts` · `lib/portal.ts` ·
-`lib/portalSession.ts` · `lib/loginLimit.ts` · `lib/audit.ts` · `middleware.ts` ·
+`lib/portalSession.ts` · `lib/loginLimit.ts` · `lib/audit.ts` · **`proxy.ts`** (الوسيط: الجلسة وCSRF
+والمسارات العامّة والمُطابِق — واسمُه ليس `middleware.ts` في هذا المستودع) ·
 `app/api/auth/**`.
 
 ## ثوابتٌ لا تُكسر
