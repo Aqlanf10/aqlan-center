@@ -10,14 +10,14 @@ import { join,resolve,sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pgConnection } from '../lib/pgConnection.ts';
 import { hashPassword } from '../lib/auth.ts';
-import { addDays } from '../lib/schedule.ts';
+import { addDays, clinicDateString } from '../lib/schedule.ts';
 const original=process.env.DATABASE_URL;if(!original)throw Error('DATABASE_URL required');
 const name=`http_check_${Date.now()}`;const target=new URL(original);target.pathname=`/${name}`;
 const admin=new Client(pgConnection(original));await admin.connect();await admin.query(`CREATE DATABASE ${name}`);
 process.env.DATABASE_URL=target.toString();process.env.SESSION_SECRET='http-test-only-secret-never-production-2026';
 const directory=await mkdtemp(join(tmpdir(),'aqlan-http-'));process.env.DOCUMENTS_DIR=directory;
 const db=await import('../lib/db.ts');let server;let logs='';let checks=0;
-const check=(label,ok)=>{assert.ok(ok,label);checks++;console.log(`✓ ${label}`);};
+const check=(label,ok,extra='')=>{assert.ok(ok,extra?`${label} — ${extra}`:label);checks++;console.log(`✓ ${label}`);};
 try {
   await db.ensureSchema();const password='http-test-password-2026';const passwordHash=await hashPassword(password);
   const owner=await db.createFirstAdmin({username:'admin',displayName:'Test admin',passwordHash});
@@ -211,6 +211,101 @@ try {
     (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'34000',effectiveFrom:todayText,replace:true},{origin:base})).status===409);
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
+  /*
+   * ── عمر الدين بالأقدم-أوّلًا ──
+   *
+   * وكان يُحسب من أقدم فاتورةٍ بلا نظرٍ إلى ما دفع. فمريضٌ عليه رصيدٌ افتتاحي
+   * من ٢٠٢٤ سدّده كاملًا، وعليه اليوم فاتورةٌ جديدة، كان يظهر «منذ ست مئة
+   * يوم» ويُصنَّف دَينًا ميتًا — فيُطارَد بمكالماتٍ يستحقّها غيره، أو يُشطب
+   * دينُه وهو حاضرٌ يدفع.
+   *
+   * والرصيد الافتتاحي تاريخُه بيدنا، فيُفحص به بلا حاجةٍ إلى تزوير تواريخ.
+   */
+  const settled=await db.createPatient({fullName:'مريض سدّد القديم',phone:'770445566',altPhone:null,gender:'male',birthYear:1980,address:null,medicalAlert:null,note:null});
+  await db.setPatientOpeningBalance({patientId:settled.id,amountMinor:100000,asOfDate:'2024-01-15',note:null,createdBy:'shots'});
+  const settledShift=await db.openShift({openedBy:'shots',opening:{YER:0,SAR:0,USD:0}});
+  await db.recordPayment({patientId:settled.id,invoiceId:null,kind:'payment',amountMinor:100000,currency:'YER',baseCurrency:'YER',exchangeRate:1,method:'cash',note:null,createdBy:'shots'});
+  await db.createInvoice({patientId:settled.id,baseCurrency:'YER',discountMinor:0,note:null,createdBy:'shots',items:[{serviceId:null,doctorId:null,description:'علاج اليوم',quantity:1,unitPriceMinor:40000}]});
+  const aged=(await db.patientDebtReport(1)).find(r=>r.patientId===settled.id);
+  check("a patient who cleared an old balance still owes today's invoice",aged&&aged.dueMinor===40000,`${aged&&aged.dueMinor}`);
+  // ست مئة يومٍ كان الجواب القديم؛ والصحيح صفر — فاتورةُ اليوم.
+  check('**and its age is today, not the day of the balance he already paid**',
+    aged&&aged.ageDays===0,`${aged&&aged.ageDays} يومًا`);
+
+  /*
+   * ── رصيدٌ افتتاحيٌّ أُدخل اليوم على مريضٍ له فاتورةٌ أقدم منه ──
+   *
+   * حقلُ التاريخ في شاشة الرصيد الافتتاحي اختياري، ومن تركه فارغًا وضع المسارُ
+   * تاريخ اليوم — وهو مسارٌ مسلوكٌ لا نادر. والرصيد **عملٌ سابقٌ للنظام كلِّه**
+   * مهما كان تاريخ إدخاله، فهو أقدم من كل فاتورةٍ فيه بالضرورة.
+   *
+   * وترتيبٌ بالتاريخ وحده كان يضع الفاتورة القديمة قبله، فتغطّيها دفعةٌ بقيمة
+   * الافتتاحيّ ويبقى الافتتاحيُّ وحده «غير مسدَّد» — فيقول التقرير إنّ عمر الدين
+   * صفر بينما فاتورةُ العام الماضي هي التي لم تُسدَّد.
+   *
+   * والفاتورة تُؤرَّخ بـ`created_at`، فتُرجَّع بالكتابة في العمود الذي يقرؤه
+   * التقرير نفسه — لا بحقنِ نتيجةٍ جاهزة.
+   */
+  const backdated=await db.createPatient({fullName:'مريض فاتورةٍ قديمة',phone:'770112233',altPhone:null,gender:'male',birthYear:1975,address:null,medicalAlert:null,note:null});
+  const oldInvoice=await db.createInvoice({patientId:backdated.id,baseCurrency:'YER',discountMinor:0,note:null,createdBy:'shots',items:[{serviceId:null,doctorId:null,description:'علاجٌ من العام الماضي',quantity:1,unitPriceMinor:20000}]});
+  await db.getPool().query(`UPDATE invoices SET created_at = $2::timestamptz WHERE id = $1`,[oldInvoice.id,'2025-06-10 09:00:00+03']);
+  // بلا `asOfDate` — كما تُرسلها الشاشة حين يُترك الحقل فارغًا.
+  const typedToday=await request('/api/opening-balances',a,{patientId:backdated.id,amount:'20000'},{origin:base});
+  const openingSaved=typedToday.status===201?await typedToday.json():null;
+  const clinicToday=clinicDateString(new Date(),db.CLINIC_TIME_ZONE);
+  check('an opening balance saved with no date is dated today — the path this bug travels',
+    openingSaved&&openingSaved.asOfDate===clinicToday,`${openingSaved&&openingSaved.asOfDate}`);
+  await db.recordPayment({patientId:backdated.id,invoiceId:null,kind:'payment',amountMinor:20000,currency:'YER',baseCurrency:'YER',exchangeRate:1,method:'cash',note:null,createdBy:'shots'});
+  const backdatedRow=(await db.patientDebtReport(1)).find(r=>r.patientId===backdated.id);
+  check('he still owes one of the two — the payment covered the other',
+    backdatedRow&&backdatedRow.dueMinor===20000,`${backdatedRow&&backdatedRow.dueMinor}`);
+  // صفرٌ كان الجواب القديم — والصحيح عمرُ الفاتورة التي لم تُسدَّد.
+  check('**and the opening balance goes first however late it was typed — the age is the old invoice**',
+    backdatedRow&&backdatedRow.oldestUnpaidDate==='2025-06-10'&&backdatedRow.ageDays>400,
+    `${backdatedRow&&backdatedRow.oldestUnpaidDate} — ${backdatedRow&&backdatedRow.ageDays} يومًا`);
+
+  /*
+   * ── المجموع وتفصيلُه من لقطةٍ واحدة ──
+   *
+   * المبلغ يُقرأ في استعلامٍ مجمَّع، والعمرُ من ثلاثة استعلاماتٍ بعده. وكلٌّ على
+   * اتّصالٍ من المجمَّع يرى لقطةً مستقلّة، فدفعةٌ تُقيَّد بينها تترك المبلغ موجبًا
+   * من اللقطة الأولى بينما يرى حسابُ العمر الدفعةَ فيقول «لا دَين ولا عمر» —
+   * فيقع الصفّ في خانةٍ ليست له: مبلغٌ بلا تاريخ.
+   *
+   * والدفعة تُقيَّد من `recordPayment` نفسها لا بكتابةٍ مصطنعة، وتُثبَّت بين
+   * الاستعلامين تمامًا — فالسباق مُعادٌ لا مُنتظَر.
+   */
+  const snap=await db.createPatient({fullName:'مريض اللقطة',phone:'770223344',altPhone:null,gender:'male',birthYear:1995,address:null,medicalAlert:null,note:null});
+  await db.createInvoice({patientId:snap.id,baseCurrency:'YER',discountMinor:0,note:null,createdBy:'shots',items:[{serviceId:null,doctorId:null,description:'علاج اليوم',quantity:1,unitPriceMinor:40000}]});
+  const snapshotClient=await db.getPool().connect();
+  // ومن يمرّر اتّصاله يفتح لقطته بنفسه: الدالّة لا تبدأ معاملةً على اتّصالٍ لا
+  // تملكه — ولو فعلت لألغى `ROLLBACK` في نهايتها معاملةَ من استدعاها.
+  await snapshotClient.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  let injected=false;
+  const oneSnapshot={
+    query:async(text,values)=>{
+      const result=await snapshotClient.query(text,values);
+      if(!injected&&String(text).includes('WITH billed AS')){
+        injected=true;
+        await db.recordPayment({patientId:snap.id,invoiceId:null,kind:'payment',amountMinor:40000,currency:'YER',baseCurrency:'YER',exchangeRate:1,method:'cash',note:null,createdBy:'shots'});
+      }
+      return result;
+    },
+    release:()=>{},
+  };
+  let racedRow;
+  try{racedRow=(await db.patientDebtReport(1,oneSnapshot)).find(r=>r.patientId===snap.id);}
+  finally{await snapshotClient.query('ROLLBACK').catch(()=>{});snapshotClient.release();}
+  check('a payment really was committed between the total and its detail',injected);
+  check('**and the report answers from one snapshot — an amount owed still carries the date it is owed from**',
+    racedRow&&racedRow.dueMinor===40000&&racedRow.oldestUnpaidDate!==null,
+    `${racedRow&&racedRow.dueMinor} — ${racedRow&&racedRow.oldestUnpaidDate}`);
+  // ولم تكن الدفعة وهمًا: التقرير التالي لا يعرف هذا المريض أصلًا.
+  check('and the next report, taken after it, no longer lists him at all',
+    !(await db.patientDebtReport(1)).some(r=>r.patientId===snap.id));
+
+  if(settledShift) await db.closeShift({id:settledShift.id,closedBy:'shots',counted:{YER:160000,SAR:0,USD:0},note:null});
+
 
   // ── خصم تكلفة المختبر من عمولة الطبيب ──
   check('a lab order with a doctor id that is not a doctor is refused, not silently dropped',

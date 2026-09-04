@@ -1510,6 +1510,7 @@ import { CONFIRM_REFUSAL, confirmVerdict } from "./portal";
 import type { Appointment, AppointmentStatus } from "./schedule";
 
 import { ageFromBirthYear } from "./patient";
+import { debtAge, type DebtHistory } from "./debtAge";
 import type { Gender, Patient, PatientInput } from "./patient";
 import type { CandidatePatient } from "./duplicates";
 
@@ -3781,10 +3782,36 @@ export interface DebtRow {
  * الرقم الذي يعرف به صاحب العيادة كم من ماله عند الناس. ومعه **عمر الدين**: مئة ألف
  * عمرها أسبوع شيء، ومئة ألف عمرها سنة شيء آخر تمامًا — الأولى تُحصَّل بمكالمة،
  * والثانية غالبًا لن تعود. وبلا العمر تبدو المديونية رقمًا واحدًا لا يُتصرَّف فيه.
+ *
+ * **والمجموعُ وتفصيلُه من لقطةٍ واحدة.** فالمبلغ يُقرأ في استعلامٍ مجمَّع، والعمرُ
+ * من ثلاثة استعلاماتٍ بعده. وكلُّ استعلامٍ على اتّصالٍ من المجمَّع يرى لقطةً
+ * مستقلّة، فدفعةٌ تُقيَّد بينها تترك المبلغ موجبًا من اللقطة الأولى بينما يرى حسابُ
+ * العمر الدفعةَ فيقول «لا دَين» — فيقع الصفّ في خانةٍ ليست له: مبلغٌ بلا تاريخ، أو
+ * تاريخٌ لا يوافق مبلغه. فالأربعة على اتّصالٍ واحد داخل معاملة `REPEATABLE READ`
+ * للقراءة وحدها: ما تراه أوّلُها تراه آخرُها.
+ *
+ * و`source` اتّصالٌ مخصَّص لا مجمَّع اتّصالات، **ومن مرّره فتح لقطته وأغلقها بنفسه**:
+ * الدالّة لا تبدأ معاملةً على اتّصالٍ لا تملكه ولا تُنهيها. ولو فعلت لكان
+ * `ROLLBACK` في نهايتها يُلغي معاملةَ من استدعاها — يقرأ التقرير في جملة عملٍ
+ * أطول، فيضيع ما كتبه قبله بلا رسالةٍ ولا أثر. **والدالّة تدير ما تفتحه هي وحده.**
  */
-export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
+export async function patientDebtReport(minDueMinor = 1, source?: PoolClient): Promise<DebtRow[]> {
+  if (source) return debtRowsInSnapshot(source, minDueMinor);
   await ensureSchema();
-  const { rows } = await getPool().query<{
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    return await debtRowsInSnapshot(client, minDueMinor);
+  } finally {
+    // لقطةُ قراءةٍ لا أثر لها — تُغلق بالتراجع، ويعود الاتّصال إلى المجمَّع.
+    await client.query("ROLLBACK").catch(() => {});
+    client.release();
+  }
+}
+
+/** يقرأ التقرير كلَّه على اتّصالٍ واحد — لا استعلام خارجه، فاللقطة واحدة. */
+async function debtRowsInSnapshot(client: PoolClient, minDueMinor: number): Promise<DebtRow[]> {
+  const { rows } = await client.query<{
     patient_id: number; full_name: string; phone: string | null;
     billed: string; opening: string; collected: string; oldest: Date | null;
   }>(
@@ -3802,8 +3829,8 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
             COALESCE(b.amount, 0) AS billed,
             COALESCE(o.amount_minor, 0) AS opening,
             COALESCE(c.amount, 0) AS collected,
-            -- عمر الدين من أقدم ما عليه: والرصيد الافتتاحي أقدم من أي فاتورة هنا.
-            -- LEAST في بوستجرس يتجاهل القيم الفارغة، فمن لا افتتاحي له لا يتأثر.
+            -- أقدم فاتورةٍ للمريض — لا عمرُ دينه. والعمر يُحسب بالأقدم-أوّلًا
+            -- بعد هذا الاستعلام، فالسداد يُغطّي أقدم ما عليه ولا يُتجاهل.
             LEAST(b.oldest, o.as_of_date::timestamptz) AS oldest
        FROM patients p
        LEFT JOIN billed b ON b.patient_id = p.id
@@ -3815,9 +3842,63 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
     [minDueMinor],
   );
 
-  const now = Date.now();
+  if (rows.length === 0) return [];
+
+  /*
+   * عمر الدين **بالأقدم-أوّلًا**، لا من أقدم فاتورة.
+   *
+   * وكان يُحسب من `MIN(created_at)` بلا نظرٍ إلى ما دفع المريض. فمن عالجناه
+   * قبل سنةٍ وسدّد، ثم جاء الأسبوع الماضي لفاتورةٍ جديدة، يظهر «منذ ٤٠٠ يومًا»
+   * ويُصنَّف دَينًا ميتًا — فيُطارَد بمكالماتٍ يستحقّها غيره، أو يُشطب دينُه وهو
+   * حاضرٌ يدفع. والشاشة كلُّها بُنيت على أنّ العمر يُقرَّر به.
+   *
+   * والتواريخ **بيوم العيادة**: اليمن على ‎+٣‎، وفاتورةُ العاشرة مساءً يومُها
+   * العيادي هو يومها لا اليوم التالي بتوقيت غرينتش.
+   */
+  const patientIds = rows.map((row) => row.patient_id);
+  // اتّصالٌ واحد لا يحمل استعلامين معًا، فتتوالى الثلاثة داخل اللقطة نفسها.
+  const { rows: invoiceRows } = await client.query<{ patient_id: number; day: string; amount: string }>(
+    `SELECT patient_id,
+            (created_at AT TIME ZONE $2)::date::text AS day,
+            GREATEST(0, total_minor - discount_minor) AS amount
+       FROM invoices
+      WHERE status <> 'cancelled' AND patient_id = ANY($1::int[])`,
+    [patientIds, CLINIC_TIME_ZONE],
+  );
+  const { rows: paymentRows } = await client.query<{ patient_id: number; day: string; amount: string; kind: string }>(
+    `SELECT patient_id,
+            (created_at AT TIME ZONE $2)::date::text AS day,
+            base_amount_minor AS amount, kind
+       FROM payments WHERE patient_id = ANY($1::int[])`,
+    [patientIds, CLINIC_TIME_ZONE],
+  );
+  const { rows: openingRows } = await client.query<{ patient_id: number; day: string; amount: string }>(
+    `SELECT patient_id, as_of_date::text AS day, amount_minor AS amount
+       FROM patient_opening_balances WHERE patient_id = ANY($1::int[])`,
+    [patientIds],
+  );
+
+  const histories = new Map<number, DebtHistory>();
+  const historyOf = (id: number): DebtHistory => {
+    let found = histories.get(id);
+    if (!found) { found = { opening: null, invoices: [], payments: [] }; histories.set(id, found); }
+    return found;
+  };
+  for (const row of invoiceRows) {
+    historyOf(row.patient_id).invoices.push({ date: row.day, minor: toMinor(row.amount) });
+  }
+  for (const row of paymentRows) {
+    historyOf(row.patient_id).payments.push({
+      date: row.day, minor: toMinor(row.amount), isRefund: row.kind === "refund",
+    });
+  }
+  for (const row of openingRows) {
+    historyOf(row.patient_id).opening = { date: row.day, minor: toMinor(row.amount) };
+  }
+
+  const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
   return rows.map((row) => {
-    const oldest = row.oldest ? row.oldest.toISOString() : null;
+    const age = debtAge(historyOf(row.patient_id), today);
     return {
       patientId: row.patient_id,
       patientName: row.full_name,
@@ -3826,8 +3907,8 @@ export async function patientDebtReport(minDueMinor = 1): Promise<DebtRow[]> {
       openingMinor: toMinor(row.opening),
       collectedMinor: toMinor(row.collected),
       dueMinor: toMinor(row.billed) + toMinor(row.opening) - toMinor(row.collected),
-      oldestUnpaidDate: oldest,
-      ageDays: oldest ? Math.max(0, Math.floor((now - Date.parse(oldest)) / 86_400_000)) : 0,
+      oldestUnpaidDate: age.since,
+      ageDays: age.ageDays,
     };
   });
 }
