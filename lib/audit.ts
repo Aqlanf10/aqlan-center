@@ -27,7 +27,7 @@ export type AuditAction =
   | "service.catalog_import" | "service.prices"
   | "settings.update"
   | "user.create" | "user.update" | "user.disable"
-  | "backup.download" | "export.download"
+  | "backup.download" | "backup.complete" | "export.download"
   | "document.reprint"
   | "chart.record" | "visit.sign" | "visit.addendum"
   | "document.upload" | "document.remove"
@@ -59,7 +59,11 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "user.create": "إنشاء مستخدم",
   "user.update": "تعديل مستخدم",
   "user.disable": "تعطيل مستخدم",
-  "backup.download": "تنزيل نسخة احتياطية",
+  "backup.download": "بدء تنزيل نسخة احتياطية",
+  // فعلٌ ثانٍ عمدًا لا تعديلٌ للأوّل: السجل لا يُعدَّل ولا يُحذف منه، والبدء
+  // والاكتمال واقعتان مختلفتان. الأولى تشهد أنّ الأرشيف خرج — وهي التي تُراجَع
+  // أمنيًّا؛ والثانية وحدها تشهد أنّ نسخةً تامّة صارت في اليد.
+  "backup.complete": "اكتمال بثّ نسخة احتياطية",
   "export.download": "تصدير بيانات",
   "document.reprint": "إعادة طباعة مستند",
   "chart.record": "تثبيت حالة سن",
@@ -87,8 +91,8 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
 export const SENSITIVE_ACTIONS: AuditAction[] = [
   "invoice.cancel", "payment.refund", "opening_balance.set", "opening_balance.clear",
   "journal.manual", "fx.revalue", "settings.update", "user.create", "user.update",
-  "user.disable", "backup.download", "export.download", "document.reprint",
-  "visit.addendum", "prescription.void",
+  "user.disable", "backup.download", "backup.complete", "export.download",
+  "document.reprint", "visit.addendum", "prescription.void",
   // ونسبةُ عملٍ إلى طبيب وسعرُ مختبرٍ يحكمان مالًا يُصرف.
   "lab.order.doctor", "lab.price",
 ];

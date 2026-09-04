@@ -50,6 +50,48 @@ try {
   check('reception cannot edit individual service price',edit.status===403);
   const security=await request('/login');check('security headers present',security.headers.get('x-content-type-options')==='nosniff'&&security.headers.get('content-security-policy')?.includes("frame-ancestors 'self'"));
   check('doctor cannot export database',(await request('/api/backup/full',d)).status===403);
+
+  /*
+   * ── نسخةٌ بُدئت ليست نسخةً أُخذت ──
+   *
+   * وموضع هذا الفحص هنا مقصود: **قبل أن تنجح نسخةٌ واحدة في هذه الرحلة**. فبعد
+   * أوّل نسخةٍ مكتملة يصير البند «تمام» على كلّ حال، فلا يفرّق بين قراءةٍ صادقة
+   * وقراءةٍ كاذبة. وهنا وحده يظهر الفرق.
+   *
+   * و`backup.download` يُسجَّل قبل أوّل بايت — وهذا مقصود، فالمراجعة الأمنيّة تريد
+   * أثرًا لأرشيفٍ بدأ بالخروج. ويسجّله أيضًا `/api/backup/documents` لأرشيف
+   * الأشعّة وحده. فلو قرأته الجاهزيةُ لقالت «أُخذت نسخة» بعد تنزيلٍ قُطع في
+   * منتصفه، وقاعدةُ المرضى والمال لم تُنسخ قطّ.
+   */
+  const item=async key=>(await (await request('/api/settings/readiness',a)).json()).checks.find(c=>c.key===key);
+  const countAudit=async action=>Number((await db.getPool().query('SELECT COUNT(*)::int AS n FROM audit_log WHERE action=$1',[action])).rows[0].n);
+  const countRows=async sql=>Number((await db.getPool().query(sql)).rows[0].n);
+  check('before any backup, the blocking item is open',(await item('backup')).level==='blocked');
+  const startedBefore=await countAudit('backup.download');
+  const completedBefore=await countAudit('backup.complete');
+  const cut=new AbortController();
+  const cutBackup=await fetch(base+'/api/backup',{headers:{cookie:a},signal:cut.signal});
+  const cutReader=cutBackup.body.getReader();
+  await cutReader.read();  // أوّل دفعةٍ وحدها، ثم تُقطع كما يقطعها المتصفّح
+  cut.abort();
+  await new Promise(r=>setTimeout(r,400));
+  check('a cut backup is recorded as started — and never as complete',
+    await countAudit('backup.download')===startedBefore+1
+    &&await countAudit('backup.complete')===completedBefore);
+  // **وهذا هو الفحص الذي يسقط إن عادت الجاهزية تقرأ بدء التنزيل.**
+  check('and it does not close the item — half an archive is not a backup',
+    (await item('backup')).level==='blocked');
+  const whole=await request('/api/backup',a);
+  const wholeSql=await whole.text();
+  // والملفّ نفسه يختم نفسه: السطر الأخير علامةُ اكتمال لا يكتبها بثٌّ منقطع.
+  check('a backup streamed to its last line is recorded complete',
+    wholeSql.includes('-- AQLAN_BACKUP_COMPLETE')
+    &&await countAudit('backup.complete')===completedBefore+1);
+  check('and only then does the item close',(await item('backup')).level==='ok');
+  // وهما واقعتان مختلفتان لا اسمان لواحدة: البدء وقع أكثر ممّا وقع الاكتمال.
+  check('the two are different facts — more downloads began than backups finished',
+    await countAudit('backup.download')>await countAudit('backup.complete'));
+
   const backup=await request('/api/backup/full',a);check('admin full backup streams successfully',backup.ok&&(await backup.arrayBuffer()).byteLength>100);
   check('doctor cannot create inventory item',(await request('/api/inventory',d,{name:'Forbidden item',unit:'box'},{origin:base})).status===403);
   const madeItem=await request('/api/inventory',a,{name:'Gloves M',category:'consumable',unit:'box',minLevel:2},{origin:base});
@@ -338,6 +380,84 @@ try {
   check('and accepts no',(await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'no'})).status===200);
   check('and yes — the owner decided the deduction',
     (await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'yes'})).status===200);
+
+  // ── جاهزية النظام: خارطةُ ما ينقص، وهي للمدير وحده ──
+  check('readiness denied without a session',(await request('/api/settings/readiness')).status===401);
+  // فالبنود تقول كم حسابًا في النظام ومتى آخر نسخة احتياطية وأرمزُ التنصيب حيّ —
+  // وهي بعينها ما يحتاجه من أراد الدخول، فلا تُعطى لكل من يملك جلسة.
+  check('reception cannot read readiness — it maps what is missing',(await request('/api/settings/readiness',reception)).status===403);
+  check('doctor cannot read readiness either',(await request('/api/settings/readiness',d)).status===403);
+  const readiness=await (await request('/api/settings/readiness',a)).json();
+  check('admin reads readiness',Array.isArray(readiness.checks)&&readiness.checks.length>0);
+  check('every readiness item says what it is, why it matters, and how bad it is',
+    readiness.checks.every(c=>c.key&&c.title&&c.detail&&c.why&&['blocked','warn','ok'].includes(c.level)));
+  // والحاجز فوق التحذير: من يفتح الشاشة يجد ما يوقفه في أعلاها لا بعد تمريرة.
+  const levelRank={blocked:0,warn:1,ok:2};
+  check('blocking items come first',readiness.checks.every((c,i)=>i===0||levelRank[readiness.checks[i-1].level]<=levelRank[c.level]));
+  // ولا يُقال «جاهز» ما دام بندٌ حاجز مفتوحًا — وهذه قاعدةٌ بلا نسخة احتياطية بعد.
+  check('the verdict follows the items, it is not a separate opinion',
+    readiness.verdict.blocked===readiness.checks.filter(c=>c.level==='blocked').length
+    &&readiness.verdict.warnings===readiness.checks.filter(c=>c.level==='warn').length
+    &&readiness.verdict.ready===(readiness.verdict.blocked===0));
+  // والنسخة الاحتياطية تُقرأ من سجلّ التدقيق لا من ظنّ: هذه الرحلة نزّلت نسخةً
+  // كاملة أعلاه، فلا بدّ أن تراها الجاهزيةُ نسخةَ اليوم. ولو كانت تقرأ من مفتاحٍ
+  // يُكتب بيد أو من افتراض، لبقيت «لم تُؤخذ نسخة بعد» بعد نسخةٍ أُخذت فعلًا.
+  check('readiness sees the backup this run actually downloaded',
+    readiness.checks.find(c=>c.key==='backup').level==='ok');
+  // والوقائع من مصادرها لا من ظنّ: ثلاثة مستخدمين أُنشئوا في أعلى هذا الملف.
+  const users=readiness.checks.find(c=>c.key==='users');
+  check('readiness counts the real users, not a guess',users.detail.includes('admin')&&users.detail.includes('doctor'));
+
+  // ── والوقائع نفسها: كلُّ رقمٍ من الجدول الذي يملكه، وكلُّ حكمٍ يسقط إن كُسر ──
+
+  /*
+   * ٢) الخدمات بلا أسعار ليست خدمات.
+   *
+   * استيراد دليل العيادة أعلاه أدرج صفوفًا فعّالة بـ`price_configured = FALSE`،
+   * و`validateProcedures` يردّ أيًّا منها. فعدُّ الصفوف يقول «تمام» ولا خدمةَ
+   * تُختار في زيارة.
+   */
+  const activeServices=await countRows('SELECT COUNT(*)::int AS n FROM services WHERE is_active');
+  const pricedServices=await countRows('SELECT COUNT(*)::int AS n FROM services WHERE is_active AND price_configured');
+  check('the imported catalog really did leave services with no price',activeServices>pricedServices);
+  const servicesItem=await item('services');
+  check('so the item counts the priced ones and says both numbers, not one',
+    servicesItem.detail.includes(String(pricedServices))&&servicesItem.detail.includes(String(activeServices)));
+
+  /*
+   * ٣) سعرٌ واحدٌ حُدِّث اليوم لا يُبيّض رفيقَه.
+   *
+   * شاشة الإعدادات تحفظ الحقول المتغيّرة وحدها، فمفتاح الدولار قد لا يكون كُتب
+   * قطّ. و`MAX` على التاريخين كان يجعل حفظَ السعوديّ اليوم يقول «تمام».
+   */
+  check('one rate saved today',(await patch('/api/settings',a,{'finance.rate.SAR':'141'})).status===200);
+  const oneRate=await item('rates');
+  check('yet the item follows the older key — and a key never saved is not neutral',
+    oneRate.level==='warn'&&oneRate.detail.includes('لم يُحفظ قط'));
+  check('the other rate saved too',(await patch('/api/settings',a,{'finance.rate.USD':'531'})).status===200);
+  check('only then is the item clear — every currency was decided by the owner',
+    (await item('rates')).level==='ok');
+
+  /*
+   * ٤) الوردية تُقاس بأيّام العيادة لا بساعات.
+   *
+   * وردية فُتحت أمس قبل منتصف الليل عمرُها ساعات، وقد جمعت قبضَ يومين في جردٍ
+   * واحد — وهو الشرط الذي كُتب البند لأجله. وقسمةُ الثواني على ٨٦٤٠٠ كانت
+   * تعطيها صفرًا فتُسقط ذكرها.
+   */
+  const zone=process.env.CLINIC_TIME_ZONE||'Asia/Aden';
+  await db.getPool().query(
+    `INSERT INTO cashier_shifts (opened_by, opened_at)
+     VALUES ('admin', ((((NOW() AT TIME ZONE $1)::date - 1) + TIME '23:59:59') AT TIME ZONE $1))`,[zone]);
+  const openAge=await countRows("SELECT EXTRACT(EPOCH FROM (NOW() - opened_at))::int AS n FROM cashier_shifts WHERE status='open'");
+  check('the shift was opened less than twenty-four hours ago',openAge>0&&openAge<86400);
+  check('yet it already crossed into a second clinic day, and readiness says one day',
+    (await db.readinessFacts()).openShiftAgeDays===1);
+  const stuck=(await (await request('/api/settings/readiness',a)).json()).checks.find(c=>c.key==='shifts');
+  check('and the screen raises it — the very case the item was written for',stuck&&stuck.level==='warn');
+  await db.getPool().query("DELETE FROM cashier_shifts WHERE status='open'");
+  check('with no shift open the item is not raised at all',
+    (await db.readinessFacts()).openShiftAgeDays===null);
 
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
