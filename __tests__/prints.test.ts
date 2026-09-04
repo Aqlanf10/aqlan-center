@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  PRINTABLE_DOCS, PRINT_AUDIENCE, canPrintDoc, isPrintableDoc, type PrintableDoc,
+  PRINTABLE_DOCS, PRINT_AUDIENCE, PRINT_AUDIENCES, canPrintDoc, isPrintableDoc, type PrintableDoc,
 } from "../lib/prints";
 
 /*
@@ -44,8 +44,11 @@ describe("صلاحية الطباعة تتبع المستند", () => {
   it("ولكل نوعٍ مسجَّل جمهورٌ معلوم — فنوعٌ يُضاف بلا جمهور لا يمرّ", () => {
     // بلا هذا يصير النوع الجديد بلا صفّ في الخريطة، فيُقرأ `undefined` ويسقط
     // إلى فرع المال صامتًا — وهو بالضبط العطب الذي جاء هذا الملف ليمنعه.
+    // والمجموعة تُقرأ من `PRINT_AUDIENCES` لا تُكتب هنا: جمهورٌ رابع يُضاف يومًا
+    // ويُنسى في هذا السطر يجعل الحارس يرفض ما هو صحيح، فيُوسَّع بيدٍ حتى يقبل كل
+    // شيء — فيموت الحارس ببطء بدل أن يُكسر مرّة.
     for (const doc of PRINTABLE_DOCS) {
-      expect(PRINT_AUDIENCE[doc], doc).toMatch(/^(money|clinical)$/);
+      expect(PRINT_AUDIENCES, doc).toContain(PRINT_AUDIENCE[doc]);
     }
     expect(Object.keys(PRINT_AUDIENCE).sort()).toEqual([...PRINTABLE_DOCS].sort());
   });

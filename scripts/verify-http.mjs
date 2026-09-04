@@ -458,6 +458,32 @@ try {
   await db.getPool().query("DELETE FROM cashier_shifts WHERE status='open'");
   check('with no shift open the item is not raised at all',
     (await db.readinessFacts()).openShiftAgeDays===null);
+  // ── بطاقة المريض: ورقةٌ تخرج بيده فيها رقمُ ملفّه وموعدُه ──
+  const cardPatient=await db.createPatient({fullName:'مريض البطاقة',phone:'771122334',altPhone:null,gender:'female',birthYear:2001,address:null,medicalAlert:'حساسية من اللاتكس',note:null});
+  const cardPath=`/print/patient-card/${cardPatient.id}`;
+  // البطاقة تحمل اسم مريضٍ ورقمَ ملفّه — فلا تُفتح بلا جلسة. والحارس هنا الوسيط
+  // (middleware) لا الصفحة: أُعيد العطب — رُفع شرط الجلسة من الصفحة — فلم يسقط
+  // هذا الفحص، لأنّ الوسيط يردّ المجهول قبل أن تصل إليه. فهو يشهد بالسلوك من
+  // الطرف إلى الطرف لا بحارس الصفحة، وحارسُ الصفحة يُثبَت في اختبار الوحدة
+  // («ودورٌ مجهول أو غائب لا يطبع شيئًا» في `__tests__/prints.test.ts`).
+  check('the patient card is not reachable without a session',[302,307,404].includes((await request(cardPath)).status));
+  // وهي عملُ الاستقبال أوّلًا، والطبيب يطبعها في الكرسي: الثلاثة يفتحونها.
+  for (const [who,cookie] of [['admin',a],['reception',reception],['doctor',d]]) {
+    check(`${who} can print the patient card`,(await request(cardPath,cookie)).status===200);
+  }
+  const cardHtml=await (await request(cardPath,reception)).text();
+  check('the card carries the file number — the whole point of it',cardHtml.includes(cardPatient.patientNumber));
+  check('and the patient name',cardHtml.includes('مريض البطاقة'));
+  // **ولا تحمل تنبيهًا طبيًّا**: ورقةٌ تُحمل في جيبٍ وتُنسى على طاولة، وإفشاءُ
+  // حساسية المريض عليها لا يحتاجه غرضُها — وهو أن يُعرف رقمُ ملفّه.
+  check('the card does not leak the medical alert',!cardHtml.includes('حساسية من اللاتكس'));
+  // وتحمل تاريخ طبعها: بطاقةٌ بلا تاريخٍ تُقرأ بعد ستة أشهر على أنها اليوم.
+  check('the card says when it was printed',cardHtml.includes('طُبعت في'));
+  // ومريضٌ لا وجود له ٤٠٤، لا بطاقةً باسمٍ فارغ على ترويسة المركز.
+  check('a patient that does not exist gets no card',(await request('/print/patient-card/99999999',reception)).status===404);
+  // وطبعتها تُسجَّل بنوعها: نوعٌ يُسجَّل باسم آخر يفسد عدّاد المستندات المالية.
+  check('the card print is logged under its own type, not another',
+    (await request('/api/print-log',reception,{docType:'patient-card',docId:cardPatient.id},{origin:base})).status===200);
 
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});

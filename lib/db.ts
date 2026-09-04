@@ -8537,3 +8537,26 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
     today,
   };
 }
+
+/**
+ * مواعيد المريض من تاريخٍ فصاعدًا — لبطاقته.
+ *
+ * والتاريخ يُمرَّر ولا يُؤخذ من `CURRENT_DATE`: تلك تاريخُ خادم القاعدة بتوقيت UTC،
+ * واليمن على +٣. فبطاقةٌ تُطبع بعد التاسعة مساءً تُسقط موعد الغد أو تُبقي موعد
+ * أمس، والفرقُ لا يظهر إلّا مساءً فيُقرأ عطلًا عشوائيًّا.
+ *
+ * والتصفية بالحالة في `lib/patientCard.ts` لا هنا: القراءة تجلب، والحكمُ يُختبر.
+ */
+export async function patientAppointmentsFrom(
+  patientId: number,
+  fromDate: string,
+): Promise<Appointment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<AppointmentRow>(
+    `${APPOINTMENT_SELECT}
+      WHERE a.patient_id = $1 AND a.scheduled_date >= $2
+      ORDER BY a.scheduled_date, a.scheduled_time`,
+    [patientId, fromDate],
+  );
+  return rows.map(toAppointment);
+}
