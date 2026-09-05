@@ -25,6 +25,7 @@ export type SettingKey =
   | "finance.rate.USD"
   | "finance.locked_before"
   | "finance.commission_deducts_lab_cost"
+  | "finance.budget_warn_percent"
   | "lab.default_days"
   | "ortho.adjust_weeks"
   | "ortho.retention_weeks"
@@ -62,6 +63,7 @@ export const SETTING_DEFAULTS: Record<SettingKey, string> = {
    * من أربعين هي كلُّ ما بقي للمركز، بدل ستّة عشر.
    */
   "finance.commission_deducts_lab_cost": "yes",
+  "finance.budget_warn_percent": "80",
   "lab.default_days": "7",
   // مهلة الشدّ حين لا يحدّدها الطبيب في الزيارة: أربعة أسابيع هي الأشيع في التقويم
   // الثابت، والانقطاع الأطول يُطيل العلاج ويفكّ ما أُنجز.
@@ -178,6 +180,13 @@ export function validateSetting(key: SettingKey, value: string): string | null {
   if (key === "clinic.day_start" || key === "clinic.day_end") {
     if (!/^\d{2}:\d{2}$/.test(trimmed)) return "الوقت بصيغة 09:00.";
   }
+  if (key === "finance.budget_warn_percent") {
+    const percent = Number(trimmed);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      return "نسبة التنبيه رقمٌ بين 1 و100.";
+    }
+    return null;
+  }
   if (key === "finance.rate.SAR" || key === "finance.rate.USD") {
     const rate = Number(trimmed);
     // سعر صرف صفر أو سالب يجعل كل دفعة بتلك العملة تساوي صفرًا في التقارير بصمت.
@@ -237,6 +246,7 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: "finance.base_currency", label: "العملة الأساسية", hint: "كل التقارير تُحسب بها", kind: "text", group: "finance" },
   { key: "finance.rate.SAR", label: "سعر الريال السعودي", hint: "كم ريالًا يمنيًا يساوي ريالًا سعوديًا اليوم", kind: "number", group: "finance" },
   { key: "finance.rate.USD", label: "سعر الدولار", hint: "كم ريالًا يمنيًا يساوي دولارًا اليوم", kind: "number", group: "finance" },
+  { key: "finance.budget_warn_percent", label: "نسبة التنبيه على الميزانيّة", hint: "عند أيّ نسبة من سقف البند يبدأ التنبيه قبل التجاوز", kind: "number", group: "finance" },
   { key: "finance.locked_before", label: "قفل الدفاتر قبل تاريخ", hint: "لا يُقبل قيد أو تعديل قبل هذا التاريخ. اتركه فارغًا لإلغاء القفل.", kind: "date", group: "finance" },
   { key: "finance.commission_deducts_lab_cost", label: "خصم تكلفة المختبر من عمولة الطبيب", hint: "اكتب yes للخصم، أو no لتُحسب العمولة على المحصّل كاملًا. والخصم يُنسب بالطبيب المكتوب على أمر المختبر.", kind: "text", group: "finance" },
 

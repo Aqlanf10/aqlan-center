@@ -14,6 +14,7 @@ const SECTION: { href: string; label: string }[] = [
   { href: "/finance/plans", label: "الأقساط" },
   { href: "/finance/parties", label: "الجهات" },
   { href: "/finance/services", label: "الأسعار" },
+  { href: "/finance/budgets", label: "الميزانيّات" },
   { href: "/finance/accounting", label: "الدفاتر" },
   { href: "/finance/opening", label: "الأرصدة الافتتاحية" },
   { href: "/finance/fx", label: "إعادة التقييم" },

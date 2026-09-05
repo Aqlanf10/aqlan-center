@@ -33,7 +33,7 @@ const REQUIRED = [
   "ceph_tracings", "ceph_studies", "ceph_reference_sets",
   "inventory_items", "inventory_movements",
   "staff_messages", "patient_documents",
-  "prescriptions", "lab_services", "lab_prices",
+  "prescriptions", "lab_services", "lab_prices", "expense_budgets",
 ];
 
 const temporary = `schema_check_${Date.now()}`;

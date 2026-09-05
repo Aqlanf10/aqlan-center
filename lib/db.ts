@@ -330,6 +330,28 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS expenses_created_idx ON expenses (created_at);
       CREATE INDEX IF NOT EXISTS expenses_party_idx ON expenses (party_id, created_at DESC);
 
+      -- ميزانيّةُ كل بند مصروف: سقفٌ يُقارَن به المصروف ولا يمنعه.
+      --
+      -- والمالك يعرف اليوم كم صرف ولا يعرف أكثيرٌ هو. وبلا سقفٍ مكتوبٍ سلفًا
+      -- يُقاس المصروف بالذاكرة — والذاكرة تتكيّف مع ما تراه كل شهر، فيصير
+      -- التجاوزُ التدريجيّ هو المعتاد ولا يُلاحَظ أنه تجاوز.
+      --
+      -- والسقف يسري من شهره فصاعدًا حتى يُكتب أحدث، فلا يُعاد كتابته كل شهر.
+      -- ولا يُقيَّد بعملة: هو بالعملة الأساسية كما يُخزَّن base_amount_minor
+      -- في المصروفات، فيُقارَن رقمٌ برقمٍ من جنسه.
+      CREATE TABLE IF NOT EXISTS expense_budgets (
+        id             SERIAL PRIMARY KEY,
+        category       TEXT        NOT NULL,
+        amount_minor   BIGINT      NOT NULL CHECK (amount_minor >= 0),
+        -- بصيغة YYYY-MM — أوّل شهرٍ يسري فيه.
+        effective_from TEXT        NOT NULL CHECK (effective_from ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+        note           TEXT,
+        created_by     TEXT,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS expense_budgets_lookup_idx
+        ON expense_budgets (category, effective_from DESC);
+
       -- الالتزامات: ما على العيادة لجهةٍ ما. الوجه الآخر لمديونية المرضى — أن تعرف
       -- كم عليك كما تعرف كم لك. عيادة تعرف مديونية مرضاها ولا تعرف ما عليها
       -- للمختبرات تحسب نفسها رابحة وهي مدينة.
@@ -8455,4 +8477,76 @@ export async function agreedLabPrice(
   partyId: number, serviceId: number, onDate: string,
 ): Promise<LabPrice | null> {
   return priceOn(await listLabPrices(partyId), partyId, serviceId, onDate);
+}
+
+// ─── ميزانيّات بنود المصروف ──────────────────────────────────────────────────
+
+import {
+  budgetLines, isBudgetMonth,
+  type BudgetLine, type BudgetMonth, type BudgetRow,
+} from "./budget";
+import { isExpenseCategory } from "./expenses";
+
+const toBudget = (row: {
+  id: number; category: string; amount_minor: string; effective_from: string; note: string | null;
+}): BudgetRow => ({
+  id: row.id,
+  category: row.category as ExpenseCategory,
+  amountMinor: Number(row.amount_minor),
+  effectiveFrom: row.effective_from,
+  note: row.note,
+});
+
+export async function listExpenseBudgets(): Promise<BudgetRow[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query(
+    `SELECT id, category, amount_minor, effective_from, note
+       FROM expense_budgets ORDER BY category, effective_from DESC, id DESC`,
+  );
+  return rows.map(toBudget);
+}
+
+export async function createExpenseBudget(input: {
+  category: string; amountMinor: number; effectiveFrom: string; note: string | null; actor: string;
+}): Promise<{ ok: true; id: number } | { ok: false; message: string }> {
+  await ensureSchema();
+  if (!isExpenseCategory(input.category)) return { ok: false, message: "بند المصروف غير معروف." };
+  if (!isBudgetMonth(input.effectiveFrom)) return { ok: false, message: "الشهر بصيغة YYYY-MM." };
+  if (!Number.isInteger(input.amountMinor) || input.amountMinor < 0) {
+    return { ok: false, message: "السقف رقمٌ صحيحٌ غير سالب." };
+  }
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO expense_budgets (category, amount_minor, effective_from, note, created_by)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [input.category, input.amountMinor, input.effectiveFrom, input.note, input.actor],
+  );
+  return { ok: true, id: rows[0].id };
+}
+
+/**
+ * سطورُ الميزانيّة لشهرٍ واحد: المصروف الفعليّ لكل بند، وسقفُه، وحالُه.
+ *
+ * **والمصروف يُجمَع بشهر العيادة لا بشهر غرينتش**: اليمن على +٣، فمصروفُ آخر
+ * ليلةٍ في الشهر يقع في الشهر التالي بتوقيت غرينتش — فيُنقَص من شهرٍ ويُزاد على
+ * شهرٍ لم يقع فيه، وكلا الرقمين خطأ.
+ *
+ * **وبالعملة الأساسية**: `base_amount_minor` لا `amount_minor` — وإلّا جُمع دولارٌ
+ * إلى ريالٍ في رقمٍ واحد بلا معنى.
+ */
+export async function expenseBudgetMonth(
+  month: BudgetMonth, nearPercent?: number,
+): Promise<{ month: BudgetMonth; lines: BudgetLine[] }> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ category: string; spent: string }>(
+    `SELECT category, COALESCE(SUM(base_amount_minor), 0) AS spent
+       FROM expenses
+      WHERE to_char((created_at AT TIME ZONE $2)::date, 'YYYY-MM') = $1
+      GROUP BY category`,
+    [month, CLINIC_TIME_ZONE],
+  );
+  const spent: Partial<Record<ExpenseCategory, number>> = {};
+  for (const row of rows) {
+    if (isExpenseCategory(row.category)) spent[row.category] = Number(row.spent);
+  }
+  return { month, lines: budgetLines(await listExpenseBudgets(), spent, month, nearPercent) };
 }

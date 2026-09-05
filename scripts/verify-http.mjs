@@ -339,6 +339,69 @@ try {
   check('and yes — the owner decided the deduction',
     (await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'yes'})).status===200);
 
+  /*
+   * ── ميزانيّات بنود المصروف ──
+   *
+   * سقفٌ يُقارَن به المصروف ولا يمنعه. والسقوف تكشف بنية تكاليف المركز — كم
+   * على الرواتب وكم على المختبرات — فهي مع تقارير الدخل ممّا لا يراه الاستقبال.
+   */
+  check('budgets are denied without a session',(await request('/api/finance/budgets')).status===401);
+  check('reception cannot read budgets — they lay out what the clinic costs',
+    (await request('/api/finance/budgets',reception)).status===403);
+  check('nor the doctor',(await request('/api/finance/budgets',d)).status===403);
+  check('nor write one',
+    (await request('/api/finance/budgets',reception,{category:'materials',amount:'100000',effectiveFrom:'2026-01'},{origin:base})).status===403);
+
+  const budgetMonth=clinicDateString(new Date(),db.CLINIC_TIME_ZONE).slice(0,7);
+  // بندٌ غير معروف يُردّ ولا يُحفظ تحت اسمٍ مخترع.
+  check('an unknown expense category is refused',
+    (await request('/api/finance/budgets',a,{category:'سفريات',amount:'5000',effectiveFrom:budgetMonth},{origin:base})).status===400);
+  check('a month that is not YYYY-MM is refused',
+    (await request('/api/finance/budgets',a,{category:'materials',amount:'5000',effectiveFrom:'2026-13'},{origin:base})).status===400);
+  check('a negative ceiling is refused — a ceiling below zero is no ceiling',
+    (await request('/api/finance/budgets',a,{category:'materials',amount:'-5000',effectiveFrom:budgetMonth},{origin:base})).status===400);
+  check('the admin writes one',
+    (await request('/api/finance/budgets',a,{category:'materials',amount:'50000',effectiveFrom:budgetMonth},{origin:base})).status===201);
+
+  // ولا سقفَ لبقيّة البنود، فتُعرض «بلا سقف» لا خضراء كأنّها في حدودها.
+  const budgets=await (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).json();
+  check('every category is listed — one missing from the list reads as zero',
+    Array.isArray(budgets.lines)&&budgets.lines.length===7);
+  const materials=budgets.lines.find(l=>l.category==='materials');
+  const rent=budgets.lines.find(l=>l.category==='rent');
+  check('the one with a ceiling carries it',materials&&materials.budgetMinor===50000);
+  check('**and the one without says so rather than showing green**',rent&&rent.status.level==='none');
+  // والعملة تخرج مع الأرقام: شاشةٌ تفترض الريال تعرض دولارًا على أنه ريال.
+  check('the response names the currency its numbers are in',typeof budgets.baseCurrency==='string');
+
+  /*
+   * والمصروف يُجمَع بشهر العيادة لا بشهر غرينتش.
+   *
+   * اليمن على +٣، فمصروفُ آخر ليلةٍ في الشهر يقع في الشهر التالي بتوقيت غرينتش —
+   * فيُنقَص من شهرٍ ويُزاد على شهرٍ لم يقع فيه، وكلا الرقمين خطأ.
+   */
+  const budgetShift=await db.openShift({openedBy:'shots',opening:{YER:0,SAR:0,USD:0}});
+  const spend=await db.recordExpense({category:'materials',partyId:null,payeeText:'مورّد الفحص',amountMinor:20000,currency:'YER',baseCurrency:'YER',exchangeRate:1,payableId:null,note:null,createdBy:'shots'});
+  if(spend.expense){
+    /*
+     * **الحدّ الذي يفترق عنده التوقيتان**: 21:30Z من آخر يومٍ في الشهر السابق
+     * هو 00:30 من أوّل يومٍ في هذا الشهر بتوقيت العيادة (+٣).
+     *
+     * فبشهر العيادة يُحسب المصروف هنا، وبشهر غرينتش يُحسب في الشهر الماضي —
+     * فيُنقَص من شهرٍ ويُزاد على شهرٍ لم يقع فيه. وأيُّ تاريخٍ في وسط الشهر
+     * يعطي الشهر نفسه في التوقيتين، فيمرّ الفحص بالصدفة ولا يُثبت شيئًا.
+     */
+    const firstOfMonth=new Date(`${budgetMonth}-01T00:00:00Z`);
+    const lastNight=new Date(firstOfMonth.getTime()-2.5*3600*1000).toISOString();
+    await db.getPool().query('UPDATE expenses SET created_at = $2 WHERE id = $1',[spend.expense.id,lastNight]);
+    const afterSpend=await (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).json();
+    const line=afterSpend.lines.find(l=>l.category==='materials');
+    check('the spend is counted in the clinic month it happened in',line&&line.spentMinor===20000);
+    check('and it is measured against the ceiling, not just reported',
+      line&&line.status.percent===40&&line.status.remainingMinor===30000);
+  }
+  if(budgetShift) await db.closeShift({id:budgetShift.id,closedBy:'shots',counted:{YER:-20000,SAR:0,USD:0},note:null});
+
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
   const rxPath=`/api/patients/${rxPatient.id}/prescriptions`;

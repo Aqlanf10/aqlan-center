@@ -27,7 +27,7 @@ export type AuditAction =
   | "service.catalog_import" | "service.prices"
   | "settings.update"
   | "user.create" | "user.update" | "user.disable"
-  | "backup.download" | "export.download"
+  | "backup.download" | "export.download" | "budget.set"
   | "document.reprint"
   | "chart.record" | "visit.sign" | "visit.addendum"
   | "document.upload" | "document.remove"
@@ -60,6 +60,7 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   "user.update": "تعديل مستخدم",
   "user.disable": "تعطيل مستخدم",
   "backup.download": "تنزيل نسخة احتياطية",
+  "budget.set": "ضبط سقف بند مصروف",
   "export.download": "تصدير بيانات",
   "document.reprint": "إعادة طباعة مستند",
   "chart.record": "تثبيت حالة سن",
@@ -91,6 +92,8 @@ export const SENSITIVE_ACTIONS: AuditAction[] = [
   "visit.addendum", "prescription.void",
   // ونسبةُ عملٍ إلى طبيب وسعرُ مختبرٍ يحكمان مالًا يُصرف.
   "lab.order.doctor", "lab.price",
+  // والسقفُ يحكم قراءةَ المالك لمصروفه، فتغييرُه يُقرأ بعد سنة.
+  "budget.set",
 ];
 
 export function isSensitive(action: AuditAction): boolean {
