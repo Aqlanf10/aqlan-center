@@ -6,6 +6,7 @@ import { useSession } from "@/components/SessionProvider";
 import { isAdmin } from "@/lib/roles";
 import { clinicDateString } from "@/lib/schedule";
 import { friendlyDate } from "@/lib/reminders";
+import { formatMoney, isCurrency, type Currency } from "@/lib/money";
 import {
   CATEGORY_LABEL,
   EXPIRY_LABEL,
@@ -74,6 +75,15 @@ const STATUS_STYLE: Record<StockStatus, string> = {
 export default function InventoryPage() {
   const session = useSession();
   const admin = isAdmin(session?.role);
+  /*
+   * قيمةُ ما في الرفّ — للمدير وحده، وتُقرأ من مسارها لا تُحسب هنا.
+   *
+   * **وحسابان لقيمةٍ واحدة يفترقان**: المتوسّط تراكميّ ويحتاج كلَّ الحركات
+   * بترتيبها، والشاشة لا تحمل إلّا آخر مئةٍ لبندٍ مفتوح.
+   */
+  const [value, setValue] = useState<{
+    totalMinor: number; baseCurrency: Currency; withoutCost: number;
+  } | null>(null);
 
   // اليوم بتوقيت العيادة: دالّةٌ تقرأ ساعة الخادم تُنهي صلاحية دفعةٍ قبل أوانها كل
   // مساء — اليمن UTC+3.
@@ -101,6 +111,22 @@ export default function InventoryPage() {
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
       setItems((payload as { items: Item[] }).items);
       setError(null);
+      /*
+       * والقيمة تُقرأ مع الرصيد وبعده: مسارها للمدير وحده، ومن ليس مديرًا يُردّ
+       * ٤٠٣ — فيُبتلع الردّ ولا يُعطَّل تحميل المخزون كلِّه لأجل قسمٍ لا يراه.
+       */
+      try {
+        const valueResponse = await fetch("/api/inventory/value", { cache: "no-store" });
+        if (valueResponse.ok) {
+          const body = await valueResponse.json();
+          setValue(isCurrency(body?.baseCurrency)
+            ? { totalMinor: Number(body.totalMinor) || 0, baseCurrency: body.baseCurrency,
+                withoutCost: Number(body.withoutCost) || 0 }
+            : null);
+        } else {
+          setValue(null);
+        }
+      } catch { setValue(null); }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
     } finally {
@@ -200,6 +226,21 @@ export default function InventoryPage() {
         <Stat label="تحت حدّ الطلب" value={summary.low} tone={summary.low > 0 ? "warn" : "calm"} />
         <Stat label="صلاحيتها تقترب" value={summary.expiring} tone={summary.expiring > 0 ? "warn" : "calm"} />
       </section>
+
+      {admin && value ? (
+        <section className="mb-4 rounded-2xl border-2 border-slate-200 bg-white p-3" aria-label="قيمة المخزون">
+          <p className="text-sm font-extrabold text-navy-900">
+            قيمة ما في الرفّ: {formatMoney(value.totalMinor, value.baseCurrency)}
+          </p>
+          {/* وبنودٌ بلا ثمنٍ تُقال: قيمةٌ ناقصةٌ بلا بيانٍ تُقرأ كاملة. */}
+          {value.withoutCost > 0 ? (
+            <p className="mt-1 text-[11px] font-bold leading-5 text-amber-700">
+              و{value.withoutCost} {value.withoutCost === 1 ? "بندًا فيه رصيد" : "بنودٍ فيها رصيد"} بلا
+              ثمنٍ مسجَّل — قيمتُها ليست في هذا المبلغ. اكتب ثمن الوحدة عند الشراء القادم.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       {error ? (
         <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>
@@ -374,15 +415,20 @@ function ItemDetails({ item, admin, busy, movements, act, reload }: {
   const [qty, setQty] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
   const [reason, setReason] = useState("");
+  const [unitCost, setUnitCost] = useState("");
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     const ok = await act(() => fetch(`/api/inventory/${item.id}/movements`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, qty: Number(qty), expiryDate: expiryDate || null, reason }),
+      body: JSON.stringify({
+        kind, qty: Number(qty), expiryDate: expiryDate || null, reason,
+        // الثمن مع الإدخال المُشترى وحده — والمسار يردّه على غيره، فلا يُرسَل أصلًا.
+        ...(admin && kind === "in" && unitCost.trim() ? { unitCost: unitCost.trim() } : {}),
+      }),
     }));
-    if (ok) { setQty(""); setExpiryDate(""); setReason(""); await reload(); }
+    if (ok) { setQty(""); setExpiryDate(""); setReason(""); setUnitCost(""); await reload(); }
   };
 
   const toggleActive = async () => {
@@ -421,6 +467,16 @@ function ItemDetails({ item, admin, busy, movements, act, reload }: {
           </div>
 
           {/* الصلاحية تُسجَّل مع الدخول وحدها: صرفٌ لا صلاحية له، والتسوية تصحيح رقم. */}
+          {/* ثمنُ الوحدة: للمدير ومع الشراء وحده — والصرف يُقوَّم بالمتوسّط. */}
+          {admin && kind === "in" ? (
+            <input
+              inputMode="decimal"
+              value={unitCost}
+              onChange={(event) => setUnitCost(event.target.value)}
+              placeholder="ثمن الوحدة (اختياري)"
+              className="w-32 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            />
+          ) : null}
           {kind === "in" ? (
             <label className="mb-2 block">
               <span className="mb-1 block text-[11px] font-bold opacity-60">صلاحية الدفعة (اختياري)</span>
