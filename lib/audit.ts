@@ -27,7 +27,7 @@ export type AuditAction =
   | "service.catalog_import" | "service.prices"
   | "settings.update"
   | "user.create" | "user.update" | "user.disable"
-  | "backup.download" | "backup.complete" | "export.download"
+  | "backup.download" | "backup.complete" | "export.download" | "budget.set"
   | "document.reprint"
   | "chart.record" | "visit.sign" | "visit.addendum"
   | "document.upload" | "document.remove"
@@ -64,6 +64,7 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   // والاكتمال واقعتان مختلفتان. الأولى تشهد أنّ الأرشيف خرج — وهي التي تُراجَع
   // أمنيًّا؛ والثانية وحدها تشهد أنّ نسخةً تامّة صارت في اليد.
   "backup.complete": "اكتمال بثّ نسخة احتياطية",
+  "budget.set": "ضبط سقف بند مصروف",
   "export.download": "تصدير بيانات",
   "document.reprint": "إعادة طباعة مستند",
   "chart.record": "تثبيت حالة سن",
@@ -95,6 +96,8 @@ export const SENSITIVE_ACTIONS: AuditAction[] = [
   "document.reprint", "visit.addendum", "prescription.void",
   // ونسبةُ عملٍ إلى طبيب وسعرُ مختبرٍ يحكمان مالًا يُصرف.
   "lab.order.doctor", "lab.price",
+  // والسقفُ يحكم قراءةَ المالك لمصروفه، فتغييرُه يُقرأ بعد سنة.
+  "budget.set",
 ];
 
 export function isSensitive(action: AuditAction): boolean {
