@@ -131,6 +131,12 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
             <a href={`https://wa.me/${whatsApp}`} target="_blank" rel="noopener"
               className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white">واتساب</a>
           ) : null}
+          {/* البطاقة في الترويسة لا في قسمٍ أسفل الشاشة: تُطبع عند التسجيل
+              وعند كل مراجعةٍ يفقد فيها المريض بطاقته، والزحمة تُقاس بالنقرات. */}
+          <a href={`/print/patient-card/${patient.id}`} target="_blank" rel="noopener"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">
+            بطاقة المريض
+          </a>
           <button onClick={() => setEditing((open) => !open)}
             className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-navy-800">
             {editing ? "إغلاق التعديل" : "تعديل البيانات"}

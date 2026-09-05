@@ -1,4 +1,4 @@
-import { canHandleMoney, canTreat } from "./roles";
+import { canHandleMoney, canTreat, isRole } from "./roles";
 
 /**
  * أنواع المستندات التي تُسجَّل طبعاتها — في مكانٍ واحد.
@@ -8,7 +8,8 @@ import { canHandleMoney, canTreat } from "./roles";
  * ترسله الشاشة. والتسجيل هو ما يجعل «نسخة معاد طباعتها» تظهر على الورقة الثانية.
  */
 export const PRINTABLE_DOCS =
-  ["receipt", "invoice", "voucher", "statement", "ceph", "ceph-compare", "prescription"] as const;
+  ["receipt", "invoice", "voucher", "statement", "ceph", "ceph-compare", "prescription",
+   "patient-card"] as const;
 
 export type PrintableDoc = (typeof PRINTABLE_DOCS)[number];
 
@@ -24,7 +25,17 @@ export function isPrintableDoc(value: unknown): value is PrintableDoc {
  * الطبعة. فلا تظهر «نسخة معاد طباعتها» على الطبعة الثانية أبدًا في الأوراق
  * التي هي أصلًا من اختصاصه، وتفقد العلامة معناها بصمت.
  */
-export type PrintAudience = "money" | "clinical";
+/**
+ * وثالثةٌ ليست مالًا ولا تشخيصًا: **بطاقة المريض**.
+ *
+ * الاستقبال تطبعها عند التسجيل، والطبيب قد يطبعها في الكرسي، والمدير كذلك. وليس
+ * فيها مبلغٌ ولا تشخيص — فيها اسمُ المريض ورقمُ ملفّه وموعدُه القادم، وهي ثلاثةٌ
+ * يراها الثلاثة أصلًا في شاشة المريض. فحصرُها في «المال» يمنع الطبيب، وحصرُها في
+ * «السريري» يمنع الاستقبال — وهي عملُ الاستقبال أوّلًا.
+ */
+export const PRINT_AUDIENCES = ["money", "clinical", "front-desk"] as const;
+
+export type PrintAudience = (typeof PRINT_AUDIENCES)[number];
 
 export const PRINT_AUDIENCE: Record<PrintableDoc, PrintAudience> = {
   receipt: "money",
@@ -34,6 +45,7 @@ export const PRINT_AUDIENCE: Record<PrintableDoc, PrintAudience> = {
   ceph: "clinical",
   "ceph-compare": "clinical",
   prescription: "clinical",
+  "patient-card": "front-desk",
 };
 
 /**
@@ -44,5 +56,9 @@ export const PRINT_AUDIENCE: Record<PrintableDoc, PrintAudience> = {
  * يُسجَّل — وهو ما كان.
  */
 export function canPrintDoc(role: string | undefined | null, doc: PrintableDoc): boolean {
-  return PRINT_AUDIENCE[doc] === "clinical" ? canTreat(role) : canHandleMoney(role);
+  const audience = PRINT_AUDIENCE[doc];
+  if (audience === "clinical") return canTreat(role);
+  if (audience === "money") return canHandleMoney(role);
+  // ولا يعني «للجميع» أنّ لمن لا دور له: الدور يُتحقّق منه لا يُفترض.
+  return isRole(role);
 }
