@@ -499,6 +499,104 @@ try {
   // وطبعتها تُسجَّل بنوعها: نوعٌ يُسجَّل باسم آخر يفسد عدّاد المستندات المالية.
   check('the card print is logged under its own type, not another',
     (await request('/api/print-log',reception,{docType:'patient-card',docId:cardPatient.id},{origin:base})).status===200);
+  /*
+   * ── ميزانيّات بنود المصروف ──
+   *
+   * سقفٌ يُقارَن به المصروف ولا يمنعه. والسقوف تكشف بنية تكاليف المركز — كم
+   * على الرواتب وكم على المختبرات — فهي مع تقارير الدخل ممّا لا يراه الاستقبال.
+   */
+  check('budgets are denied without a session',(await request('/api/finance/budgets')).status===401);
+  check('reception cannot read budgets — they lay out what the clinic costs',
+    (await request('/api/finance/budgets',reception)).status===403);
+  check('nor the doctor',(await request('/api/finance/budgets',d)).status===403);
+  check('nor write one',
+    (await request('/api/finance/budgets',reception,{category:'materials',amount:'100000',effectiveFrom:'2026-01'},{origin:base})).status===403);
+
+  const budgetMonth=clinicDateString(new Date(),db.CLINIC_TIME_ZONE).slice(0,7);
+  // بندٌ غير معروف يُردّ ولا يُحفظ تحت اسمٍ مخترع.
+  check('an unknown expense category is refused',
+    (await request('/api/finance/budgets',a,{category:'سفريات',amount:'5000',effectiveFrom:budgetMonth},{origin:base})).status===400);
+  check('a month that is not YYYY-MM is refused',
+    (await request('/api/finance/budgets',a,{category:'materials',amount:'5000',effectiveFrom:'2026-13'},{origin:base})).status===400);
+  check('a negative ceiling is refused — a ceiling below zero is no ceiling',
+    (await request('/api/finance/budgets',a,{category:'materials',amount:'-5000',effectiveFrom:budgetMonth},{origin:base})).status===400);
+  check('the admin writes one',
+    (await request('/api/finance/budgets',a,{category:'materials',amount:'50000',effectiveFrom:budgetMonth},{origin:base})).status===201);
+
+  // ولا سقفَ لبقيّة البنود، فتُعرض «بلا سقف» لا خضراء كأنّها في حدودها.
+  const budgets=await (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).json();
+  check('every category is listed — one missing from the list reads as zero',
+    Array.isArray(budgets.lines)&&budgets.lines.length===7);
+  const materials=budgets.lines.find(l=>l.category==='materials');
+  const rent=budgets.lines.find(l=>l.category==='rent');
+  check('the one with a ceiling carries it',materials&&materials.budgetMinor===50000);
+  check('**and the one without says so rather than showing green**',rent&&rent.status.level==='none');
+  // والعملة تخرج مع الأرقام: شاشةٌ تفترض الريال تعرض دولارًا على أنه ريال.
+  check('the response names the currency its numbers are in',typeof budgets.baseCurrency==='string');
+  /*
+   * **والجواب يقول لأيّ شهرٍ هو.**
+   *
+   * فالشاشة تُهمل جوابَ شهرٍ لم يعد مختارًا — يبدّل المدير الشهر فتنطلق قراءةٌ
+   * ثانية قبل عودة الأولى، والردّان يعودان بأيّ ترتيب. وبلا هذا الحقل لا سبيل
+   * إلى التمييز، فيكتب القديمُ فوق الجديد بلا رسالة.
+   */
+  check('and the month it answers for — the screen drops a reply for a month no longer chosen',
+    budgets.month===budgetMonth);
+  const otherMonth=await (await request('/api/finance/budgets?month=2026-01',a)).json();
+  check('a different month answers with that month, not the default',otherMonth.month==='2026-01');
+
+  /*
+   * **وعملةٌ أساسية غير صالحة تُردّ ولا تُفترَض.**
+   *
+   * فالسقف يُخزَّن بها ويُقارَن بمصروفٍ محفوظٍ بها. وافتراضُ «الريال» عند فسادها
+   * يخزّن سقفًا بوحدةٍ ويقارنه بمصروفٍ بوحدةٍ أخرى — ورقمٌ خاطئ يُبنى عليه قرارُ
+   * إنفاق. و`/api/expenses` و`/api/payments` يردّان في هذه الحال، وهذا مثلهما.
+   */
+  /*
+   * والكتابة في الجدول مباشرةً لأنّ `PATCH /api/settings` يرفض القيمة الفاسدة —
+   * فالحالُ لا يُبلَغ من داخل التطبيق، وإنّما من تعديلٍ على القاعدة أو استعادةٍ من
+   * نسخةٍ أجنبية. ثمّ انتظارٌ يتجاوز ذاكرة الإعدادات (٥ ثوانٍ) وإلّا أجاب الخادم
+   * من نسخته القديمة — **والفحص حينها يشهد للذاكرة لا للحارس**.
+   */
+  // والصفُّ قد لا يكون مكتوبًا أصلًا (القيمة من الافتراضات)، فـ`UPDATE` وحده لا يصيب شيئًا.
+  await db.getPool().query("INSERT INTO settings (key, value) VALUES ('finance.base_currency','XXX') ON CONFLICT (key) DO UPDATE SET value = 'XXX'");
+  await new Promise(r=>setTimeout(r,5500));
+  check('an invalid base currency refuses the read rather than guessing riyals',
+    (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).status===500);
+  check('and refuses the write — a ceiling in a guessed unit is a wrong number',
+    (await request('/api/finance/budgets',a,{category:'rent',amount:'10000',effectiveFrom:budgetMonth},{origin:base})).status===500);
+  await db.getPool().query("INSERT INTO settings (key, value) VALUES ('finance.base_currency','YER') ON CONFLICT (key) DO UPDATE SET value = 'YER'");
+  await new Promise(r=>setTimeout(r,5500));
+  check('and it works again once the setting is sound',
+    (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).status===200);
+
+  /*
+   * والمصروف يُجمَع بشهر العيادة لا بشهر غرينتش.
+   *
+   * اليمن على +٣، فمصروفُ آخر ليلةٍ في الشهر يقع في الشهر التالي بتوقيت غرينتش —
+   * فيُنقَص من شهرٍ ويُزاد على شهرٍ لم يقع فيه، وكلا الرقمين خطأ.
+   */
+  const budgetShift=await db.openShift({openedBy:'shots',opening:{YER:0,SAR:0,USD:0}});
+  const spend=await db.recordExpense({category:'materials',partyId:null,payeeText:'مورّد الفحص',amountMinor:20000,currency:'YER',baseCurrency:'YER',exchangeRate:1,payableId:null,note:null,createdBy:'shots'});
+  if(spend.expense){
+    /*
+     * **الحدّ الذي يفترق عنده التوقيتان**: 21:30Z من آخر يومٍ في الشهر السابق
+     * هو 00:30 من أوّل يومٍ في هذا الشهر بتوقيت العيادة (+٣).
+     *
+     * فبشهر العيادة يُحسب المصروف هنا، وبشهر غرينتش يُحسب في الشهر الماضي —
+     * فيُنقَص من شهرٍ ويُزاد على شهرٍ لم يقع فيه. وأيُّ تاريخٍ في وسط الشهر
+     * يعطي الشهر نفسه في التوقيتين، فيمرّ الفحص بالصدفة ولا يُثبت شيئًا.
+     */
+    const firstOfMonth=new Date(`${budgetMonth}-01T00:00:00Z`);
+    const lastNight=new Date(firstOfMonth.getTime()-2.5*3600*1000).toISOString();
+    await db.getPool().query('UPDATE expenses SET created_at = $2 WHERE id = $1',[spend.expense.id,lastNight]);
+    const afterSpend=await (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).json();
+    const line=afterSpend.lines.find(l=>l.category==='materials');
+    check('the spend is counted in the clinic month it happened in',line&&line.spentMinor===20000);
+    check('and it is measured against the ceiling, not just reported',
+      line&&line.status.percent===40&&line.status.remainingMinor===30000);
+  }
+  if(budgetShift) await db.closeShift({id:budgetShift.id,closedBy:'shots',counted:{YER:-20000,SAR:0,USD:0},note:null});
 
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
