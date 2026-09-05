@@ -96,9 +96,17 @@ export function budgetStatus(
   if (budgetMinor <= 0) {
     return { level: spentMinor > 0 ? "over" : "ok", percent: null, remainingMinor };
   }
-  const percent = Math.round((spentMinor / budgetMinor) * 100);
+  /*
+   * **الحكم من النسبة الخام، والعرض من المقرَّبة.**
+   *
+   * فتقريبٌ قبل المقارنة يزحزح الحدّ: ٧٩٫٥٪ تُقرَّب إلى ٨٠ فتُنبَّه وهي دونه،
+   * و٨٠٫٤٥٪ مع حدٍّ ٨٠٫٤ تُقرَّب إلى ٨٠ فتُعدّ سليمةً وقد جاوزته. والحدُّ رقمٌ
+   * يضبطه المالك، فلا يُزاح بخطوةِ عرض.
+   */
+  const ratio = (spentMinor / budgetMinor) * 100;
+  const percent = Math.round(ratio);
   const level: BudgetLevel = spentMinor > budgetMinor ? "over"
-    : percent >= nearPercent ? "near" : "ok";
+    : ratio >= nearPercent ? "near" : "ok";
   return { level, percent, remainingMinor };
 }
 

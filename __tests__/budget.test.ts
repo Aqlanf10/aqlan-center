@@ -80,6 +80,21 @@ describe("حالُ البند من سقفه", () => {
   it("والنسبة تُقرَّب لا تُقصّ", () => {
     expect(budgetStatus(1_995, 10_000).percent).toBe(20);
   });
+
+  it("**والحكم من النسبة الخام لا من المقرَّبة** — التقريب لا يزحزح الحدّ", () => {
+    // ٧٩٫٥٪ تُقرَّب إلى ٨٠ للعرض، وهي دون الحدّ فلا تنبيه.
+    const just = budgetStatus(7_950, 10_000);
+    expect(just.percent).toBe(80);
+    expect(just.level).toBe("ok");
+    // و٨٠٪ تمامًا عنده فتنبَّه.
+    expect(budgetStatus(8_000, 10_000).level).toBe("near");
+  });
+
+  it("وحدٌّ كسريّ يُحترم بكسره", () => {
+    // ٨٠٫٤٥٪ مع حدٍّ ٨٠٫٤ فوقَه — والتقريب إلى ٨٠ كان يجعلها «تمام».
+    expect(budgetStatus(8_045, 10_000, 80.4).level).toBe("near");
+    expect(budgetStatus(8_035, 10_000, 80.4).level).toBe("ok");
+  });
 });
 
 describe("سطور الشهر", () => {

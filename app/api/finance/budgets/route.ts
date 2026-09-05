@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { CLINIC_TIME_ZONE, createExpenseBudget, expenseBudgetMonth, getSettingsSafe, listExpenseBudgets, recordAudit } from "@/lib/db";
+import { CLINIC_TIME_ZONE, createExpenseBudget, expenseBudgetMonth, getSettings, listExpenseBudgets, recordAudit } from "@/lib/db";
 import { isBudgetMonth, monthOf, NEAR_PERCENT } from "@/lib/budget";
 import { EXPENSE_CATEGORY_LABEL, isExpenseCategory } from "@/lib/expenses";
 import { isCurrency, parseAmount } from "@/lib/money";
@@ -22,8 +22,32 @@ const denied = () =>
 const forbidden = () =>
   NextResponse.json({ message: "الميزانيّات للمدير وحده." }, { status: 403 });
 
-async function nearPercent(): Promise<number> {
-  const settings = await getSettingsSafe();
+/**
+ * العملة الأساسية — **تُقرأ ولا تُفترَض**.
+ *
+ * فكلُّ رقمٍ هنا مبلغٌ: السقف يُخزَّن بها، والمصروف يُقارَن به بـ`base_amount_minor`
+ * المحفوظ بها. فإن كانت في الإعدادات قيمةٌ غير صالحة، فافتراضُ «الريال» يخزّن سقفًا
+ * بوحدةٍ ويقارنه بمصروفٍ بوحدةٍ أخرى — ورقمٌ خاطئ يُبنى عليه قرارُ إنفاق.
+ *
+ * ومسارا `/api/expenses` و`/api/payments` يردّان في هذه الحال، **وهذا يفعل مثلهما**:
+ * جوابان مختلفان لسؤالٍ واحد في وحدةٍ واحدة هو ما يجعل عطبًا يمرّ من بابٍ أُغلق في
+ * غيره.
+ */
+async function baseOrRefusal() {
+  const settings = await getSettings();
+  const base = settings["finance.base_currency"];
+  if (!isCurrency(base)) {
+    return {
+      base: null,
+      refusal: NextResponse.json(
+        { message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 }),
+      settings,
+    } as const;
+  }
+  return { base, refusal: null, settings } as const;
+}
+
+function nearPercentOf(settings: Awaited<ReturnType<typeof getSettings>>): number {
   const raw = Number(settings["finance.budget_warn_percent"]);
   return Number.isFinite(raw) && raw > 0 && raw <= 100 ? raw : NEAR_PERCENT;
 }
@@ -37,15 +61,14 @@ export async function GET(request: Request) {
   // وشهرُ العيادة هو الافتراضي لا شهرُ غرينتش.
   const month = isBudgetMonth(asked) ? asked : monthOf(clinicDateString(new Date(), CLINIC_TIME_ZONE));
   try {
-    const settings = await getSettingsSafe();
     // والعملة تخرج مع الأرقام: شاشةٌ تفترض الريال تعرض دولارًا على أنه ريال.
-    const baseCurrency = isCurrency(settings["finance.base_currency"])
-      ? settings["finance.base_currency"] : "YER";
+    const { base, refusal, settings } = await baseOrRefusal();
+    if (refusal) return refusal;
     const [report, budgets] = await Promise.all([
-      expenseBudgetMonth(month, await nearPercent()),
+      expenseBudgetMonth(month, nearPercentOf(settings)),
       listExpenseBudgets(),
     ]);
-    return NextResponse.json({ ...report, budgets, baseCurrency, labels: EXPENSE_CATEGORY_LABEL });
+    return NextResponse.json({ ...report, budgets, baseCurrency: base, labels: EXPENSE_CATEGORY_LABEL });
   } catch {
     return NextResponse.json({ message: "تعذّر قراءة الميزانيّات." }, { status: 500 });
   }
@@ -68,8 +91,8 @@ export async function POST(request: Request) {
   if (!isExpenseCategory(category)) {
     return NextResponse.json({ message: "بند المصروف غير معروف." }, { status: 400 });
   }
-  const settings = await getSettingsSafe();
-  const base = isCurrency(settings["finance.base_currency"]) ? settings["finance.base_currency"] : "YER";
+  const { base, refusal } = await baseOrRefusal();
+  if (refusal) return refusal;
   // والسقف بالعملة الأساسية: يُقارَن بـ base_amount_minor في المصروفات.
   const amountMinor = parseAmount(rawAmount, base);
   if (amountMinor === null) {

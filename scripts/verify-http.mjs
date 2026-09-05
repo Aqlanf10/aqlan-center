@@ -533,6 +533,42 @@ try {
   check('**and the one without says so rather than showing green**',rent&&rent.status.level==='none');
   // والعملة تخرج مع الأرقام: شاشةٌ تفترض الريال تعرض دولارًا على أنه ريال.
   check('the response names the currency its numbers are in',typeof budgets.baseCurrency==='string');
+  /*
+   * **والجواب يقول لأيّ شهرٍ هو.**
+   *
+   * فالشاشة تُهمل جوابَ شهرٍ لم يعد مختارًا — يبدّل المدير الشهر فتنطلق قراءةٌ
+   * ثانية قبل عودة الأولى، والردّان يعودان بأيّ ترتيب. وبلا هذا الحقل لا سبيل
+   * إلى التمييز، فيكتب القديمُ فوق الجديد بلا رسالة.
+   */
+  check('and the month it answers for — the screen drops a reply for a month no longer chosen',
+    budgets.month===budgetMonth);
+  const otherMonth=await (await request('/api/finance/budgets?month=2026-01',a)).json();
+  check('a different month answers with that month, not the default',otherMonth.month==='2026-01');
+
+  /*
+   * **وعملةٌ أساسية غير صالحة تُردّ ولا تُفترَض.**
+   *
+   * فالسقف يُخزَّن بها ويُقارَن بمصروفٍ محفوظٍ بها. وافتراضُ «الريال» عند فسادها
+   * يخزّن سقفًا بوحدةٍ ويقارنه بمصروفٍ بوحدةٍ أخرى — ورقمٌ خاطئ يُبنى عليه قرارُ
+   * إنفاق. و`/api/expenses` و`/api/payments` يردّان في هذه الحال، وهذا مثلهما.
+   */
+  /*
+   * والكتابة في الجدول مباشرةً لأنّ `PATCH /api/settings` يرفض القيمة الفاسدة —
+   * فالحالُ لا يُبلَغ من داخل التطبيق، وإنّما من تعديلٍ على القاعدة أو استعادةٍ من
+   * نسخةٍ أجنبية. ثمّ انتظارٌ يتجاوز ذاكرة الإعدادات (٥ ثوانٍ) وإلّا أجاب الخادم
+   * من نسخته القديمة — **والفحص حينها يشهد للذاكرة لا للحارس**.
+   */
+  // والصفُّ قد لا يكون مكتوبًا أصلًا (القيمة من الافتراضات)، فـ`UPDATE` وحده لا يصيب شيئًا.
+  await db.getPool().query("INSERT INTO settings (key, value) VALUES ('finance.base_currency','XXX') ON CONFLICT (key) DO UPDATE SET value = 'XXX'");
+  await new Promise(r=>setTimeout(r,5500));
+  check('an invalid base currency refuses the read rather than guessing riyals',
+    (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).status===500);
+  check('and refuses the write — a ceiling in a guessed unit is a wrong number',
+    (await request('/api/finance/budgets',a,{category:'rent',amount:'10000',effectiveFrom:budgetMonth},{origin:base})).status===500);
+  await db.getPool().query("INSERT INTO settings (key, value) VALUES ('finance.base_currency','YER') ON CONFLICT (key) DO UPDATE SET value = 'YER'");
+  await new Promise(r=>setTimeout(r,5500));
+  check('and it works again once the setting is sound',
+    (await request(`/api/finance/budgets?month=${budgetMonth}`,a)).status===200);
 
   /*
    * والمصروف يُجمَع بشهر العيادة لا بشهر غرينتش.

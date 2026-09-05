@@ -43,6 +43,15 @@ export default function BudgetsPage() {
     try {
       const response = await fetch(`/api/finance/budgets?month=${month}`, { cache: "no-store" });
       const body = await response.json().catch(() => ({}));
+      /*
+       * **جوابُ شهرٍ لم يعد مختارًا يُهمَل.**
+       *
+       * فالمدير يبدّل الشهر فتنطلق قراءةٌ ثانية قبل أن تعود الأولى، والردّان
+       * يعودان بأيّ ترتيب. فيكتب القديمُ فوق الجديد، ويبقى المُختار في الأعلى
+       * شهرًا وأرقامُ الشاشة شهرًا آخر — **بلا رسالةٍ ولا أثر**، وعليها يُتّخذ
+       * قرارُ إنفاق.
+       */
+      if (body?.month && body.month !== month) return;
       if (!response.ok) {
         // ولا تُترك الشاشة فارغةً على خطأ: فراغٌ يُقرأ «لا مصروف» وهو «لم يُسأل».
         setError(body?.message || "تعذّر قراءة الميزانيّات.");
