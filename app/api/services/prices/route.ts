@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getSettings, listServices, priceServices, recordAudit, unpricedServiceCount } from "@/lib/db";
+import { fillProvisionalPrices, getSettings, listServices, priceServices, provisionalPriceCount, recordAudit, unpricedServiceCount } from "@/lib/db";
+import { provisionalFills } from "@/lib/provisionalPrices";
 import { isCurrency, parseAmount } from "@/lib/money";
 import { readPriceBatch } from "@/lib/servicePricing";
 import { isAdmin } from "@/lib/roles";
@@ -23,9 +24,59 @@ export async function GET() {
     return NextResponse.json({ message: "الأسعار للمدير وحده." }, { status: 403 });
   }
   try {
-    return NextResponse.json({ unpriced: await unpricedServiceCount() });
+    return NextResponse.json({
+      unpriced: await unpricedServiceCount(),
+      provisional: await provisionalPriceCount(),
+    });
   } catch {
     return NextResponse.json({ message: "تعذّر قراءة حالة التسعير." }, { status: 500 });
+  }
+}
+
+/**
+ * يملأ غير المسعَّر بأسعارٍ تخمينية للتجربة — **للمدير وحده**.
+ *
+ * طلبها المالك ليبدأ التجربة قبل أن يُقرّ قائمته. وهي تعمل: تُفوتَر بها زيارة —
+ * **ولذلك تُوسَم**، وتبقى موسومةً في شاشة الأسعار وشاشة الجاهزية حتى تُستبدل.
+ */
+export async function POST() {
+  const session = await requireSession();
+  if (!session) return denied();
+  if (!isAdmin(session.role)) {
+    return NextResponse.json({ message: "التسعير للمدير وحده." }, { status: 403 });
+  }
+  /*
+   * والقائمة التخمينية **بالريال اليمني**، فتُردّ إن كانت عملة المركز غيره.
+   *
+   * أرقامُها وحداتٌ صغرى، وريالُ اليمن بلا كسر (وحدته الصغرى واحد)، فـ٣٬٠٠٠ كشفٌ
+   * بثلاثة آلاف ريال. ولو كانت العملة دولارًا لصارت ٣٬٠٠٠ سنتًا — ثلاثين دولارًا،
+   * رقمٌ آخر تمامًا يمرّ صامتًا إلى فواتير المرضى.
+   */
+  const base = (await getSettings())["finance.base_currency"];
+  if (base !== "YER") {
+    return NextResponse.json(
+      { message: "القائمة التخمينية بالريال اليمني، وعملة المركز غيره. سعّر الأعمال بنفسك." },
+      { status: 409 });
+  }
+
+  try {
+    const fills = provisionalFills(await listServices(true));
+    if (fills.length === 0) {
+      return NextResponse.json(
+        { message: "لا خدمةَ بلا سعرٍ لها تقديرٌ في الدليل." }, { status: 409 });
+    }
+    const { filled } = await fillProvisionalPrices(fills);
+    await recordAudit({
+      action: "settings.update", entity: "services",
+      entityLabel: `أسعار تخمينية لـ${filled} خدمة`,
+      details: { المرشَّح: fills.length, المملوء: filled, النوع: "تخميني — للتجربة" },
+      actor: session.username, actorRole: session.role,
+    });
+    return NextResponse.json({
+      filled, unpriced: await unpricedServiceCount(), provisional: await provisionalPriceCount(),
+    }, { status: 201 });
+  } catch {
+    return NextResponse.json({ message: "تعذّر ملء الأسعار التخمينية." }, { status: 500 });
   }
 }
 

@@ -18,6 +18,7 @@ const ready = (over: Partial<ReadinessFacts> = {}): ReadinessFacts => ({
   labPartyCount: 2,
   serviceCount: 30,
   servicesPriced: 30,
+  servicesProvisional: 0,
   lastBackupOn: "2026-09-02",
   setupTokenLive: false,
   openShiftAgeDays: null,
@@ -59,6 +60,14 @@ describe("جاهزية النظام", () => {
 
   it("وحسابٌ واحد تحذير — لا يمنع لكنه يُفرّغ الصلاحيات من معناها", () => {
     expect(find(ready({ activeUsersByRole: { admin: 1 } }), "users").level).toBe("warn");
+  });
+
+  it("**وأسعارٌ تخمينية تُنبَّه ولا تمنع** — تعمل، ومريضٌ يُحاسَب برقمٍ لم يُقرّ", () => {
+    const item = find(ready({ servicesProvisional: 12 }), "services");
+    expect(item.level).toBe("warn");
+    expect(item.detail).toContain("تخمينيّ");
+    // والسبب يقول لماذا: بندٌ أصفرُ بلا تفسيرٍ يُهمَل.
+    expect(item.why).toContain("لم تُقرّها");
   });
 
   it("**ولا خدمات مسعّرة يمنع** — لا تُفوتر زيارة بلا خدمة", () => {

@@ -77,6 +77,13 @@ export interface ReadinessFacts {
    */
   servicesPriced: number;
   /**
+   * كم خدمةً على سعرٍ **تخمينيّ** ملأه النظام للتجربة ولم يُقرّه المالك.
+   *
+   * وهي مسعَّرةٌ فعلًا — تُفوتَر بها زيارة — فلا تحجب البدء. لكنّها تُقال ما بقيت:
+   * سعرٌ مخترعٌ يُحاسَب به مريضٌ حقيقيّ ولا شيء في الفاتورة يقول إنّه تخمين.
+   */
+  servicesProvisional: number;
+  /**
    * آخر يومٍ **اكتمل** فيه بثُّ نسخةٍ للقاعدة أو نسخةٍ كاملة — أو `null`.
    *
    * ولا يُقرأ من `backup.download`: ذاك يُكتب قبل أوّل بايت، ويكتبه أيضًا أرشيفُ
@@ -216,9 +223,15 @@ export function readinessChecks(facts: ReadinessFacts): ReadinessCheck[] {
   checks.push({
     key: "services",
     title: "دليل الخدمات وأسعارها",
-    level: facts.servicesPriced === 0 ? "blocked" : "ok",
-    detail: `${facts.serviceCount} خدمة · ${facts.servicesPriced} مسعّرة`,
-    why: "الخدمة بلا سعرٍ مضبوط تُردّ عند إضافتها إلى الزيارة. فبلا خدمةٍ مسعّرةٍ واحدة لا تُفوتر زيارة، ولا يُبنى شيءٌ من المالية عليها.",
+    level: facts.servicesPriced === 0 ? "blocked"
+      : facts.servicesProvisional > 0 ? "warn" : "ok",
+    detail: `${facts.serviceCount} خدمة · ${facts.servicesPriced} مسعّرة`
+      + (facts.servicesProvisional > 0 ? ` · ${facts.servicesProvisional} بسعرٍ تخمينيّ` : ""),
+    why: facts.servicesProvisional > 0
+      ? "أسعارٌ تخمينية ملأها النظام للتجربة ولم تُقرّها. وهي تعمل — تُفوتَر بها زيارة — "
+        + "فمريضٌ حقيقيّ يُحاسَب برقمٍ لم يقرّره أحد، ولا شيء في فاتورته يقول إنّه تخمين. "
+        + "استبدلها بقائمتك قبل أن تُفوتر بها فعلًا."
+      : "الخدمة بلا سعرٍ مضبوط تُردّ عند إضافتها إلى الزيارة. فبلا خدمةٍ مسعّرةٍ واحدة لا تُفوتر زيارة، ولا يُبنى شيءٌ من المالية عليها.",
     href: "/finance/services",
   });
 
