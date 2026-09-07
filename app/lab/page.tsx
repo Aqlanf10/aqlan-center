@@ -195,11 +195,23 @@ export default function LabPage() {
        * ما اتُّفق عليه.
        */
       const notice = ok.priceNotice as { agreedMinor: number; deltaMinor: number } | null | undefined;
+      /*
+       * وعملتان مختلفتان تُقال ولا تُقارَن.
+       *
+       * فالمقارنة تحتاج سعر صرف يوم الاتفاق ولا يُحفظ، وتحويلُه بسعر اليوم
+       * يُنتج «فرقًا» هو حركةُ الصرف لا خلافًا مع المختبر. **والسكوت أسوأ**:
+       * من كتب التكلفة يظنّ أنّها قورنت وسكت التنبيه.
+       */
+      const mismatch = ok.currencyNotice as
+        { agreedCurrency: string; costCurrency: string } | null | undefined;
       setPriceNotice(notice
         ? `التكلفة المكتوبة تخالف السعر المتّفق عليه (${formatMoney(notice.agreedMinor, costCurrency)})`
           + ` بفارق ${formatMoney(Math.abs(notice.deltaMinor), costCurrency)}`
           + `${notice.deltaMinor > 0 ? " زيادة" : " نقصًا"} — حُفظ الأمر، وراجِع الاتفاق.`
-        : null);
+        : mismatch
+          ? `الاتفاق مع هذا المختبر بـ${mismatch.agreedCurrency} والتكلفة كُتبت بـ${mismatch.costCurrency}`
+            + ` — حُفظ الأمر، ولم تُقارَن بالسعر المتّفق عليه.`
+          : null);
       setPatient(null); setQuery(""); setDetails(""); setCost("");
       setSentDate(today); setDueDate(addDays(today, labDays));
       setAdding(false);
