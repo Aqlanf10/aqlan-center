@@ -163,13 +163,6 @@ export default function CommissionsPage() {
                     ({row.commissionPercent}% من {formatMoney(row.labCostMinor, base)})
                   </span>{" "}
                   = {formatMoney(row.netEarnedMinor, base)}
-                  {row.uncoveredLabCostMinor > 0 ? (
-                    <>
-                      <br />
-                      وتبقّى من التكلفة {formatMoney(row.uncoveredLabCostMinor, base)} لم تُخصم —
-                      لا تُرحَّل ولا تُجعل العمولة دَينًا عليه، فقرّر فيها.
-                    </>
-                  ) : null}
                 </p>
               ) : null}
               {/*
@@ -198,6 +191,19 @@ export default function CommissionsPage() {
                   ومن محصَّله {formatMoney(row.unratedCoveredMinor, base)} في تخصّصٍ بلا نسبةِ إهلاكٍ
                   محدَّدة — لم يُخصم منه شيء.{" "}
                   <a href="/settings/material-rates" className="underline">حدّد النسبة</a>
+                </p>
+              ) : null}
+              {/*
+                * وسطرُ الفائض مستقلّ عن سطر المختبر.
+                *
+                * كان داخله، فطبيبٌ فاض عليه **إهلاكُ المواد** وحده يرى صافيًا صفرًا
+                * بلا سببٍ مكتوب: لا خصمَ مختبرٍ له فلا يظهر السطر الحاوي. والفائض
+                * يجمع الخصمين معًا، فمكانُه بعدهما لا داخل أحدهما.
+                */}
+              {(deductsLabCost || deductsMaterialCost) && row.uncoveredLabCostMinor > 0 ? (
+                <p className="mt-2 rounded-xl bg-amber-100 px-2.5 py-1.5 text-center text-[11px] font-bold text-amber-900">
+                  وتبقّى من التكاليف {formatMoney(row.uncoveredLabCostMinor, base)} لم تُخصم —
+                  لا تُرحَّل إلى مدّةٍ أخرى ولا تُجعل العمولة دَينًا عليه، فقرّر فيها.
                 </p>
               ) : null}
               <p className={`mt-2 text-center text-sm font-extrabold ${
