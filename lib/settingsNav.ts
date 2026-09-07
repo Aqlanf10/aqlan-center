@@ -16,6 +16,7 @@ const TABS: SettingsTab[] = [
   { href: "/settings/readiness", label: "جاهزية النظام" },
   { href: "/settings/users", label: "المستخدمون والصلاحيات" },
   { href: "/settings/lab", label: "أعمال المختبر وأسعارها" },
+  { href: "/settings/material-rates", label: "نِسَب إهلاك المواد" },
   { href: "/settings/ceph", label: "المعايير السيفالومترية" },
   { href: "/settings/audit", label: "سجل التدقيق" },
   { href: "/settings/export", label: "النسخ والتصدير" },

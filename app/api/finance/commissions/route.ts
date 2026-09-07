@@ -33,6 +33,7 @@ export async function GET(request: Request) {
       rows: report.rows,
       // الشاشة تقول على أيّ قاعدةٍ حُسب ما يعرضه — ولا يُترك القارئ يخمّن.
       deductsLabCost: report.deductsLabCost,
+      deductsMaterialCost: report.deductsMaterialCost,
       unattributedLabCostMinor: report.unattributedLabCostMinor,
       baseCurrency: isCurrency(base) ? base : "YER",
     });

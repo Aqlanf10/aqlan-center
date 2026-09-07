@@ -24,6 +24,7 @@ interface CommissionRow {
   doctorId: number; doctorName: string; commissionPercent: number;
   accruedMinor: number; earnedMinor: number;
   labCostMinor: number; labShareMinor: number;
+  materialCostMinor: number; materialShareMinor: number; unratedCoveredMinor: number;
   netEarnedMinor: number; uncoveredLabCostMinor: number;
   paidMinor: number; dueMinor: number;
 }
@@ -38,6 +39,7 @@ export default function CommissionsPage() {
   const [to, setTo] = useState(today);
   const [rows, setRows] = useState<CommissionRow[]>([]);
   const [deductsLabCost, setDeductsLabCost] = useState(false);
+  const [deductsMaterialCost, setDeductsMaterialCost] = useState(false);
   const [unattributed, setUnattributed] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +52,7 @@ export default function CommissionsPage() {
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
       setRows(payload.rows as CommissionRow[]);
       setDeductsLabCost(Boolean(payload.deductsLabCost));
+      setDeductsMaterialCost(Boolean(payload.deductsMaterialCost));
       setUnattributed(Number(payload.unattributedLabCostMinor) || 0);
       if (isCurrency(payload.baseCurrency)) setBase(payload.baseCurrency);
       setError(null);
@@ -136,7 +139,8 @@ export default function CommissionsPage() {
                 </div>
                 <div className="rounded-xl bg-emerald-50 p-2">
                   <p className="text-sm font-extrabold text-emerald-800">
-                    {formatMoney(deductsLabCost ? row.netEarnedMinor : row.earnedMinor, base)}
+                    {/* والصافي يُعرض متى فُعّل أيُّ خصم — لا خصمُ المختبر وحده. */}
+                    {formatMoney(deductsLabCost || deductsMaterialCost ? row.netEarnedMinor : row.earnedMinor, base)}
                   </p>
                   <p className="text-[11px] text-emerald-700">المستحق</p>
                 </div>
@@ -166,6 +170,34 @@ export default function CommissionsPage() {
                       لا تُرحَّل ولا تُجعل العمولة دَينًا عليه، فقرّر فيها.
                     </>
                   ) : null}
+                </p>
+              ) : null}
+              {/*
+                * وإهلاك المواد سطرٌ مستقلّ عن سطر المختبر.
+                *
+                * فهما خصمان مختلفا المصدر: ذاك تكلفةٌ مدفوعةٌ لمختبرٍ بفاتورة،
+                * وهذا تقديرٌ بنسبةٍ قرّرها المالك. وجمعُهما في رقمٍ واحد يجعل
+                * الطبيب لا يعرف أيّهما يناقش.
+                */}
+              {deductsMaterialCost && row.materialCostMinor > 0 ? (
+                <p className="mt-2 rounded-xl bg-sky-50 px-2.5 py-1.5 text-center text-[11px] font-bold text-sky-900">
+                  وحصّته من إهلاك مواد عمله {formatMoney(row.materialShareMinor, base)}{" "}
+                  <span className="font-normal">
+                    ({row.commissionPercent}% من {formatMoney(row.materialCostMinor, base)} مقدَّرةً بنسب التخصّصات)
+                  </span>
+                </p>
+              ) : null}
+              {/*
+                * ومحصَّلٌ في تخصّصٍ بلا نسبةٍ يُقال ولا يُقدَّر.
+                *
+                * فصفرٌ صامت يقول «لا موادّ لهذا العمل»، والحقيقة أنّ أحدًا لم
+                * يحدّد نسبته — والفرق بينهما مالٌ يُخصم أو لا يُخصم.
+                */}
+              {deductsMaterialCost && row.unratedCoveredMinor > 0 ? (
+                <p className="mt-2 rounded-xl bg-slate-100 px-2.5 py-1.5 text-center text-[11px] font-bold text-slate-700">
+                  ومن محصَّله {formatMoney(row.unratedCoveredMinor, base)} في تخصّصٍ بلا نسبةِ إهلاكٍ
+                  محدَّدة — لم يُخصم منه شيء.{" "}
+                  <a href="/settings/material-rates" className="underline">حدّد النسبة</a>
                 </p>
               ) : null}
               <p className={`mt-2 text-center text-sm font-extrabold ${
