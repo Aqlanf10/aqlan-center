@@ -19,7 +19,8 @@ import { financeLinks } from "@/components/financeLinks";
 
 interface Service {
   id: number; name: string; category: string | null;
-  priceConfigured: boolean; catalogCode: string|null; priceMinor: number; isActive: boolean; sortOrder: number;
+  priceConfigured: boolean; priceProvisional: boolean;
+  catalogCode: string|null; priceMinor: number; isActive: boolean; sortOrder: number;
 }
 
 export default function ServicesPage() {
@@ -94,6 +95,14 @@ export default function ServicesPage() {
 
   const unpricedCount = useMemo(
     () => services.filter((one) => one.isActive && !one.priceConfigured).length, [services]);
+  /*
+   * وعددُ التخمينيّ يُعرض ولو لم يبقَ غيرُ مسعَّر — بل **خصوصًا حينئذٍ**.
+   *
+   * فملءُ التخمين يصفّر عدّاد «بلا سعر» ويُخفي لوحة الجولة، ولو عُلّق التحذير
+   * عليها لاختفى في اللحظة التي صار فيها كلُّ الدليل مسعّرًا بأرقامٍ لم يقرّها أحد.
+   */
+  const provisionalCount = useMemo(
+    () => services.filter((one) => one.isActive && one.priceProvisional).length, [services]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, Service[]>();
@@ -120,6 +129,20 @@ export default function ServicesPage() {
       }),
     }));
     if (ok) { setDraft({}); await load(); }
+  };
+
+  /**
+   * يملأ ما بقي بلا سعرٍ بتقديرٍ من الدليل — **للتجربة، ويُوسَم**.
+   *
+   * طلبه المالك ليبدأ التجربة قبل أن يُقرّ قائمته. ولأنّه يعمل — تُفوتَر به زيارة —
+   * يُسأل قبله سؤالًا صريحًا: لا يُملأ ٨٦ سعرًا بنقرةٍ واحدة بلا إقرار.
+   */
+  const fillProvisional = async () => {
+    if (!window.confirm(
+      `ستُملأ ${unpricedCount} خدمةً بأسعارٍ تخمينية من النظام — للتجربة وحدها.\n\n`
+      + "وهي تعمل: تُفوتَر بها زيارةٌ لمريضٍ حقيقيّ. تبقى موسومةً «تخميني» حتى تستبدلها بقائمتك.",
+    )) return;
+    if (await send(() => fetch("/api/services/prices", { method: "POST" }))) await load();
   };
 
   return (
@@ -179,7 +202,32 @@ export default function ServicesPage() {
               className="rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-extrabold text-white disabled:opacity-40">
               {busy ? "يحفظ…" : `احفظ ${drafted.length} سعرًا`}
             </button>
+            {/* والتخمين آخرُ الخيارات لا أوّلها — فالزرّ بعد الحفظ وبلا لون. */}
+            <button type="button" onClick={() => void fillProvisional()} disabled={busy}
+              className="rounded-xl border border-amber-400 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 disabled:opacity-40">
+              املأ الباقي بأسعارٍ تخمينية للتجربة
+            </button>
           </div>
+        </section>
+      ) : null}
+
+      {/*
+        * تحذيرُ التخمين مستقلٌّ عن لوحة الجولة.
+        *
+        * فحين يُملأ الكلُّ تخمينًا يصير عدّاد «بلا سعر» صفرًا وتختفي اللوحة — وذلك
+        * أخطرُ وقتٍ لا أهونُه: كلُّ الدليل مسعّرٌ بأرقامٍ لم يقرّها أحد، والفوترة
+        * تمرّ بلا اعتراض.
+        */}
+      {provisionalCount > 0 ? (
+        <section className="mb-4 rounded-2xl border-2 border-amber-400 bg-amber-100/70 p-3" aria-label="أسعار تخمينية">
+          <p className="text-sm font-extrabold text-amber-900">
+            {provisionalCount} خدمةً بسعرٍ تخمينيّ لم تُقرّه
+          </p>
+          <p className="mt-1 text-[11px] font-bold leading-5 text-amber-900/80">
+            هذه أرقامٌ ملأها النظام للتجربة، <span className="underline">وهي تعمل</span> — تُفوتَر بها زيارةُ مريضٍ حقيقيّ
+            ولا شيء في فاتورته يقول إنّها تخمين. استبدلها بقائمتك قبل أن تُفوتر بها فعلًا:
+            تعديلُ السعر بيدك يُسقط الوسم عنه.
+          </p>
         </section>
       ) : null}
 
@@ -233,6 +281,13 @@ export default function ServicesPage() {
                     ) : (
                       <>
                         <span className="text-sm font-bold">{service.priceConfigured ? formatMoney(service.priceMinor, base) : "لم يُحدد السعر"}</span>
+                        {/* والوسم بجانب الرقم لا في حاشية: من يقرأ السعر يقرأ أنّه تخمين. */}
+                        {service.priceProvisional ? (
+                          <span className="rounded-lg bg-amber-200 px-2 py-0.5 text-[11px] font-extrabold text-amber-900"
+                            title="سعرٌ تخمينيّ ملأه النظام للتجربة — لم يُقرَّ بعد">
+                            تخميني
+                          </span>
+                        ) : null}
                         {canEdit && <>
                         <button
                           onClick={() => { setEditingId(service.id); setEditPrice(formatAmount(service.priceMinor, base).replace(/,/g, "")); }}

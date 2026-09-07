@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { pgConnection } from '../lib/pgConnection.ts';
 import { hashPassword } from '../lib/auth.ts';
 import { addDays, clinicDateString } from '../lib/schedule.ts';
+import { PROVISIONAL_PRICES } from '../lib/provisionalPrices.ts';
 const original=process.env.DATABASE_URL;if(!original)throw Error('DATABASE_URL required');
 const name=`http_check_${Date.now()}`;const target=new URL(original);target.pathname=`/${name}`;
 const admin=new Client(pgConnection(original));await admin.connect();await admin.query(`CREATE DATABASE ${name}`);
@@ -641,6 +642,60 @@ try {
     afterPricing.filter(one=>[priceOne.id,priceTwo.id].includes(one.id)).every(one=>one.priceConfigured));
   check('and the remaining unpriced count comes back with the save',
     typeof pricedBody.unpriced==='number');
+
+  /*
+   * ── أسعارٌ تخمينية للتجربة ──
+   *
+   * طلبها المالك ليبدأ التجربة قبل أن يُقرّ قائمته. **وخطرُها أنّها تعمل**: تُفوتَر
+   * بها زيارةُ مريضٍ حقيقيّ ولا شيء في فاتورته يقول إنّها تخمين. فالمُثبَت هنا
+   * ليس صحّة الرقم — لا أحد يُثبت أنّ الكشف ثلاثة آلاف — بل أنّها لا تمحو قرارًا
+   * للمالك، وأنّها تبقى موسومةً حتى يستبدلها.
+   */
+  const fill=cookie=>fetch(base+'/api/services/prices',{method:'POST',headers:{cookie,origin:base}});
+  check('the provisional fill is denied without a session',(await fill('')).status===401);
+  check('and the reception cannot fill either',(await fill(reception)).status===403);
+  check('nor the doctor',(await fill(d)).status===403);
+
+  const byCode=async code=>(await db.listServices(true)).find(one=>one.catalogCode===code);
+  const decided=await byCode('exam');
+  // سعرٌ قرّره المالك بيده قبل الملء — وهو ما يجب ألّا يُمسّ.
+  check('the owner prices one by hand first',
+    (await fetch(base+`/api/services/${decided.id}`,{method:'PATCH',headers:{cookie:a,'content-type':'application/json',origin:base},body:JSON.stringify({price:'9999'})})).status===200);
+
+  const filled=await fill(a);
+  check('the admin fills the rest with estimates',filled.status===201);
+  const fillBody=await filled.json();
+  check('and it says how many it filled',fillBody.filled>0);
+
+  /*
+   * **وما قرّره المالك لا يُمسّ.**
+   *
+   * والشرط في `UPDATE` نفسه لا في فحصٍ قبله: بين قراءة المرشَّحين وكتابتهم قد
+   * يسعّر المالك خدمةً من شاشةٍ أخرى، فيُكتب التخمين فوق قراره.
+   */
+  const stillDecided=await byCode('exam');
+  check('**the price the owner decided is untouched** — and unmarked',
+    stillDecided.priceMinor===9999&&stillDecided.priceProvisional===false,
+    `${stillDecided.priceMinor} · ${stillDecided.priceProvisional}`);
+
+  const guessed=await byCode('zirconia');
+  check('the unpriced one took the catalog estimate',
+    guessed.priceMinor===PROVISIONAL_PRICES.zirconia,`${guessed.priceMinor}`);
+  // والوسم هو كلُّ ما يفرّق بين رقمٍ قرّره أحدٌ ورقمٍ اخترعه النظام.
+  check('**and it is marked provisional** — nothing else says the number was invented',
+    guessed.priceProvisional===true);
+
+  /* ومن كتب السعر بيده قرّر، فيسقط وسمُ التخمين. */
+  check('the owner overwrites an estimate',
+    (await fetch(base+`/api/services/${guessed.id}`,{method:'PATCH',headers:{cookie:a,'content-type':'application/json',origin:base},body:JSON.stringify({price:'77000'})})).status===200);
+  const overwritten=await byCode('zirconia');
+  check('and the provisional mark falls off — the owner decided it now',
+    overwritten.priceMinor===77000&&overwritten.priceProvisional===false,
+    `${overwritten.priceMinor} · ${overwritten.priceProvisional}`);
+
+  // ولا شيءَ ليُملأ بعد الآن: ٤٠٩ لا ٢٠١ بـ«صفرٍ مُلئ» — الصفر يُقرأ نجاحًا.
+  check('filling again when nothing is left says so, it does not report a silent zero',
+    (await fill(a)).status===409);
 
   /*
    * ── تكلفة المخزون ──

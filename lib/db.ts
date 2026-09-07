@@ -211,6 +211,12 @@ export function ensureSchema(): Promise<void> {
       );
       ALTER TABLE services ADD COLUMN IF NOT EXISTS catalog_code TEXT;
       ALTER TABLE services ADD COLUMN IF NOT EXISTS price_configured BOOLEAN NOT NULL DEFAULT TRUE;
+      -- سعرٌ تخمينيّ ملأه النظام للتجربة، لم يُقرّه المالك بعد.
+      --
+      -- ويُفصل عن price_configured عمدًا: التخميني **يعمل** — تُفوتَر به زيارة —
+      -- فلا يُمنع، لكنّه يبقى موسومًا في كل موضعٍ يُرى فيه حتى يُستبدل. وخلطُه
+      -- بالمقرَّر يجعل مريضًا يُحاسَب برقمٍ لم يقرّره أحد ولا شيء يقول ذلك.
+      ALTER TABLE services ADD COLUMN IF NOT EXISTS price_provisional BOOLEAN NOT NULL DEFAULT FALSE;
       CREATE UNIQUE INDEX IF NOT EXISTS services_catalog_code_idx ON services(catalog_code) WHERE catalog_code IS NOT NULL;
       CREATE INDEX IF NOT EXISTS services_active_idx ON services (is_active, sort_order);
 
@@ -2840,6 +2846,8 @@ export interface Service {
   category: string | null;
   priceMinor: number;
   priceConfigured: boolean;
+  /** سعرٌ تخمينيّ من النظام لم يُقرّه المالك بعد. */
+  priceProvisional: boolean;
   catalogCode: string | null;
   isActive: boolean;
   sortOrder: number;
@@ -2847,7 +2855,8 @@ export interface Service {
 
 interface ServiceRow {
   id: number; name: string; category: string | null;
-  price_minor: string; is_active: boolean; sort_order: number; price_configured: boolean; catalog_code: string | null;
+  price_minor: string; is_active: boolean; sort_order: number; price_configured: boolean;
+  price_provisional: boolean; catalog_code: string | null;
 }
 
 // `BIGINT` يصل من pg نصًّا لا رقمًا — وهو الصحيح لأنه قد يتجاوز حدّ العدد الآمن.
@@ -2861,6 +2870,7 @@ const toService = (row: ServiceRow): Service => ({
   category: row.category,
   priceMinor: toMinor(row.price_minor),
   priceConfigured: row.price_configured,
+  priceProvisional: row.price_provisional,
   catalogCode: row.catalog_code,
   isActive: row.is_active,
   sortOrder: row.sort_order,
@@ -2869,7 +2879,7 @@ const toService = (row: ServiceRow): Service => ({
 export async function listServices(includeInactive = false): Promise<Service[]> {
   await ensureSchema();
   const { rows } = await getPool().query<ServiceRow>(
-    `SELECT id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code FROM services
+    `SELECT id, name, category, price_minor, is_active, sort_order, price_configured, price_provisional, catalog_code FROM services
       ${includeInactive ? "" : "WHERE is_active"}
       ORDER BY sort_order, name`,
   );
@@ -2880,7 +2890,7 @@ export async function listServices(includeInactive = false): Promise<Service[]> 
 export async function getService(id: number): Promise<Service | null> {
   await ensureSchema();
   const { rows } = await getPool().query<ServiceRow>(
-    `SELECT id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code FROM services WHERE id = $1`,
+    `SELECT id, name, category, price_minor, is_active, sort_order, price_configured, price_provisional, catalog_code FROM services WHERE id = $1`,
     [id],
   );
   return rows[0] ? toService(rows[0]) : null;
@@ -2892,7 +2902,7 @@ export async function createService(input: {
   await ensureSchema();
   const { rows } = await getPool().query<ServiceRow>(
     `INSERT INTO services (name, category, price_minor)
-     VALUES ($1, $2::text, $3) RETURNING id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code`,
+     VALUES ($1, $2::text, $3) RETURNING id, name, category, price_minor, is_active, sort_order, price_configured, price_provisional, catalog_code`,
     [input.name, input.category, input.priceMinor],
   );
   return toService(rows[0]);
@@ -2908,9 +2918,11 @@ export async function updateService(id: number, input: {
        category    = CASE WHEN $3::boolean THEN $4::text ELSE category END,
        price_minor = COALESCE($5::bigint, price_minor),
        price_configured = CASE WHEN $5::bigint IS NOT NULL THEN TRUE ELSE price_configured END,
+       -- ومن كتب السعر بيده قرّر، فيسقط وسمُ التخمين.
+       price_provisional = CASE WHEN $5::bigint IS NOT NULL THEN FALSE ELSE price_provisional END,
        is_active   = COALESCE($6::boolean, is_active)
      WHERE id = $1
-     RETURNING id, name, category, price_minor, is_active, sort_order, price_configured, catalog_code`,
+     RETURNING id, name, category, price_minor, is_active, sort_order, price_configured, price_provisional, catalog_code`,
     [
       id, input.name ?? null,
       input.category !== undefined, input.category ?? null,
@@ -8525,6 +8537,7 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
     labs: string;
     services: string;
     services_priced: string;
+    services_provisional: string;
     backup_on: string | null;
     open_shift_days: string | null;
     lab_orders_no_doctor: string;
@@ -8546,6 +8559,7 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
        (SELECT COUNT(*) FROM services WHERE is_active)                     AS services,
        -- والمسعَّرة وحدها تصلح لزيارة: validateProcedures يردّ ما عداها.
        (SELECT COUNT(*) FROM services WHERE is_active AND price_configured) AS services_priced,
+       (SELECT COUNT(*) FROM services WHERE is_active AND price_provisional)  AS services_provisional,
        -- backup.complete لا backup.download: الثاني يُكتب قبل أوّل بايت،
        -- ويكتبه أرشيفُ الأشعّة وحده أيضًا. والأوّل بعد اكتمال البثّ ولا شيء غيره.
        (SELECT MAX((created_at AT TIME ZONE $1)::date)::text FROM audit_log
@@ -8571,6 +8585,7 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
     labPartyCount: Number(row?.labs ?? 0),
     serviceCount: Number(row?.services ?? 0),
     servicesPriced: Number(row?.services_priced ?? 0),
+    servicesProvisional: Number(row?.services_provisional ?? 0),
     lastBackupOn: row?.backup_on ?? null,
     setupTokenLive: setupTokenIsLive(process.env.SETUP_TOKEN),
     openShiftAgeDays: row?.open_shift_days === null || row?.open_shift_days === undefined
@@ -8765,4 +8780,47 @@ export async function inventoryValue(): Promise<{
       unitCostMinor: state.unitCostMinor === null ? null : Math.round(state.unitCostMinor),
     };
   }).sort((one, two) => two.valueMinor - one.valueMinor);
+}
+
+/**
+ * يملأ غير المسعَّر بأسعارٍ تخمينية، ويسمها.
+ *
+ * **وما سُعّر لا يُمسّ** — بشرطٍ في الاستعلام نفسه لا بفحصٍ قبله: بين القراءة
+ * والكتابة قد يسعّر المالك خدمةً من شاشةٍ أخرى، فيُكتب التخمين فوق قراره.
+ */
+export async function fillProvisionalPrices(
+  fills: readonly { id: number; priceMinor: number }[],
+): Promise<{ filled: number }> {
+  await ensureSchema();
+  if (fills.length === 0) return { filled: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    let filled = 0;
+    for (const fill of fills) {
+      const { rowCount } = await client.query(
+        `UPDATE services
+            SET price_minor = $2, price_configured = TRUE, price_provisional = TRUE
+          WHERE id = $1 AND is_active AND NOT price_configured`,
+        [fill.id, fill.priceMinor],
+      );
+      filled += rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+    return { filled };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** كم خدمةً فعّالة ما زالت على سعرٍ تخمينيّ لم يُقرَّ. */
+export async function provisionalPriceCount(): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM services WHERE is_active AND price_provisional`,
+  );
+  return Number(rows[0]?.n ?? 0);
 }
