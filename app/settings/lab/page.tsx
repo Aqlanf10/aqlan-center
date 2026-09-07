@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { settingsTabs } from "@/lib/settingsNav";
 import { clinicDateString } from "@/lib/schedule";
-import { formatMoney, isCurrency, type Currency } from "@/lib/money";
+import { CURRENCIES, formatMoney, isCurrency, type Currency } from "@/lib/money";
 import {
   LAB_CATEGORIES, LAB_CATEGORY_LABEL, priceOn,
   type LabCategory, type LabPrice, type LabService,
@@ -42,6 +42,15 @@ export default function LabSettingsPage() {
   const [labId, setLabId] = useState("");
   const [serviceId, setServiceId] = useState("");
   const [cost, setCost] = useState("");
+  /*
+   * عملةُ الاتفاق مع المختبر.
+   *
+   * ولا تُفترض عملةَ المركز: مختبراتُ الزيركون والزرعات تُسعّر بالدولار أو
+   * بالريال السعودي، والاتفاق معها بها. وحفظُ سعرها بالريال اليمني يجمّد سعر
+   * صرفٍ في رقمٍ لا يقول إنّه محوَّل — فحين يتحرّك الصرف يصير المتّفق عليه
+   * رقمًا لا يوافق ما يطلبه المختبر، ولا يُعرف من أين جاء الفرق.
+   */
+  const [priceCurrency, setPriceCurrency] = useState<Currency>("YER");
   const [from, setFrom] = useState(today);
   /*
    * السعرُ الجاري استبدالُه.
@@ -54,6 +63,8 @@ export default function LabSettingsPage() {
    * لبدء الجديد ويُدخل الجديد في معاملةٍ واحدة.
    */
   const [replacing, setReplacing] = useState<LabPrice | null>(null);
+  /** كم عملًا من الكتالوج المهنيّ ينقص — يقوله الزرّ قبل أن يُضغط. */
+  const [catalogGap, setCatalogGap] = useState<{ missing: number; total: number } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -63,13 +74,16 @@ export default function LabSettingsPage() {
         fetch("/api/lab/prices", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
       ]);
+      const gapRes = await fetch("/api/lab/services/catalog", { cache: "no-store" });
+      setCatalogGap(gapRes.ok ? await gapRes.json() : null);
       if (servicesRes.ok) setServices((await servicesRes.json()).services ?? []);
       if (labsRes.ok) setLabs(await labsRes.json());
       if (pricesRes.ok) setPrices((await pricesRes.json()).prices ?? []);
       if (settingsRes.ok) {
         const settings = await settingsRes.json();
         const currency = settings?.settings?.["finance.base_currency"];
-        if (isCurrency(currency)) setBase(currency);
+        // وعملةُ المركز هي الافتراض الأوّل وحده — يبدّلها المستعمِل لكل مختبر.
+        if (isCurrency(currency)) { setBase(currency); setPriceCurrency(currency); }
       }
     } catch { setError("تعذّر التحميل."); }
   }, []);
@@ -94,6 +108,16 @@ export default function LabSettingsPage() {
     } finally { setBusy(false); }
   };
 
+  /**
+   * يُدخل ما ينقص من كتالوج أعمال المعامل — **بلا أسعار**.
+   *
+   * فما تعمله المعامل معروفٌ في المهنة، وما تتقاضاه اتفاقُ هذا المركز مع كلِّ
+   * معمل. وما هو مسجَّلٌ لا يُمسّ، فيصلح تشغيلُه مرّتين.
+   */
+  const importCatalog = async () => {
+    await send("/api/lab/services/catalog", "POST", {});
+  };
+
   const addService = async () => {
     if (await send("/api/lab/services", "POST", {
       name, category, defaultDays: Number(days), requiresShade: shade,
@@ -106,7 +130,8 @@ export default function LabSettingsPage() {
     const replace = replacing !== null
       && replacing.partyId === Number(labId) && replacing.serviceId === Number(serviceId);
     if (await send("/api/lab/prices", "POST", {
-      partyId: Number(labId), serviceId: Number(serviceId), cost, effectiveFrom: from,
+      partyId: Number(labId), serviceId: Number(serviceId), cost,
+      currency: priceCurrency, effectiveFrom: from,
       ...(replace ? { replace: true } : {}),
     })) { setCost(""); setReplacing(null); }
   };
@@ -117,6 +142,8 @@ export default function LabSettingsPage() {
     setServiceId(String(price.serviceId));
     setFrom(today);
     setCost("");
+    // واستبدالُ سعرٍ يبدأ من عملته: رفعُ السعر لا يغيّر العملة المتّفق عليها غالبًا.
+    if (isCurrency(price.currency)) setPriceCurrency(price.currency);
     setError(null);
   };
 
@@ -139,6 +166,32 @@ export default function LabSettingsPage() {
           العمل المسجَّل هنا يُختار من قائمةٍ في شاشة المختبر — فيُكتب اسمُه مرّةً
           واحدة ويصحّ تجميع تقاريره.
         </p>
+
+        {/*
+          * الكتالوج المهنيّ يُستورد بضغطة — والأسعار تبقى للمالك.
+          *
+          * فما تعمله المعامل معروفٌ عالميًّا: تاجٌ وزيركونٌ ووحدةُ جسرٍ وطقمٌ
+          * ومثبّت. وما تتقاضاه **اتفاقُ هذا المركز مع كلِّ معمل** — فلا رقم
+          * هنا، ولا سعرَ يُفترض.
+          */}
+        {catalogGap && catalogGap.missing > 0 ? (
+          <div className="mb-3 rounded-2xl border-2 border-sky-300 bg-sky-50 p-3">
+            <p className="text-sm font-extrabold text-navy-900">
+              ينقصك {catalogGap.missing} عملًا من كتالوج أعمال المعامل المعروفة
+            </p>
+            <p className="mt-1 text-[11px] font-bold leading-5 text-slate-700">
+              تيجانٌ وجسورٌ وأطقمٌ وأجهزةُ تقويمٍ وأعمالُ زرعات — بأسمائها الموحّدة ومهلها
+              المقترحة، <span className="underline">وبلا أسعار</span>: السعر اتفاقُك مع كلِّ معمل،
+              تكتبه بعد الاستيراد لكلّ معمل على حدة. وما هو مسجَّلٌ عندك لا يُمسّ.
+            </p>
+            <button
+              onClick={() => void importCatalog()} disabled={busy}
+              className="mt-2 rounded-xl bg-sky-700 px-3 py-1.5 text-xs font-extrabold text-white disabled:opacity-40"
+            >
+              {busy ? "يستورد…" : `استورد الناقص (${catalogGap.missing})`}
+            </button>
+          </div>
+        ) : null}
 
         <div className="mb-3 grid gap-2 sm:grid-cols-2">
           <input
@@ -221,11 +274,25 @@ export default function LabSettingsPage() {
               <option key={one.id} value={one.id}>{one.name}</option>
             ))}
           </select>
-          <input
-            value={cost} onChange={(event) => setCost(event.target.value)}
-            inputMode="decimal" placeholder={`السعر المتّفق عليه (${base})`}
-            className="rounded-xl border border-slate-300 px-2.5 py-1.5 text-sm"
-          />
+          <div className="flex gap-2">
+            <input
+              value={cost} onChange={(event) => setCost(event.target.value)}
+              inputMode="decimal" placeholder="السعر المتّفق عليه"
+              aria-label="السعر المتّفق عليه"
+              className="min-w-0 flex-1 rounded-xl border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+            {/* والعملة بجانب الرقم لا في الحاشية: رقمٌ بلا عملةٍ يُقرأ بعملة القارئ. */}
+            <select
+              value={priceCurrency}
+              onChange={(event) => {
+                if (isCurrency(event.target.value)) setPriceCurrency(event.target.value);
+              }}
+              aria-label="عملة الاتفاق مع المختبر"
+              className="rounded-xl border border-slate-300 bg-white px-2 py-1.5 text-sm font-bold"
+            >
+              {CURRENCIES.map((one) => <option key={one} value={one}>{one}</option>)}
+            </select>
+          </div>
           <input
             type="date" value={from} onChange={(event) => setFrom(event.target.value)}
             aria-label="من تاريخ"

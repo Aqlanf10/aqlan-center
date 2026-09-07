@@ -12,6 +12,7 @@ import { pgConnection } from '../lib/pgConnection.ts';
 import { hashPassword } from '../lib/auth.ts';
 import { addDays, clinicDateString } from '../lib/schedule.ts';
 import { PROVISIONAL_PRICES } from '../lib/provisionalPrices.ts';
+import { LAB_WORK_CATALOG } from '../lib/labWorkCatalog.ts';
 const original=process.env.DATABASE_URL;if(!original)throw Error('DATABASE_URL required');
 const name=`http_check_${Date.now()}`;const target=new URL(original);target.pathname=`/${name}`;
 const admin=new Client(pgConnection(original));await admin.connect();await admin.query(`CREATE DATABASE ${name}`);
@@ -254,6 +255,97 @@ try {
     (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'34000',effectiveFrom:todayText,replace:true},{origin:base})).status===409);
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
+
+  /*
+   * ── كتالوج أعمال المعامل: قائمةٌ معروفةٌ في المهنة، بلا أسعار ──
+   *
+   * طلبه المالك: «اشغال معامل الاسنان معروفه وانا بحدد الاسعار تبعه». فما تعمله
+   * المعامل معروفٌ عالميًّا، وما تتقاضاه اتفاقُ كلِّ مركزٍ مع كلِّ معمل.
+   */
+  check('the catalogue plan is the admin\'s alone',(await request('/api/lab/services/catalog',d)).status===403);
+  check('and denied without a session',(await request('/api/lab/services/catalog')).status===401);
+  check('nor can the reception import it',
+    (await request('/api/lab/services/catalog',reception,{},{origin:base})).status===403);
+  const catalogBefore=await (await request('/api/lab/services/catalog',a)).json();
+  // والزرّ يقول ماذا سيفعل قبل أن يُضغط: «استورد الناقص (٤٢)» لا «استورد».
+  check('it says how many works are missing before the button is pressed',
+    catalogBefore.missing>0&&catalogBefore.total===LAB_WORK_CATALOG.length,
+    `${catalogBefore.missing}/${catalogBefore.total}`);
+  /*
+   * و«تاج زيركون» أُدخل أعلاه بمهلة **عشرة أيام**، وفي الكتالوج مهلته خمسة.
+   *
+   * فهو الحدُّ الذي يفرّق: استيرادٌ يكتب فوق المسجَّل يمحو ما عدّله المالك.
+   */
+  check('a work the owner already tuned is counted as present, not missing',
+    catalogBefore.present>=1);
+
+  const imported=await request('/api/lab/services/catalog',a,{},{origin:base});
+  check('the admin imports the profession\'s catalogue',imported.status===201);
+  const importedBody=await imported.json();
+  check('and it says what actually went in, not what was attempted',
+    importedBody.added===catalogBefore.missing,`${importedBody.added} vs ${catalogBefore.missing}`);
+
+  const labServices=(await (await request('/api/lab/services?all=1',a)).json()).services;
+  check('a well-known work is now in the catalogue',
+    labServices.some(one=>one.name==='مثبّت شفاف'));
+  // والقائمة بلا أسعار: السعر اتفاقُ المركز مع معمله، يُكتب لكلّ معملٍ على حدة.
+  check('**and it came in with no price** — the price is the clinic\'s agreement, per lab',
+    labServices.every(one=>!('costMinor' in one)&&!('priceMinor' in one)));
+  /*
+   * **وما كان مسجَّلًا لم يُمسّ.**
+   *
+   * «تاج زيركون» بقي بمهلة العشرة التي كتبها المالك، لا خمسةِ الكتالوج.
+   */
+  check('**and the work the owner had tuned kept his days, not the catalogue\'s**',
+    labServices.find(one=>one.name==='تاج زيركون')?.defaultDays===10,
+    `${labServices.find(one=>one.name==='تاج زيركون')?.defaultDays}`);
+  check('importing again says so — it does not add a second copy',
+    (await request('/api/lab/services/catalog',a,{},{origin:base})).status===409);
+  const afterImport=(await (await request('/api/lab/services?all=1',a)).json()).services;
+  check('and the catalogue did not double',afterImport.length===labServices.length);
+
+  /*
+   * ── عملة الاتفاق مع المعمل ──
+   *
+   * شكا المالك أنّ الشاشة لا تعرض إلا الريال اليمني. ومعاملُ الزيركون والزرعات
+   * تُسعّر بالدولار أو بالريال السعودي، والاتفاق معها بها — وحفظُ سعرها بعملة
+   * المركز يجمّد سعرَ صرفٍ في رقمٍ لا يقول إنّه محوَّل.
+   */
+  const retainer=afterImport.find(one=>one.name==='مثبّت شفاف');
+  const fx=await request('/api/lab/prices',a,{partyId:lab.id,serviceId:retainer.id,cost:'30',currency:'USD',effectiveFrom:'2026-09-01'},{origin:base});
+  check('a lab price can be agreed in a currency that is not the clinic\'s',fx.status===201);
+  const fxId=(await fx.json()).id;
+  const fxRow=(await (await request(`/api/lab/prices?partyId=${lab.id}`,a)).json()).prices.find(p=>p.id===fxId);
+  check('**and it is stored in that currency, not converted at today\'s rate**',
+    fxRow&&fxRow.currency==='USD'&&fxRow.costMinor===3000,`${fxRow&&fxRow.currency} ${fxRow&&fxRow.costMinor}`);
+  /*
+   * **وعملةٌ مكتوبةٌ وغيرُ معروفة تُردّ ولا تُبدَّل بعملة المركز.**
+   *
+   * فالردّ إلى الأساس صامت: من كتب «usd» يظنّ أنّه سعّر بالدولار، ويُحفظ ثلاثون
+   * ريالًا يمنيًّا — أقلُّ بمئتي ضعفٍ من المتّفق عليه، ويُقارَن به كلُّ أمرٍ بعده.
+   */
+  check('an unknown currency is refused, not quietly stored in the clinic\'s',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:retainer.id,cost:'40',currency:'usd',effectiveFrom:'2027-01-01'},{origin:base})).status===400);
+  // وحذفُ الحقل شيءٌ آخر: من لم يكتب عملةً يقصد عملة مركزه.
+  check('while omitting it still means the clinic\'s own currency',
+    (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'50000',effectiveFrom:'2020-01-01',effectiveTo:'2020-12-31'},{origin:base})).status===201);
+
+  /*
+   * **والاتفاق بعملةٍ والتكلفة بأخرى: يُقال ولا يُقارَن.**
+   *
+   * فالمقارنة تحتاج سعر صرف يوم الاتفاق ولا يُحفظ، وتحويلُه بسعر اليوم يُنتج
+   * «فرقًا» هو حركةُ الصرف لا خلافًا مع المعمل. **والسكوت وحده أسوأ**: من كتب
+   * التكلفة يظنّ أنّها قورنت وسكت التنبيه.
+   */
+  const crossed=await (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:retainer.id,sentDate:'2026-09-05',dueDate:'2026-09-12',partyId:lab.id,cost:'20000'},{origin:base})).json();
+  check('a cost in another currency than the agreement is not compared',crossed.priceNotice===null);
+  check('**but the silence is named** — the admin is told why nothing was compared',
+    crossed.currencyNotice&&crossed.currencyNotice.agreedCurrency==='USD'&&crossed.currencyNotice.costCurrency==='YER',
+    JSON.stringify(crossed.currencyNotice));
+  // ولا يخرج شيءٌ منه لغير المدير: وجودُ اتفاقٍ وعملتُه من هامش العيادة أيضًا.
+  const crossedText=await (await request('/api/lab',d,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:retainer.id,sentDate:'2026-09-05',dueDate:'2026-09-12',partyId:lab.id,cost:'20000'},{origin:base})).text();
+  check('and the doctor is told nothing — not even that an agreement exists',
+    JSON.parse(crossedText).currencyNotice===null&&!crossedText.includes('USD'));
   /*
    * ── عمر الدين بالأقدم-أوّلًا ──
    *

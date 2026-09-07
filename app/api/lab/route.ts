@@ -120,6 +120,16 @@ export async function POST(request: Request) {
   let costCurrency: Currency | null = null;
   let exchangeRate = 1;
   let priceNotice: { agreedMinor: number; deltaMinor: number } | null = null;
+  /*
+   * والاتفاقُ بعملةٍ والتكلفةُ بأخرى: يُقال ولا يُقارَن.
+   *
+   * فالمقارنة تحتاج سعرَ صرفٍ ليوم الاتفاق لا ليوم الأمر، ولا يُحفظ. وتحويلُه
+   * بسعر اليوم يُنتج «فرقًا» هو حركةُ الصرف لا خلافًا مع المختبر — فيُنبَّه على
+   * فرقٍ لا وجود له، أو يُسكت عن فرقٍ حقيقيّ ابتلعه الصرف.
+   *
+   * **والسكوت وحده أسوأ**: من يكتب التكلفة يظنّ أنّها قورنت وسكت التنبيه.
+   */
+  let currencyNotice: { agreedCurrency: string; costCurrency: string } | null = null;
   if (source.cost !== undefined && String(source.cost).trim() !== "") {
     costCurrency = isCurrency(source.costCurrency) ? source.costCurrency : base;
     costMinor = parseAmount(String(source.cost), costCurrency);
@@ -153,6 +163,8 @@ export async function POST(request: Request) {
       if (agreed && agreed.currency === costCurrency) {
         const gap = priceGap(agreed.costMinor, costMinor);
         if (gap.differs) priceNotice = { agreedMinor: agreed.costMinor, deltaMinor: gap.deltaMinor };
+      } else if (agreed) {
+        currencyNotice = { agreedCurrency: agreed.currency, costCurrency };
       }
     }
 
@@ -175,7 +187,7 @@ export async function POST(request: Request) {
     });
     if (!created) return NextResponse.json({ message: "تعذّر حفظ العمل." }, { status: 500 });
     // الأمر يُحفظ، والفرق يُقال معه — لا يُمنع الحفظ ولا يُسكت عن الفرق.
-    return NextResponse.json({ ...created, priceNotice }, { status: 201 });
+    return NextResponse.json({ ...created, priceNotice, currencyNotice }, { status: 201 });
   } catch {
     // المريض المحذوف أو غير الموجود يسقط على قيد المفتاح الأجنبي.
     return NextResponse.json({ message: "تعذّر حفظ العمل. تأكد من المريض وأعد المحاولة." }, { status: 500 });

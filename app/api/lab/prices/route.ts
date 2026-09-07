@@ -62,6 +62,19 @@ export async function POST(request: Request) {
 
   const settings = await getSettings();
   const base = settings["finance.base_currency"];
+  /*
+   * عملةٌ مكتوبةٌ وغيرُ معروفة **تُردّ ولا تُبدَّل بعملة المركز**.
+   *
+   * فالردّ إلى الأساس صامت: من أرسل «usd» أو «USD » يظنّ أنّه سعّر بالدولار،
+   * ويُحفظ ثلاثون **ريالًا يمنيًّا** — رقمٌ أقلُّ بمئتي ضعفٍ من المتّفق عليه،
+   * يُقارَن به كلُّ أمرٍ بعده ويُبنى عليه خصمُ عمولة الطبيب.
+   *
+   * وحذفُ الحقل شيءٌ آخر: من لم يكتب عملةً يقصد عملة مركزه، وهذا يبقى.
+   */
+  if (source.currency !== undefined && !isCurrency(source.currency)) {
+    return NextResponse.json(
+      { message: "العملة غير معروفة — اخترها من القائمة." }, { status: 400 });
+  }
   const currency = isCurrency(source.currency) ? source.currency
     : isCurrency(base) ? base : "YER";
   const costMinor = parseAmount(String(source.cost ?? ""), currency);
