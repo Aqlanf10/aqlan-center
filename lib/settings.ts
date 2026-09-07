@@ -25,6 +25,7 @@ export type SettingKey =
   | "finance.rate.USD"
   | "finance.locked_before"
   | "finance.commission_deducts_lab_cost"
+  | "finance.commission_deducts_material_cost"
   | "finance.budget_warn_percent"
   | "lab.default_days"
   | "ortho.adjust_weeks"
@@ -63,6 +64,9 @@ export const SETTING_DEFAULTS: Record<SettingKey, string> = {
    * من أربعين هي كلُّ ما بقي للمركز، بدل ستّة عشر.
    */
   "finance.commission_deducts_lab_cost": "yes",
+  // ومفتاحُ المواد "no" افتراضًا: لا نسبةَ إهلاكٍ محدَّدة بعد، وتفعيلُه بلا
+  // نِسَبٍ يُنقص من كل طبيبٍ صفرًا ويُوهم أنّ الخصم يجري.
+  "finance.commission_deducts_material_cost": "no",
   "finance.budget_warn_percent": "80",
   "lab.default_days": "7",
   // مهلة الشدّ حين لا يحدّدها الطبيب في الزيارة: أربعة أسابيع هي الأشيع في التقويم
@@ -200,7 +204,8 @@ export function validateSetting(key: SettingKey, value: string): string | null {
       return "تاريخ القفل بصيغة 2026-08-31 أو اتركه فارغًا.";
     }
   }
-  if (key === "finance.commission_deducts_lab_cost") {
+  if (key === "finance.commission_deducts_lab_cost"
+      || key === "finance.commission_deducts_material_cost") {
     /*
      * `yes` أو `no` لا غير — ولا يُقبل «نعم» ولا فراغ.
      *
@@ -249,6 +254,7 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: "finance.budget_warn_percent", label: "نسبة التنبيه على الميزانيّة", hint: "عند أيّ نسبة من سقف البند يبدأ التنبيه قبل التجاوز", kind: "number", group: "finance" },
   { key: "finance.locked_before", label: "قفل الدفاتر قبل تاريخ", hint: "لا يُقبل قيد أو تعديل قبل هذا التاريخ. اتركه فارغًا لإلغاء القفل.", kind: "date", group: "finance" },
   { key: "finance.commission_deducts_lab_cost", label: "خصم تكلفة المختبر من عمولة الطبيب", hint: "اكتب yes للخصم، أو no لتُحسب العمولة على المحصّل كاملًا. والخصم يُنسب بالطبيب المكتوب على أمر المختبر.", kind: "text", group: "finance" },
+  { key: "finance.commission_deducts_material_cost", label: "خصم إهلاك المواد من عمولة الطبيب", hint: "اكتب yes للخصم، أو no لتُحسب العمولة بلا إهلاك. والنسبة تُحدَّد لكل تخصّص في شاشة نِسَب الإهلاك — وتخصّصٌ بلا نسبةٍ لا يُخصم منه شيء. وهو مستقلٌّ عن خصم المختبر: يُفعَّل أحدهما أو كلاهما.", kind: "text", group: "finance" },
 
   { key: "clinic.chairs", label: "عدد الكراسي", hint: "يحكم الحجز والانتظار وشاشة الصالة", kind: "number", group: "operations" },
   { key: "clinic.day_start", label: "بداية الدوام", kind: "time", group: "operations" },

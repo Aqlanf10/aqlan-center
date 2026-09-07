@@ -16,12 +16,28 @@
  * ويُنتج نفس النتيجة مهما اختلف ترتيب إدخال الدفعات.
  */
 
+import { materialCost } from "./materialRate";
+
+/** حصيلةُ طبيبٍ من مريضٍ واحد — ومعها المحصَّل موزَّعًا على التخصّصات. */
+export interface DoctorPatientTotals {
+  accruedMinor: number;
+  earnedMinor: number;
+  /** ما حُصّل من عمله موزَّعًا بتخصّص العمل — أساسُ نسبة الإهلاك. */
+  coveredByCategory: Map<string | null, number>;
+}
+
 export interface CommissionInvoice {
   id: number;
   netMinor: number;
   createdAt: string;
-  /** حصة كل طبيب من بنود هذه الفاتورة. */
-  doctorShares: { doctorId: number; amountMinor: number }[];
+  /**
+   * حصة كل طبيب من بنود هذه الفاتورة، **مفصولةً بتخصّص العمل**.
+   *
+   * والفصلُ لأجل نسبة إهلاك المواد: النسبة تختلف بين تقويمٍ وجراحةٍ وكشف، فمجموعٌ
+   * واحدٌ لكل طبيب لا يُعرف منه كم منه تقويمٌ وكم كشف. و`category` تأتي من
+   * `services.category`، وتكون `null` لبندٍ كُتب باليد بلا خدمةٍ من الدليل.
+   */
+  doctorShares: { doctorId: number; amountMinor: number; category: string | null }[];
 }
 
 export interface DoctorCommission {
@@ -41,10 +57,25 @@ export interface DoctorCommission {
    * ١٦٬٠٠٠، فيُظلم الطبيب بثلثي عمولته.
    */
   labShareMinor: number;
-  /** المكتسب بعد الخصم — وهو المستحق للدفع. */
+  /**
+   * تكلفةُ المواد المقدَّرة بنسبة الإهلاك على ما حُصّل من عمله — كاملةً.
+   *
+   * وهي تقديرٌ متّفقٌ عليه لا تكلفةٌ مقيسة: راجع `lib/materialRate.ts`.
+   */
+  materialCostMinor: number;
+  /** حصّته من تكلفة المواد بنسبته — بالشكل نفسه الذي لحصّة المختبر تمامًا. */
+  materialShareMinor: number;
+  /**
+   * ما حُصّل من عمله في تخصّصٍ لم تُحدَّد له نسبةُ إهلاك.
+   *
+   * ويُعرض ولا يُخصم: صفرٌ صامت يقول «لا موادّ لهذا العمل»، والحقيقة أنّ المالك
+   * لم يقرّر نسبته بعد. والفرق بينهما مالٌ يُخصم أو لا يُخصم من عمولة طبيب.
+   */
+  unratedCoveredMinor: number;
+  /** المكتسب بعد الخصمين — وهو المستحق للدفع. */
   netEarnedMinor: number;
   /**
-   * ما فاض من التكلفة عن عمولته في المدّة.
+   * ما فاض من التكاليف (المختبر والمواد معًا) عن عمولته في المدّة.
    *
    * ولا يُرحَّل إلى مدّةٍ أخرى ولا يُجعل الصافي سالبًا: العمولة لا تصير دَينًا
    * على الطبيب بقرارٍ من الحساب. ويُعرض ليُرى ويُقرَّر فيه، لا ليُطرح صامتًا.
@@ -55,7 +86,7 @@ export interface DoctorCommission {
 }
 
 /**
- * يخصم تكلفة المختبر من المكتسب.
+ * يخصم تكلفة المختبر وإهلاك المواد من المكتسب.
  *
  * والقاعدة قرارُ المالك، ومكتوبةٌ في ذاكرة المشروع: **العمولة المكتسبة من
  * التحصيل الفعلي مع خصم تكاليف المختبر**. وبلا الخصم تُدفع النسبة على مالٍ
@@ -67,26 +98,48 @@ export interface DoctorCommission {
  * ويُقرَّر فيه إنسانًا. وطرحُه من مدّةٍ تالية يجعل عمولة شهرٍ تأكل شهرًا لم
  * يُعمل فيه ذلك العمل.
  */
-export function deductLabCost(
-  rows: { doctorId: number; accruedMinor: number; earnedMinor: number; paidMinor: number }[],
+export function deductCosts(
+  rows: {
+    doctorId: number; accruedMinor: number; earnedMinor: number; paidMinor: number;
+    coveredByCategory: ReadonlyMap<string | null, number>;
+  }[],
   labCostByDoctor: Map<number, number>,
   percentByDoctor: Map<number, number>,
   enabled: boolean,
+  rateByCategory: ReadonlyMap<string, number> = new Map(),
+  deductsMaterialCost = false,
 ): DoctorCommission[] {
   return rows.map((row) => {
     const labCostMinor = enabled ? Math.max(0, labCostByDoctor.get(row.doctorId) ?? 0) : 0;
     const percent = Math.max(0, percentByDoctor.get(row.doctorId) ?? 0);
     // حصّته من التكلفة بنسبته — فالمعادلة `نسبة × (المحصّل − التكلفة)`.
     const labShareMinor = Math.round((labCostMinor * percent) / 100);
-    const netEarnedMinor = Math.max(0, row.earnedMinor - labShareMinor);
+
+    /*
+     * وتكلفةُ المواد بالشكل نفسه تمامًا — **وهذا هو الموضع الذي يُخطأ فيه**.
+     *
+     * فطرحُ التكلفة كاملةً من `earnedMinor` يعطي `نسبة × محصّل − تكلفة`، وهو
+     * أقلُّ بكثير من `نسبة × (محصّل − تكلفة)` المقصودة. وهو الخطأ نفسه الذي
+     * كُشف في حصّة المختبر وكلّف طبيبًا ثلثي عمولته في المثال، فلا يُعاد هنا.
+     */
+    const material = deductsMaterialCost
+      ? materialCost(row.coveredByCategory, rateByCategory)
+      : { costMinor: 0, unratedCoveredMinor: 0 };
+    const materialShareMinor = Math.round((material.costMinor * percent) / 100);
+
+    const deducted = labShareMinor + materialShareMinor;
+    const netEarnedMinor = Math.max(0, row.earnedMinor - deducted);
     return {
       doctorId: row.doctorId,
       accruedMinor: row.accruedMinor,
       earnedMinor: row.earnedMinor,
       labCostMinor,
+      materialCostMinor: material.costMinor,
+      materialShareMinor,
+      unratedCoveredMinor: material.unratedCoveredMinor,
       labShareMinor,
       netEarnedMinor,
-      uncoveredLabCostMinor: Math.max(0, labShareMinor - row.earnedMinor),
+      uncoveredLabCostMinor: Math.max(0, deducted - row.earnedMinor),
       paidMinor: row.paidMinor,
       dueMinor: netEarnedMinor - row.paidMinor,
     };
@@ -134,9 +187,9 @@ export function commissionForPatient(
    * فتُصرف عمولة مرتين على مالٍ واحد.
    */
   include?: (invoice: CommissionInvoice) => boolean,
-): Map<number, { accruedMinor: number; earnedMinor: number }> {
+): Map<number, DoctorPatientTotals> {
   const allocation = allocateFifo(invoices, collectedMinor);
-  const result = new Map<number, { accruedMinor: number; earnedMinor: number }>();
+  const result = new Map<number, DoctorPatientTotals>();
 
   for (const invoice of invoices) {
     if (invoice.netMinor <= 0) continue;
@@ -149,10 +202,23 @@ export function commissionForPatient(
       if (percent <= 0) continue;
       const accrued = Math.round((share.amountMinor * percent) / 100);
       const earned = Math.round(accrued * ratio);
-      const current = result.get(share.doctorId) ?? { accruedMinor: 0, earnedMinor: 0 };
+      const current = result.get(share.doctorId)
+        ?? { accruedMinor: 0, earnedMinor: 0, coveredByCategory: new Map<string | null, number>() };
+      /*
+       * والمحصَّل من العمل نفسه — لا العمولة عليه — هو أساسُ نسبة الإهلاك.
+       *
+       * فالمواد تُستهلك على العمل بقيمته، لا على ما يقبضه الطبيب منه: تقويمٌ
+       * بمئة ألفٍ يأكل أسلاكه سواءٌ أكانت نسبة الطبيب أربعين أم ستّين.
+       */
+      const coveredShare = Math.round(share.amountMinor * ratio);
+      current.coveredByCategory.set(
+        share.category,
+        (current.coveredByCategory.get(share.category) ?? 0) + coveredShare,
+      );
       result.set(share.doctorId, {
         accruedMinor: current.accruedMinor + accrued,
         earnedMinor: current.earnedMinor + earned,
+        coveredByCategory: current.coveredByCategory,
       });
     }
   }
@@ -161,27 +227,37 @@ export function commissionForPatient(
 
 /** يجمع نتائج عدة مرضى ويطرح ما دُفع للطبيب. */
 export function summarizeCommissions(
-  perPatient: Map<number, { accruedMinor: number; earnedMinor: number }>[],
+  perPatient: Map<number, DoctorPatientTotals>[],
   paidByDoctor: Map<number, number>,
   /** تكلفة المختبر لكل طبيب في المدّة — والخصم اختيارٌ في الإعدادات. */
   labCostByDoctor: Map<number, number> = new Map(),
   percentByDoctor: Map<number, number> = new Map(),
   deductsLabCost = false,
+  /** نسبةُ إهلاك المواد لكل تخصّص بنقاط الأساس — والخصم اختيارٌ ثانٍ مستقلّ. */
+  rateByCategory: ReadonlyMap<string, number> = new Map(),
+  deductsMaterialCost = false,
 ): DoctorCommission[] {
-  const totals = new Map<number, { accruedMinor: number; earnedMinor: number }>();
+  const emptyTotals = (): DoctorPatientTotals =>
+    ({ accruedMinor: 0, earnedMinor: 0, coveredByCategory: new Map() });
+  const totals = new Map<number, DoctorPatientTotals>();
   for (const entry of perPatient) {
     for (const [doctorId, value] of entry) {
-      const current = totals.get(doctorId) ?? { accruedMinor: 0, earnedMinor: 0 };
+      const current = totals.get(doctorId) ?? emptyTotals();
+      for (const [category, covered] of value.coveredByCategory) {
+        current.coveredByCategory.set(
+          category, (current.coveredByCategory.get(category) ?? 0) + covered);
+      }
       totals.set(doctorId, {
         accruedMinor: current.accruedMinor + value.accruedMinor,
         earnedMinor: current.earnedMinor + value.earnedMinor,
+        coveredByCategory: current.coveredByCategory,
       });
     }
   }
   // الأطباء الذين صُرف لهم ولا عمولة محسوبة لهم يظهرون أيضًا: صرفٌ بلا استحقاق
   // مقابل هو ما يجب أن يُرى، لا أن يختفي من التقرير.
   for (const doctorId of paidByDoctor.keys()) {
-    if (!totals.has(doctorId)) totals.set(doctorId, { accruedMinor: 0, earnedMinor: 0 });
+    if (!totals.has(doctorId)) totals.set(doctorId, emptyTotals());
   }
 
   /*
@@ -192,7 +268,7 @@ export function summarizeCommissions(
    */
   if (deductsLabCost) {
     for (const doctorId of labCostByDoctor.keys()) {
-      if (!totals.has(doctorId)) totals.set(doctorId, { accruedMinor: 0, earnedMinor: 0 });
+      if (!totals.has(doctorId)) totals.set(doctorId, emptyTotals());
     }
   }
 
@@ -200,9 +276,11 @@ export function summarizeCommissions(
     doctorId,
     accruedMinor: value.accruedMinor,
     earnedMinor: value.earnedMinor,
+    coveredByCategory: value.coveredByCategory,
     paidMinor: paidByDoctor.get(doctorId) ?? 0,
   }));
 
-  return deductLabCost(rows, labCostByDoctor, percentByDoctor, deductsLabCost)
-    .sort((a, b) => b.dueMinor - a.dueMinor);
+  return deductCosts(
+    rows, labCostByDoctor, percentByDoctor, deductsLabCost, rateByCategory, deductsMaterialCost,
+  ).sort((a, b) => b.dueMinor - a.dueMinor);
 }

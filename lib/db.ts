@@ -358,6 +358,21 @@ export function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS expense_budgets_lookup_idx
         ON expense_budgets (category, effective_from DESC);
 
+      -- نسبةُ إهلاك المواد لكل تخصّص — بديلُ المالك عن خصم تكلفة المواد الفعلية.
+      --
+      -- صفٌّ واحدٌ لكل تخصّص: النسبة السارية الآن. ولا تاريخَ سريانٍ لها عمدًا —
+      -- نسبةُ الطبيب نفسها في parties.commission_percent كذلك، فتقريرُ العمولة
+      -- كلُّه يُحسب بالمعطيات القائمة. وإضافةُ تاريخٍ لهذه وحدها تجعل نصفَ
+      -- المعادلة تاريخيًّا ونصفَها آنيًّا — وهو أسوأ من الاثنين.
+      --
+      -- والوحدة نقطةُ أساس: ١٠٬٠٠٠ = ١٠٠٪، فـ٧٫٥٪ = ٧٥٠. عددٌ صحيحٌ كالمال.
+      CREATE TABLE IF NOT EXISTS material_rates (
+        category   TEXT        PRIMARY KEY,
+        rate_bp    INTEGER     NOT NULL CHECK (rate_bp >= 0 AND rate_bp <= 10000),
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
       -- الالتزامات: ما على العيادة لجهةٍ ما. الوجه الآخر لمديونية المرضى — أن تعرف
       -- كم عليك كما تعرف كم لك. عيادة تعرف مديونية مرضاها ولا تعرف ما عليها
       -- للمختبرات تحسب نفسها رابحة وهي مدينة.
@@ -3618,6 +3633,12 @@ export interface CommissionRow {
   labCostMinor: number;
   /** حصّته منها بنسبته — وهي المخصومة. */
   labShareMinor: number;
+  /** تكلفةُ المواد المقدَّرة بنسبة الإهلاك على ما حُصّل من عمله — كاملةً. */
+  materialCostMinor: number;
+  /** حصّته منها بنسبته — وهي المخصومة، بالشكل نفسه الذي لحصّة المختبر. */
+  materialShareMinor: number;
+  /** ما حُصّل من عمله في تخصّصٍ لم تُحدَّد له نسبة — يُعرض ولا يُخصم. */
+  unratedCoveredMinor: number;
   /** المكتسب بعد الخصم — وهو المستحق. */
   netEarnedMinor: number;
   /** ما فاض من التكلفة عن عمولته، فلم يُخصم ولم يُرحَّل. */
@@ -3631,6 +3652,8 @@ export interface CommissionReport {
   rows: CommissionRow[];
   /** أمفعَّلٌ الخصم؟ — الشاشة تقول للقارئ على أيّ قاعدةٍ حُسب ما يراه. */
   deductsLabCost: boolean;
+  /** وأمفعَّلٌ خصمُ إهلاك المواد؟ — اختيارٌ ثانٍ مستقلّ عن الأوّل. */
+  deductsMaterialCost: boolean;
   /**
    * تكلفةُ مختبرٍ في المدّة بلا طبيبٍ مكتوب عليها.
    *
@@ -3657,24 +3680,29 @@ export async function commissionReport(from: string, to: string): Promise<Commis
     ),
     pool.query<{
       patient_id: number; invoice_id: number; net_minor: string; created_at: Date;
-      clinic_date: Date; doctor_id: number | null; share_minor: string;
+      clinic_date: Date; doctor_id: number | null; category: string | null; share_minor: string;
     }>(
+      // والتخصّص يأتي مع الحصّة لأجل نسبة إهلاك المواد: النسبة تختلف بين تقويمٍ
+      // وجراحةٍ وكشف، ومجموعٌ واحدٌ لكل طبيب لا يُعرف منه كم منه تقويمٌ وكم كشف.
+      // وبندٌ كُتب باليد بلا خدمةٍ من الدليل يأتي بتخصّصٍ فارغ — فلا نسبةَ له.
       `SELECT i.patient_id,
               i.id AS invoice_id,
               GREATEST(0, i.total_minor - i.discount_minor) AS net_minor,
               i.created_at,
               (i.created_at AT TIME ZONE $1)::date AS clinic_date,
               it.doctor_id,
+              sv.category,
               COALESCE(SUM(it.total_minor), 0) AS share_minor
          FROM invoices i
          LEFT JOIN invoice_items it ON it.invoice_id = i.id
+         LEFT JOIN services sv ON sv.id = it.service_id
         WHERE i.status <> 'cancelled'
           AND i.patient_id IN (
                 SELECT patient_id FROM invoices
                  WHERE status <> 'cancelled'
                    AND (created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date
               )
-        GROUP BY i.patient_id, i.id, i.total_minor, i.discount_minor, i.created_at, clinic_date, it.doctor_id`,
+        GROUP BY i.patient_id, i.id, i.total_minor, i.discount_minor, i.created_at, clinic_date, it.doctor_id, sv.category`,
       [CLINIC_TIME_ZONE, from, to],
     ),
     pool.query<{ party_id: number; paid: string }>(
@@ -3703,7 +3731,9 @@ export async function commissionReport(from: string, to: string): Promise<Commis
       doctorShares: [],
     };
     if (row.doctor_id) {
-      invoice.doctorShares.push({ doctorId: row.doctor_id, amountMinor: toMinor(row.share_minor) });
+      invoice.doctorShares.push({
+        doctorId: row.doctor_id, amountMinor: toMinor(row.share_minor), category: row.category,
+      });
     }
     patientInvoices.set(row.invoice_id, invoice);
     byPatient.set(row.patient_id, patientInvoices);
@@ -3779,9 +3809,19 @@ export async function commissionReport(from: string, to: string): Promise<Commis
 
   const settings = await getSettingsSafe();
   const deductsLabCost = settingIsYes(settings, "finance.commission_deducts_lab_cost");
+  /*
+   * والخصمان مستقلّان لأنّ المالك خيّرنا بينهما.
+   *
+   * «خصم التكلفة من العمولة اجعلني استطيع اطبقه من الاعدادات **او بدلا منها**
+   * اعمل نسبة اهلاك» — فمفتاحان لا مفتاح: يُفعّل أحدهما أو كلاهما أو لا شيء،
+   * ولا يُفرض أحدهما مع الآخر.
+   */
+  const deductsMaterialCost = settingIsYes(settings, "finance.commission_deducts_material_cost");
+  const rateByCategory = deductsMaterialCost ? await materialRateMap() : new Map<string, number>();
 
   const rows = summarizeCommissions(
     perPatient, paidByDoctor, labCostByDoctor, percentByDoctor, deductsLabCost,
+    rateByCategory, deductsMaterialCost,
   )
     .map((row) => ({
       doctorId: row.doctorId,
@@ -3791,13 +3831,16 @@ export async function commissionReport(from: string, to: string): Promise<Commis
       earnedMinor: row.earnedMinor,
       labCostMinor: row.labCostMinor,
       labShareMinor: row.labShareMinor,
+      materialCostMinor: row.materialCostMinor,
+      materialShareMinor: row.materialShareMinor,
+      unratedCoveredMinor: row.unratedCoveredMinor,
       netEarnedMinor: row.netEarnedMinor,
       uncoveredLabCostMinor: row.uncoveredLabCostMinor,
       paidMinor: row.paidMinor,
       dueMinor: row.dueMinor,
     }));
 
-  return { rows, deductsLabCost, unattributedLabCostMinor };
+  return { rows, deductsLabCost, deductsMaterialCost, unattributedLabCostMinor };
 }
 
 /** يُبقي `invoiceNet` مستعملًا في هذا الملف — يُستخدم في تقرير المديونية أدناه. */
@@ -8823,4 +8866,56 @@ export async function provisionalPriceCount(): Promise<number> {
     `SELECT COUNT(*) AS n FROM services WHERE is_active AND price_provisional`,
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+// ─── نِسَب إهلاك المواد ──────────────────────────────────────────────────────
+
+export interface MaterialRateRow {
+  category: string;
+  rateBp: number;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+/** النِّسب المحدَّدة — والتخصّص غير المذكور هنا لا نسبةَ له، لا نسبتُه صفر. */
+export async function listMaterialRates(): Promise<MaterialRateRow[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    category: string; rate_bp: number; updated_by: string | null; updated_at: Date;
+  }>(
+    `SELECT category, rate_bp, updated_by, updated_at FROM material_rates ORDER BY category`,
+  );
+  return rows.map((row) => ({
+    category: row.category,
+    rateBp: row.rate_bp,
+    updatedBy: row.updated_by,
+    updatedAt: row.updated_at.toISOString(),
+  }));
+}
+
+/** خريطةُ النِّسب كما يقرؤها حساب العمولة. */
+export async function materialRateMap(): Promise<Map<string, number>> {
+  return new Map((await listMaterialRates()).map((row) => [row.category, row.rateBp]));
+}
+
+/**
+ * يضبط نسبةَ تخصّصٍ أو يرفعها.
+ *
+ * **ورفعُ النسبة حذفُ الصفّ لا كتابةُ صفر**: الصفر يقول «هذا العمل بلا موادّ»،
+ * وغيابُ الصفّ يقول «لم تُحدَّد نسبته بعد» — ويُعرض المحصَّل بلا نسبةٍ رقمًا
+ * ظاهرًا. والفرق بينهما مالٌ يُخصم أو لا يُخصم من عمولة طبيب.
+ */
+export async function setMaterialRate(
+  category: string, rateBp: number | null, actor: string,
+): Promise<void> {
+  await ensureSchema();
+  if (rateBp === null) {
+    await getPool().query(`DELETE FROM material_rates WHERE category = $1`, [category]);
+    return;
+  }
+  await getPool().query(
+    `INSERT INTO material_rates (category, rate_bp, updated_by) VALUES ($1, $2, $3)
+     ON CONFLICT (category) DO UPDATE SET rate_bp = $2, updated_by = $3, updated_at = NOW()`,
+    [category, rateBp, actor],
+  );
 }

@@ -382,6 +382,106 @@ try {
   check('and yes — the owner decided the deduction',
     (await patch('/api/settings',a,{'finance.commission_deducts_lab_cost':'yes'})).status===200);
 
+  /*
+   * ── نسبة إهلاك المواد لكل تخصّص ──
+   *
+   * طلبها المالك بديلًا عن خصم تكلفة المواد الفعلية. والتكلفة الفعلية لا تُنسب
+   * إلى عملٍ بعينه — قفّازٌ ومخدّرٌ وشاشٌ لا يُعدّ — فخصمُها يخصم من طبيبٍ سجّل
+   * ولا يخصم من طبيبٍ لم يسجّل. والنسبةُ تقديرٌ متّفقٌ عليه سلفًا.
+   */
+  const rates=(cookie,body)=>fetch(base+'/api/finance/material-rates',{method:'PATCH',headers:{cookie,'content-type':'application/json',origin:base},body:JSON.stringify(body)});
+  check('material rates denied without a session',(await request('/api/finance/material-rates')).status===401);
+  // والنسبة تكشف كم تُقدّر العيادة ربحها من عمل الطبيب — فهي كأسعار المختبر وسقوف المصروف.
+  check('and the reception cannot read them',(await request('/api/finance/material-rates',reception)).status===403);
+  check('nor the doctor — he would read what the clinic estimates it keeps of his work',
+    (await request('/api/finance/material-rates',d)).status===403);
+  check('and the reception cannot set one',(await rates(reception,{category:'ortho',rate:'10'})).status===403);
+  check('an unknown speciality is refused — a rate on nothing deducts from nobody',
+    (await rates(a,{category:'لا وجود له',rate:'10'})).status===400);
+  /*
+   * **وما فوق المئة يُردّ.**
+   *
+   * فنسبةٌ فوقها تعني موادَّ كلّفت أكثر ممّا حُصّل من العمل: تأكل العمولة كلَّها
+   * ويبقى فائضٌ — ولا معنى له إلا أنّ أحدًا كتب ٧٥٠ حيث أراد ٧٫٥.
+   */
+  check('a rate above 100% is refused — 750 where 7.5 was meant',
+    (await rates(a,{category:'ortho',rate:'750'})).status===400);
+  check('and a negative one — a negative wear would raise the commission',
+    (await rates(a,{category:'ortho',rate:'-5'})).status===400);
+  check('the admin sets one',(await rates(a,{category:'ortho',rate:'10'})).status===200);
+  const rateList=async()=>(await (await request('/api/finance/material-rates',a)).json()).rates;
+  check('and it comes back in basis points, an integer like money',
+    (await rateList()).find(one=>one.category==='ortho')?.rateBp===1000);
+
+  /*
+   * **والخصم مفتاحٌ مستقلّ عن خصم المختبر.**
+   *
+   * قال المالك: «اجعلني استطيع اطبقه من الاعدادات **او بدلا منها** نسبة اهلاك» —
+   * فمفتاحان لا مفتاح، ولا يُفرض أحدهما مع الآخر.
+   */
+  check('the material deduction is its own switch, and it refuses anything but yes or no',
+    (await patch('/api/settings',a,{'finance.commission_deducts_material_cost':'نعم'})).status===400);
+  check('and the owner turns it on',
+    (await patch('/api/settings',a,{'finance.commission_deducts_material_cost':'yes'})).status===200);
+
+  /*
+   * والحساب من طرفه إلى طرفه: عملٌ بمئة ألف **دُفع نصفُه**، ونسبة إهلاكٍ عشرة،
+   * ونسبة طبيبٍ أربعون.
+   *
+   * **والنصف مقصود.** فلو دُفعت الفاتورة كاملةً لتساوى المحصَّل والمفوتَر، ولمرّ
+   * الفحص سواءٌ قيس الإهلاك على هذا أو ذاك — وهو فحصٌ يمرّ بالصدفة. وبالنصف
+   * يفترقان: المحصَّل ٥٠٬٠٠٠ والمفوتَر ١٠٠٬٠٠٠.
+   *
+   * فالمتوقَّع ٤٠٪ × (٥٠٬٠٠٠ − ٥٬٠٠٠) = ١٨٬٠٠٠ — لا ١٥٬٠٠٠ التي يعطيها طرحُ
+   * الإهلاك كاملًا من المكتسب، وهو الخطأ الذي كلّف طبيبًا ثلثي عمولته في خصم المختبر.
+   */
+  const orthoService=(await db.listServices(true)).find(one=>one.category==='ortho');
+  check('the catalog has an orthodontic service to price the work with',Boolean(orthoService));
+  const wearPatient=await db.createPatient({fullName:'مريض الإهلاك',phone:'770998877',altPhone:null,gender:'male',birthYear:1995,address:null,medicalAlert:null,note:null});
+  await db.createInvoice({patientId:wearPatient.id,baseCurrency:'YER',discountMinor:0,note:null,createdBy:'shots',
+    items:[{serviceId:orthoService.id,doctorId:doctorParty.id,description:'تركيب تقويم',quantity:1,unitPriceMinor:100000}]});
+  const wearShift=await db.openShift({openedBy:'shots',opening:{YER:0,SAR:0,USD:0}});
+  await db.recordPayment({patientId:wearPatient.id,invoiceId:null,kind:'payment',amountMinor:50000,currency:'YER',baseCurrency:'YER',exchangeRate:1,method:'cash',note:null,createdBy:'shots'});
+  const wearDay=clinicDateString(new Date(),process.env.CLINIC_TIME_ZONE||'Asia/Aden');
+  const wearReport=await (await request(`/api/finance/commissions?from=${wearDay}&to=${wearDay}`,a)).json();
+  const wearRow=wearReport.rows.find(one=>one.doctorId===doctorParty.id);
+  check('the screen says the material rule it computed on',wearReport.deductsMaterialCost===true);
+  check('the doctor earned his percent of what was collected, not of what was billed',
+    wearRow&&wearRow.earnedMinor===20000,`${wearRow&&wearRow.earnedMinor}`);
+  /*
+   * **والإهلاك على المحصَّل لا المفوتَر.**
+   *
+   * فلو قيس على المفوتَر لصار ١٠٬٠٠٠، وصار الطبيب مدينًا بموادّ مريضٍ لم يدفع —
+   * وهو بالضبط ما بُني حساب العمولة كلُّه ليتجنّبه.
+   */
+  check('**the estimated material cost is the rate on what was collected, not on what was billed**',
+    wearRow&&wearRow.materialCostMinor===5000,`${wearRow&&wearRow.materialCostMinor}`);
+  /*
+   * **وحصّته منها بنسبته لا كلُّها** — والفرق بين الرقمين هو الخطأ بعينه.
+   */
+  check('**and his share of it is his percent of it, not all of it**',
+    wearRow&&wearRow.materialShareMinor===2000,`${wearRow&&wearRow.materialShareMinor}`);
+  check('so the net is his percent of (collected − wear), not (his percent of collected) − wear',
+    wearRow&&wearRow.netEarnedMinor===18000,`${wearRow&&wearRow.netEarnedMinor}`);
+
+  /*
+   * ورفعُ النسبة ليس كتابةَ صفر.
+   *
+   * الصفر يقول «هذا العمل بلا موادّ»، والرفع يقول «لم تُحدَّد نسبته» — ويظهر
+   * محصَّلُه في التقرير رقمًا لم يُخصم منه شيء، فيُقرَّر فيه.
+   */
+  check('the admin clears a rate',(await rates(a,{category:'ortho',rate:null})).status===200);
+  check('and clearing removes the row — it does not write a zero',
+    !(await rateList()).some(one=>one.category==='ortho'));
+  const clearedReport=await (await request(`/api/finance/commissions?from=${wearDay}&to=${wearDay}`,a)).json();
+  const clearedRow=clearedReport.rows.find(one=>one.doctorId===doctorParty.id);
+  check('**so nothing is deducted, and the uncharged collection is reported rather than silently zeroed**',
+    clearedRow&&clearedRow.materialShareMinor===0&&clearedRow.unratedCoveredMinor===50000,
+    `${clearedRow&&clearedRow.materialShareMinor} · ${clearedRow&&clearedRow.unratedCoveredMinor}`);
+  if(wearShift) await db.closeShift({id:wearShift.id,closedBy:'shots',counted:{YER:50000,SAR:0,USD:0},note:null});
+  check('and the owner can turn the material deduction back off',
+    (await patch('/api/settings',a,{'finance.commission_deducts_material_cost':'no'})).status===200);
+
   // ── جاهزية النظام: خارطةُ ما ينقص، وهي للمدير وحده ──
   check('readiness denied without a session',(await request('/api/settings/readiness')).status===401);
   // فالبنود تقول كم حسابًا في النظام ومتى آخر نسخة احتياطية وأرمزُ التنصيب حيّ —
