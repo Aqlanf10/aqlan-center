@@ -15,6 +15,7 @@ import { CephStudies } from "@/components/CephStudies";
 import { Prescriptions } from "@/components/Prescriptions";
 import { PatientIntake } from "@/components/PatientIntake";
 import { PatientOrtho } from "@/components/PatientOrtho";
+import { PortalInviteRow } from "@/components/PortalInviteRow";
 
 /**
  * ملف المريض.
@@ -142,6 +143,14 @@ export default function PatientFilePage({ params }: { params: Promise<{ id: stri
             {editing ? "إغلاق التعديل" : "تعديل البيانات"}
           </button>
         </div>
+        {/*
+          * بوّابة المريض — **بُنيت وكانت لا يدلّ عليها شيء.**
+          *
+          * فلا رابطَ في شاشة، ولا زرَّ يُرسلها، ولا سطرَ يقول إنّها موجودة: لا
+          * المالك يراها، ولا المريض يعرف عنوانها. وموضعُها هنا لأنّها تُرسل
+          * لمريضٍ بعينه، وأشيعُ وقتٍ لإرسالها لحظةَ تسجيله وأنت في ملفّه.
+          */}
+        <PortalInviteRow patientNumber={patient.patientNumber} phone={patient.phone} />
       </header>
 
       {/* التنبيه الطبي فوق كل شيء: يُقرأ قبل الإجراء لا بعده. */}

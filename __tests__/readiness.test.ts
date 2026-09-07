@@ -19,6 +19,8 @@ const ready = (over: Partial<ReadinessFacts> = {}): ReadinessFacts => ({
   serviceCount: 30,
   servicesPriced: 30,
   servicesProvisional: 0,
+  patientCount: 40,
+  patientsWithoutPhone: 0,
   lastBackupOn: "2026-09-02",
   setupTokenLive: false,
   openShiftAgeDays: null,
@@ -155,5 +157,51 @@ describe("جاهزية النظام", () => {
       expect(check.why.length, check.key).toBeGreaterThan(20);
       expect(check.detail.length, check.key).toBeGreaterThan(0);
     }
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * بوّابة المرضى
+ *
+ * بُنيت وتعملُ وكان لا شيء في البرنامج يدلّ عليها. ووجودُها في هذه الشاشة نصفُ
+ * الفائدة: هنا يُقرأ ما ينقص قبل التشغيل.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("بوّابة المرضى", () => {
+  it("مرضى بجوالاتهم — البند تمام ويقول أين البوّابة", () => {
+    const item = find(ready(), "portal");
+    expect(item.level).toBe("ok");
+    expect(item.why).toContain("/portal");
+  });
+
+  /*
+   * **ومن لا جوالَ له لا يدخل مهما أُرسل إليه الرابط.**
+   *
+   * فالدخول رقمُ الملف والجوال. وسكوتُ الشاشة عن ذلك يجعل المالك يظنّ البوّابة
+   * معطوبة وهي تعمل — ويبحث في البرنامج عن عطبٍ لا وجود له.
+   */
+  it("وبعضُهم بلا جوال — تحذير، ويقال كم هم", () => {
+    const item = find(ready({ patientCount: 40, patientsWithoutPhone: 7 }), "portal");
+    expect(item.level).toBe("warn");
+    expect(item.detail).toContain("7");
+    expect(item.why).toContain("لا يدخل");
+  });
+
+  it("وكلُّهم بلا جوال — البوّابة لا تعمل لأحد، فهو حجب", () => {
+    expect(find(ready({ patientCount: 12, patientsWithoutPhone: 12 }), "portal").level).toBe("blocked");
+  });
+
+  /*
+   * **ولا مرضى بعدُ ليس حجبًا.**
+   *
+   * فعيادةٌ لم تُسجّل مريضًا بعد ليست معطوبة — وحجبُ البدء بسبب ذلك يقول
+   * «أصلِح شيئًا» ولا شيء يُصلَح. والفرق بين «صفر من صفر» و«صفر من أربعين»
+   * هو الفرق بين بدايةٍ وعطب.
+   */
+  it("ولا مرضى بعدُ ليس حجبًا — عيادةٌ لم تبدأ ليست معطوبة", () => {
+    const item = find(ready({ patientCount: 0, patientsWithoutPhone: 0 }), "portal");
+    expect(item.level).toBe("ok");
+    expect(item.detail).toContain("لا مرضى");
   });
 });
