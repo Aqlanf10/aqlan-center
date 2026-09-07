@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { listMovements, recordAudit, recordMovement } from "@/lib/db";
+import { getSettings, listMovements, recordAudit, recordMovement } from "@/lib/db";
+import { isCurrency, parseAmount } from "@/lib/money";
+import { isAdmin } from "@/lib/roles";
 import { isMovementKind, MOVEMENT_LABEL } from "@/lib/inventory";
 import { requireSession } from "@/lib/session";
 
@@ -50,8 +52,38 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ message: "نوع الحركة غير معروف." }, { status: 400 });
   }
 
+  /*
+   * ثمنُ الوحدة — **للمدير وحده، ومع الإدخال المُشترى وحده.**
+   *
+   * فالثمن يكشف تكاليف المركز كما تكشفها أسعار المختبر، وهو من بابِ ما لا يراه
+   * الاستقبال ولا الطبيب. ومن أرسله بلا صلاحية لا يُحفظ ثمنُه **ولا تُردّ حركتُه**:
+   * الصرف على الكرسي عملٌ سريريّ لا يُوقَف لأنّ حقلًا زائدًا وصل.
+   */
+  let unitCostMinor: number | null = null;
+  if (source.unitCost !== undefined && source.unitCost !== null && source.unitCost !== "") {
+    if (!isAdmin(session.role)) {
+      return NextResponse.json({ message: "ثمن الشراء للمدير وحده." }, { status: 403 });
+    }
+    if (source.kind !== "in" || source.isReturn === true) {
+      return NextResponse.json(
+        { message: "الثمن يُكتب مع الإدخال المُشترى وحده — والصرف والتسوية والردّ تُقوَّم بالمتوسّط." },
+        { status: 400 },
+      );
+    }
+    const settings = await getSettings();
+    const base = settings["finance.base_currency"];
+    if (!isCurrency(base)) {
+      return NextResponse.json({ message: "العملة الأساسية في الإعدادات غير صالحة." }, { status: 500 });
+    }
+    unitCostMinor = parseAmount(String(source.unitCost), base);
+    if (unitCostMinor === null) {
+      return NextResponse.json({ message: "ثمن الوحدة مبلغٌ صحيحٌ غير سالب." }, { status: 400 });
+    }
+  }
+
   try {
     const saved = await recordMovement({
+      unitCostMinor,
       itemId, kind: source.kind, qty: Number(source.qty),
       expiryDate: typeof source.expiryDate === "string" && source.expiryDate ? source.expiryDate : null,
       reason: typeof source.reason === "string" ? source.reason : null,

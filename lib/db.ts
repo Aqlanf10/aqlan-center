@@ -773,6 +773,14 @@ export function ensureSchema(): Promise<void> {
       );
       ALTER TABLE inventory_movements
         ADD COLUMN IF NOT EXISTS is_return BOOLEAN NOT NULL DEFAULT FALSE;
+      -- ثمنُ الوحدة بالوحدة الصغرى للعملة الأساسية، لحظة الشراء.
+      --
+      -- وللإدخال المُشترى وحده: الصرف والتسوية والردّ تُقوَّم بالمتوسّط القائم،
+      -- فثمنٌ يُكتب معها يجعل للبند ثمنين. والقيمة الخالية تعني «لم يُسجَّل ثمن» لا صفرًا:
+      -- صفرٌ يخفض المتوسّط ويجعل مادّةً اشتُريت تبدو مجّانية.
+      ALTER TABLE inventory_movements
+        ADD COLUMN IF NOT EXISTS unit_cost_minor BIGINT
+        CHECK (unit_cost_minor IS NULL OR unit_cost_minor >= 0);
       CREATE INDEX IF NOT EXISTS inventory_movements_item_idx ON inventory_movements (item_id, id);
       CREATE INDEX IF NOT EXISTS inventory_movements_visit_idx
         ON inventory_movements (visit_id, item_id) WHERE visit_id IS NOT NULL;
@@ -7139,6 +7147,7 @@ import {
   stockStatus, validateMovement,
   type ItemCategory, type MovementKind, type StockStatus,
 } from "./inventory";
+import { costNow, type CostedMovement } from "./inventoryCost";
 
 export interface InventoryItem {
   id: number;
@@ -7162,6 +7171,8 @@ export interface InventoryMovement {
   qty: number;
   expiryDate: string | null;
   isReturn: boolean;
+  /** ثمنُ الوحدة يوم الشراء — للإدخال المُشترى وحده، و`null` لما سواه. */
+  unitCostMinor: number | null;
   reason: string | null;
   visitId: number | null;
   patientId: number | null;
@@ -7355,6 +7366,8 @@ export async function recordMovement(input: {
   visitId: number | null; patientId: number | null; actor: string;
   /** ردُّ ما صُرف على هذه الزيارة — لا إدخالٌ جديد. يلزمه `visitId`. */
   isReturn?: boolean;
+  /** ثمنُ الوحدة بالعملة الأساسية — يُقبل مع الإدخال المُشترى وحده. */
+  unitCostMinor?: number | null;
 }): Promise<{ ok: true; id: number; balance: number } | { ok: false; message: string }> {
   await ensureSchema();
   const isReturn = Boolean(input.isReturn);
@@ -7445,14 +7458,19 @@ export async function recordMovement(input: {
 
     const { rows: created } = await client.query<{ id: number }>(
       `INSERT INTO inventory_movements
-         (item_id, kind, qty, expiry_date, reason, visit_id, patient_id, is_return, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+         (item_id, kind, qty, expiry_date, reason, visit_id, patient_id, is_return, created_by,
+          unit_cost_minor)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
       [
         input.itemId, input.kind, Math.abs(input.qty) * (input.kind === "adjust" ? Math.sign(input.qty) : 1),
         // الردّ لا يحمل صلاحية: هو ليس دفعةً جديدة بل رجوعٌ إلى دفعته الأولى.
         input.kind === "in" && !isReturn ? input.expiryDate : null,
         input.reason?.trim() || null,
         input.visitId, input.patientId, isReturn, input.actor,
+        // الثمن للإدخال المُشترى وحده — وما سواه يُقوَّم بالمتوسّط لا بثمنٍ يُكتب معه.
+        input.kind === "in" && !isReturn
+          && typeof input.unitCostMinor === "number" && input.unitCostMinor >= 0
+          ? Math.round(input.unitCostMinor) : null,
       ],
     );
     await client.query("COMMIT");
@@ -7468,8 +7486,8 @@ export async function recordMovement(input: {
 export async function listMovements(itemId: number, limit = 100): Promise<InventoryMovement[]> {
   await ensureSchema();
   const { rows } = await getPool().query(
-    `SELECT id, item_id, kind, qty, expiry_date, is_return, reason, visit_id, patient_id,
-            created_by, created_at
+    `SELECT id, item_id, kind, qty, expiry_date, is_return, unit_cost_minor, reason,
+            visit_id, patient_id, created_by, created_at
        FROM inventory_movements WHERE item_id = $1
       ORDER BY id DESC LIMIT $2`,
     [itemId, Math.min(500, Math.max(1, limit))],
@@ -7481,6 +7499,8 @@ export async function listMovements(itemId: number, limit = 100): Promise<Invent
     qty: Number(row.qty),
     expiryDate: row.expiry_date ? (row.expiry_date as Date).toISOString().slice(0, 10) : null,
     isReturn: Boolean(row.is_return),
+    unitCostMinor: row.unit_cost_minor === null || row.unit_cost_minor === undefined
+      ? null : Number(row.unit_cost_minor),
     reason: (row.reason as string | null) ?? null,
     visitId: (row.visit_id as number | null) ?? null,
     patientId: (row.patient_id as number | null) ?? null,
@@ -8697,4 +8717,52 @@ export async function unpricedServiceCount(): Promise<number> {
     `SELECT COUNT(*) AS n FROM services WHERE is_active AND NOT price_configured`,
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * قيمةُ ما في المخزن — مشتقّةٌ من الحركات كالرصيد.
+ *
+ * والحركات تُقرأ **بترتيب وقوعها** (`id` تصاعديًّا) لأنّ المتوسّط تراكميّ: قلبُ
+ * حركتين يعطي متوسّطًا آخر، وشراءٌ بثمنٍ مرتفع قبل صرفٍ يجعل ذلك الصرف أغلى.
+ * و`listMovements` تقرأ بالعكس (الأحدث أوّلًا) لأنها للعرض — فلا تُستعمل هنا.
+ */
+export async function inventoryValue(): Promise<{
+  itemId: number; name: string; unit: string;
+  qty: number; valueMinor: number; unitCostMinor: number | null;
+}[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    item_id: number; name: string; unit: string;
+    kind: MovementKind; qty: string; is_return: boolean; unit_cost_minor: string | null;
+  }>(
+    `SELECT m.item_id, i.name, i.unit, m.kind, m.qty, m.is_return, m.unit_cost_minor
+       FROM inventory_movements m JOIN inventory_items i ON i.id = m.item_id
+      WHERE i.is_active
+      ORDER BY m.item_id, m.id`,
+  );
+
+  const byItem = new Map<number, { name: string; unit: string; moves: CostedMovement[] }>();
+  for (const row of rows) {
+    let entry = byItem.get(row.item_id);
+    if (!entry) {
+      entry = { name: row.name, unit: row.unit, moves: [] };
+      byItem.set(row.item_id, entry);
+    }
+    entry.moves.push({
+      kind: row.kind,
+      qty: Number(row.qty),
+      isReturn: row.is_return,
+      unitCostMinor: row.unit_cost_minor === null ? null : Number(row.unit_cost_minor),
+    });
+  }
+
+  return [...byItem.entries()].map(([itemId, entry]) => {
+    const state = costNow(entry.moves);
+    return {
+      itemId, name: entry.name, unit: entry.unit,
+      qty: state.qty,
+      valueMinor: Math.round(state.valueMinor),
+      unitCostMinor: state.unitCostMinor === null ? null : Math.round(state.unitCostMinor),
+    };
+  }).sort((one, two) => two.valueMinor - one.valueMinor);
 }

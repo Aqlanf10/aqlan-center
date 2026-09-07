@@ -642,6 +642,55 @@ try {
   check('and the remaining unpriced count comes back with the save',
     typeof pricedBody.unpriced==='number');
 
+  /*
+   * ── تكلفة المخزون ──
+   *
+   * المخزون كان يعرف الكمّيّات ولا يعرف أثمانها، فلا يُعرف كم في الرفّ من مال
+   * ولا كم كلّفت مواد عملٍ بعينه. والثمن يدخل مع الدفعة، والقيمة تُشتقّ منه.
+   */
+  const invItem=await db.createInventoryItem({name:'قفازات الفحص',category:'other',unit:'علبة',minLevel:2,note:null,actor:'shots'});
+  check('the inventory item was created',invItem.ok);
+  const movePath=`/api/inventory/${invItem.id}/movements`;
+  // الثمن يكشف تكاليف المركز — فهو للمدير وحده كأسعار المختبر.
+  check('the purchase price is the admin\'s alone',
+    (await request(movePath,reception,{kind:'in',qty:10,unitCost:'500'},{origin:base})).status===403);
+  check('and the doctor cannot write one either',
+    (await request(movePath,d,{kind:'in',qty:10,unitCost:'500'},{origin:base})).status===403);
+  // لكنّ الصرف على الكرسي عملٌ سريريّ لا يُوقَف: بلا ثمنٍ يمرّ للطبيب.
+  check('but issuing at the chair still works without one — clinical work is not blocked',
+    (await request(movePath,d,{kind:'in',qty:10},{origin:base})).status===201);
+  // والثمن مع الإدخال المُشترى وحده: الصرف والتسوية تُقوَّمان بالمتوسّط.
+  check('a price on an issue is refused — it would give the item two prices',
+    (await request(movePath,a,{kind:'out',qty:1,unitCost:'500'},{origin:base})).status===400);
+  check('the admin buys with a price',
+    (await request(movePath,a,{kind:'in',qty:10,unitCost:'700'},{origin:base})).status===201);
+  /*
+   * وإدخالٌ بلا ثمنٍ **بعد** شراءٍ مسعَّر — وهو الحدُّ الذي يفرّق.
+   *
+   * فالإدخال الأوّل بلا ثمنٍ دخل ولا متوسّط بعد، فيدخل بصفرٍ في الحالين ولا
+   * يُثبت شيئًا. أمّا هذا فيدخل بالمتوسّط القائم (٣٥٠) — ولو حُسب بصفرٍ لخفضه
+   * إلى ٢٣٣، فتبدو مادّةٌ اشتُريت أرخص ممّا كلّفت.
+   */
+  check('a later unpriced entry comes in at the standing average',
+    (await request(movePath,d,{kind:'in',qty:10},{origin:base})).status===201);
+
+  check('the stock value is the admin\'s alone',(await request('/api/inventory/value',reception)).status===403);
+  check('and denied without a session',(await request('/api/inventory/value')).status===401);
+  const value=await (await request('/api/inventory/value',a)).json();
+  const valued=value.items.find(one=>one.itemId===invItem.id);
+  /*
+   * **والإدخال بلا ثمنٍ يدخل بالمتوسّط القائم لا بصفر.**
+   *
+   * عشرةٌ بلا ثمنٍ أوّلًا (ولا متوسّط بعد، فبصفر)، ثمّ عشرةٌ بسبع مئة = ٧٬٠٠٠
+   * على عشرين، فالمتوسّط ٣٥٠. ولو حُسب الإدخال الأوّل بصفرٍ **بعد** الشراء
+   * لخفض المتوسّط — وهو ما يجعل مادّةً اشتُريت تبدو أرخص ممّا كلّفت.
+   */
+  check('the value is derived from the movements, priced and unpriced together',
+    valued&&valued.qty===30&&valued.valueMinor===10500,`${valued&&valued.qty} × ${valued&&valued.valueMinor}`);
+  check('**and the average is not dragged down by an unpriced entry**',
+    valued&&valued.unitCostMinor===350,`${valued&&valued.unitCostMinor}`);
+  check('the response names the currency its numbers are in',typeof value.baseCurrency==='string');
+
   // ── الوصفة الطبية: وثيقةٌ تخرج بيد المريض ──
   const rxPatient=await db.createPatient({fullName:'مريض الوصفة',phone:'770556677',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:'حساسية من البنسلين',note:null});
   const rxPath=`/api/patients/${rxPatient.id}/prescriptions`;
