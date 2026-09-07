@@ -618,6 +618,51 @@ try {
     servicesItem.detail.includes(String(pricedServices))&&servicesItem.detail.includes(String(activeServices)));
 
   /*
+   * ٢ب) بوّابة المرضى — بُنيت وتعمل، وكان لا شيء في البرنامج يدلّ عليها.
+   *
+   * **والرقم المعروض من لا يستطيع الدخول**: الدخول رقمُ الملف والجوال، فمريضٌ
+   * بلا جوالٍ لا يدخل مهما أُرسل إليه الرابط — وسكوتُ الشاشة عن ذلك يجعل المالك
+   * يظنّ البوّابة معطوبة وهي تعمل، فيبحث عن عطبٍ لا وجود له.
+   */
+  /*
+   * ومريضٌ بلا جوال — والفراغ عدمٌ لا نصٌّ فارغ.
+   *
+   * فحقلٌ فُتح ثم أُفرغ يصل نصًّا فارغًا، **و`normalizePatientPhone` تردّه عدمًا
+   * في كل مسار كتابة**. فالعدّ بـ`phone IS NULL` يكفي، وهذا الفحص يُثبت
+   * المقدّمة التي يقوم عليها بدل أن يفترضها: أُنشئ مريضٌ بفراغٍ صريح، ويجب أن
+   * يُقرأ عدمًا في القاعدة. ولو تغيّرت تلك القاعدة يومًا سقط هنا لا في تقريرٍ
+   * يقول إنّ الجميع يقدرون على البوّابة وفيهم من لا يقدر.
+   */
+  const blankPhone=await db.createPatient({fullName:'مريض بجوالٍ فارغ',phone:'   ',altPhone:null,gender:'female',birthYear:1992,address:null,medicalAlert:null,note:null});
+  await db.createPatient({fullName:'مريض بلا جوال',phone:null,altPhone:null,gender:'male',birthYear:1993,address:null,medicalAlert:null,note:null});
+  const blankRow=await db.getPool().query('SELECT phone IS NULL AS isnull FROM patients WHERE id = $1',[blankPhone.id]);
+  check('**a blank phone is stored as none at all** — so counting the phoneless by IS NULL is complete',
+    blankRow.rows[0]?.isnull===true);
+  const allPatients=await countRows('SELECT COUNT(*)::int AS n FROM patients');
+  const phoneless=await countRows("SELECT COUNT(*)::int AS n FROM patients WHERE phone IS NULL OR btrim(phone) = ''");
+  check('and the phoneless are really fewer than everyone — the counts are not the same number',
+    phoneless>0&&phoneless<allPatients,`${phoneless}/${allPatients}`);
+  const portalItem=await item('portal');
+  check('the readiness screen carries the portal at all — it used to be nowhere in the app',
+    Boolean(portalItem));
+  /*
+   * والمقارنة بالنصّ كاملًا لا بـ`includes`.
+   *
+   * فـ«٤١ مريضًا · ٠ بلا جوال» يحوي «١» داخل «٤١»، فيمرّ فحصٌ يبحث عن «١»
+   * وعددُ من لا يدخل صفر. وهو فحصٌ يمرّ بالصدفة — أسوأ من لا فحص.
+   */
+  check('**and it names who cannot get in, not just that a portal exists**',
+    portalItem.detail===`${allPatients} مريضًا · ${phoneless} بلا جوال`,
+    `${portalItem.detail} ≠ ${allPatients} مريضًا · ${phoneless} بلا جوال`);
+  check('and it warns rather than blocks while some of them can still get in',
+    portalItem.level==='warn');
+  // والبوّابة نفسها تُفتح بلا جلسة موظّف: المريض ليس من طاقم المركز.
+  check('the portal itself opens without a staff session — the patient is not staff',
+    (await request('/portal')).status===200);
+  check('but it hands out nothing before the patient logs in',
+    (await request('/api/portal/me')).status===401);
+
+  /*
    * ٣) سعرٌ واحدٌ حُدِّث اليوم لا يُبيّض رفيقَه.
    *
    * شاشة الإعدادات تحفظ الحقول المتغيّرة وحدها، فمفتاح الدولار قد لا يكون كُتب

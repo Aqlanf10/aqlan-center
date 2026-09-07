@@ -8581,6 +8581,8 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
     services: string;
     services_priced: string;
     services_provisional: string;
+    patients_all: string;
+    patients_no_phone: string;
     backup_on: string | null;
     open_shift_days: string | null;
     lab_orders_no_doctor: string;
@@ -8603,6 +8605,13 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
        -- والمسعَّرة وحدها تصلح لزيارة: validateProcedures يردّ ما عداها.
        (SELECT COUNT(*) FROM services WHERE is_active AND price_configured) AS services_priced,
        (SELECT COUNT(*) FROM services WHERE is_active AND price_provisional)  AS services_provisional,
+       -- والدخولُ إلى بوّابة المريض رقمُ ملفّه وجوالُه: بلا جوالٍ لا يدخل أبدًا.
+       --
+       -- و IS NULL وحدها تكفي: normalizePatientPhone تردّ الفراغ عدمًا في كل
+       -- مسار كتابة، فلا يصل النصُّ الفارغ إلى العمود أصلًا — وذلك مُثبَتٌ في
+       -- رحلة الفحص لا مفترَض.
+       (SELECT COUNT(*) FROM patients)                       AS patients_all,
+       (SELECT COUNT(*) FROM patients WHERE phone IS NULL)   AS patients_no_phone,
        -- backup.complete لا backup.download: الثاني يُكتب قبل أوّل بايت،
        -- ويكتبه أرشيفُ الأشعّة وحده أيضًا. والأوّل بعد اكتمال البثّ ولا شيء غيره.
        (SELECT MAX((created_at AT TIME ZONE $1)::date)::text FROM audit_log
@@ -8629,6 +8638,8 @@ export async function readinessFacts(): Promise<ReadinessFacts> {
     serviceCount: Number(row?.services ?? 0),
     servicesPriced: Number(row?.services_priced ?? 0),
     servicesProvisional: Number(row?.services_provisional ?? 0),
+    patientCount: Number(row?.patients_all ?? 0),
+    patientsWithoutPhone: Number(row?.patients_no_phone ?? 0),
     lastBackupOn: row?.backup_on ?? null,
     setupTokenLive: setupTokenIsLive(process.env.SETUP_TOKEN),
     openShiftAgeDays: row?.open_shift_days === null || row?.open_shift_days === undefined
