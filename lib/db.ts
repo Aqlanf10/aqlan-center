@@ -8675,6 +8675,51 @@ export async function expenseBudgetMonth(
 }
 
 /**
+ * تسعير عدّة خدماتٍ في معاملةٍ واحدة — **كلُّها أو لا شيء منها**.
+ *
+ * فنصفُ دليلٍ مسعّرٍ أسوأ من دليلٍ بلا أسعار: شاشة الجاهزية تقول «جاهز» لوجود
+ * مسعّرٍ واحد، ثم يصطدم الاستقبال بغير المسعّر عند أوّل فاتورة. فإمّا أن تُحفظ
+ * الدفعة كلُّها أو تُردّ كلُّها ويبقى الدليل على حاله المعروفة.
+ *
+ * ويُعاد عددُ ما تغيّر فعلًا لا عددُ ما أُرسل: رقمُ خدمةٍ لا وجود له لا يُحدِّث
+ * صفًّا، وقولُ «حُفظ ٨٦» عن ٨٥ يخفي واحدةً بقيت بلا سعر.
+ */
+export async function priceServices(
+  prices: readonly { id: number; priceMinor: number }[],
+): Promise<{ updated: number }> {
+  await ensureSchema();
+  if (prices.length === 0) return { updated: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    let updated = 0;
+    for (const price of prices) {
+      const { rowCount } = await client.query(
+        `UPDATE services SET price_minor = $2, price_configured = TRUE WHERE id = $1`,
+        [price.id, price.priceMinor],
+      );
+      updated += rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+    return { updated };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** كم خدمةً فعّالة بلا سعرٍ مضبوط — الرقم الذي تحجب به شاشة الجاهزية. */
+export async function unpricedServiceCount(): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM services WHERE is_active AND NOT price_configured`,
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
  * قيمةُ ما في المخزن — مشتقّةٌ من الحركات كالرصيد.
  *
  * والحركات تُقرأ **بترتيب وقوعها** (`id` تصاعديًّا) لأنّ المتوسّط تراكميّ: قلبُ

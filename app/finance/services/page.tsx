@@ -37,6 +37,15 @@ export default function ServicesPage() {
   const [price, setPrice] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editPrice, setEditPrice] = useState("");
+  /*
+   * ── جولة التسعير ──
+   *
+   * أعمال المركز أُدخلت بلا أسعار، والخدمة غير المسعّرة تُرفض عند الفوترة وتحجب
+   * شاشةُ الجاهزية البدءَ بسببها. وتسعيرُها واحدةً واحدةً حفظٌ لكلٍّ وذهابٌ وإياب —
+   * ومن يقف في المنتصف يترك نصف الدليل مسعّرًا ونصفه لا.
+   */
+  const [onlyUnpriced, setOnlyUnpriced] = useState(false);
+  const [draft, setDraft] = useState<Record<number, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,14 +92,35 @@ export default function ServicesPage() {
     if (ok) { setName(""); setPrice(""); }
   };
 
+  const unpricedCount = useMemo(
+    () => services.filter((one) => one.isActive && !one.priceConfigured).length, [services]);
+
   const grouped = useMemo(() => {
     const map = new Map<string, Service[]>();
-    for (const service of services) {
+    // وتصفيةُ «غير المسعّرة» على الفعّالة وحدها: المعطّلة لا تُفوتر فلا تحجب البدء.
+    const shown = onlyUnpriced
+      ? services.filter((one) => one.isActive && !one.priceConfigured) : services;
+    for (const service of shown) {
       const key = service.category ?? "بلا تصنيف";
       map.set(key, [...(map.get(key) ?? []), service]);
     }
     return [...map.entries()];
-  }, [services]);
+  }, [services, onlyUnpriced]);
+
+  const drafted = useMemo(
+    () => Object.entries(draft).filter(([, value]) => value.trim() !== ""), [draft]);
+
+  /** يحفظ ما كُتب في الجولة دفعةً واحدة — كلُّه أو لا شيء منه. */
+  const savePass = async () => {
+    const ok = await send(() => fetch("/api/services/prices", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prices: drafted.map(([id, price]) => ({ id: Number(id), price: price.trim() })),
+      }),
+    }));
+    if (ok) { setDraft({}); await load(); }
+  };
 
   return (
     <main className="mx-auto max-w-3xl p-4 pb-24">
@@ -128,6 +158,31 @@ export default function ServicesPage() {
         </div>
       </form>}
 
+      {/* جولة التسعير: الرقم والزرّ فوق القائمة، فمن يفتح الشاشة يعرف كم بقي. */}
+      {canEdit && unpricedCount > 0 ? (
+        <section className="mb-4 rounded-2xl border-2 border-amber-300 bg-amber-50 p-3" aria-label="جولة التسعير">
+          <p className="text-sm font-extrabold text-navy-900">
+            {unpricedCount} {unpricedCount === 1 ? "خدمةً بلا سعر" : "خدمةً بلا أسعار"}
+          </p>
+          <p className="mt-1 text-[11px] font-bold leading-5 text-slate-600">
+            الخدمة بلا سعرٍ تُرفض عند الفوترة، وشاشة الجاهزية تحجب البدء ما دامت كلُّها بلا أسعار.
+            اكتب الأسعار في الحقول ثم احفظها دفعةً واحدة — <span className="text-amber-800">وسعرٌ خاطئ يردّ الدفعة كلَّها</span>،
+            فلا يبقى نصفُ الدليل مسعّرًا ونصفُه لا.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => setOnlyUnpriced((on) => !on)}
+              aria-pressed={onlyUnpriced}
+              className={`rounded-xl px-3 py-1.5 text-xs font-bold ${onlyUnpriced ? "bg-navy-800 text-white" : "border border-slate-300 bg-white text-navy-800"}`}>
+              {onlyUnpriced ? "اعرض الكلّ" : "اعرض غير المسعّرة وحدها"}
+            </button>
+            <button type="button" onClick={() => void savePass()} disabled={busy || drafted.length === 0}
+              className="rounded-xl bg-navy-800 px-3 py-1.5 text-xs font-extrabold text-white disabled:opacity-40">
+              {busy ? "يحفظ…" : `احفظ ${drafted.length} سعرًا`}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       {loading ? (
         <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">جارٍ التحميل…</p>
       ) : services.length === 0 ? (
@@ -143,6 +198,15 @@ export default function ServicesPage() {
                 <li key={service.id} className={`rounded-2xl border p-3 ${service.isActive ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-60"}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="min-w-[8rem] flex-1 truncate text-sm font-extrabold">{service.name}</span>
+                    {/* حقلُ الجولة على غير المسعّرة وحدها — والمسعَّرة تُعدَّل بزرّها كما كانت. */}
+                    {canEdit && !service.priceConfigured && service.isActive && editingId !== service.id ? (
+                      <input
+                        value={draft[service.id] ?? ""}
+                        onChange={(event) => setDraft((current) => ({ ...current, [service.id]: event.target.value }))}
+                        inputMode="decimal" dir="ltr" placeholder="السعر"
+                        aria-label={`سعر ${service.name}`}
+                        className="w-28 rounded-xl border-2 border-amber-300 px-3 py-1.5 text-sm" />
+                    ) : null}
                     {canEdit && editingId === service.id ? (
                       <>
                         <input value={editPrice} onChange={(e) => setEditPrice(e.target.value)}

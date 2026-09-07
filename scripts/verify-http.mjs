@@ -599,6 +599,50 @@ try {
   if(budgetShift) await db.closeShift({id:budgetShift.id,closedBy:'shots',counted:{YER:-20000,SAR:0,USD:0},note:null});
 
   /*
+   * ── جولة تسعير الأعمال ──
+   *
+   * أعمال المركز أُدخلت بلا أسعار، والخدمة غير المسعّرة تُرفض عند الفوترة وتحجب
+   * شاشةُ الجاهزية البدء. وتسعيرُها واحدةً واحدةً ٨٦ ذهابًا وإيابًا.
+   */
+  const priceOne=await db.createService({name:'تسعير أ',category:'عام',priceMinor:0});
+  const priceTwo=await db.createService({name:'تسعير ب',category:'عام',priceMinor:0});
+  // وغيرُ المسعّرة هي ما يُنشئه استيراد الدليل (`price_configured` زائفة) — لا ما سعرُه صفر.
+  await db.getPool().query('UPDATE services SET price_configured = FALSE WHERE id = ANY($1::int[])',
+    [[priceOne.id,priceTwo.id]]);
+  const bulk=(cookie,prices)=>fetch(base+'/api/services/prices',{method:'PATCH',headers:{cookie,'content-type':'application/json',origin:base},body:JSON.stringify({prices})});
+  check('bulk pricing is denied without a session',(await bulk('',[{id:priceOne.id,price:'100'}])).status===401);
+  check('and the reception cannot price in bulk either',(await bulk(reception,[{id:priceOne.id,price:'100'}])).status===403);
+  check('nor the doctor',(await bulk(d,[{id:priceOne.id,price:'100'}])).status===403);
+
+  /*
+   * **وسعرٌ خاطئ يردّ الدفعة كلَّها.**
+   *
+   * فنصفُ دليلٍ مسعّرٍ أسوأ من دليلٍ بلا أسعار: الجاهزية تقول «جاهز» لوجود مسعّرٍ
+   * واحد، ثم يصطدم الاستقبال بغير المسعّر عند أوّل فاتورة.
+   */
+  const rejected=await bulk(a,[{id:priceOne.id,price:'5000'},{id:priceTwo.id,price:'ليس رقمًا'}]);
+  check('a bad price rejects the whole batch',rejected.status===400);
+  // والرسالة تسمّي صاحبه: «سطرٌ ما» في ٨٦ سطرًا لا يُبحث عنه.
+  check('and names which service it was',(await rejected.json()).message.includes('تسعير ب'));
+  // ولا يُحفظ الأوّل: لو حُفظ لكان نصفُ الدفعة قد مرّ.
+  const afterReject=(await db.listServices(true)).find(one=>one.id===priceOne.id);
+  check('**and nothing from it was saved** — not even the row before the bad one',
+    afterReject&&afterReject.priceConfigured===false);
+
+  check('zero is refused — a service billed at nothing is not a price',
+    (await bulk(a,[{id:priceOne.id,price:'0'}])).status===400);
+  const priced=await bulk(a,[{id:priceOne.id,price:'5000'},{id:priceTwo.id,price:'7500'}]);
+  check('the admin prices the batch',priced.status===200);
+  const pricedBody=await priced.json();
+  // ويُقال ما تغيّر فعلًا لا ما أُرسل.
+  check('and it reports what actually changed',pricedBody.updated===2&&pricedBody.sent===2);
+  const afterPricing=await db.listServices(true);
+  check('both are now configured',
+    afterPricing.filter(one=>[priceOne.id,priceTwo.id].includes(one.id)).every(one=>one.priceConfigured));
+  check('and the remaining unpriced count comes back with the save',
+    typeof pricedBody.unpriced==='number');
+
+  /*
    * ── تكلفة المخزون ──
    *
    * المخزون كان يعرف الكمّيّات ولا يعرف أثمانها، فلا يُعرف كم في الرفّ من مال
