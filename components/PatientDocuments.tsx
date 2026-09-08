@@ -7,6 +7,7 @@ import { clinicDateString } from "@/lib/schedule";
 import { useSession } from "./SessionProvider";
 import { isAdmin } from "@/lib/roles";
 import { CephTracer } from "./CephTracer";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * الأشعة والمستندات.
@@ -38,7 +39,8 @@ const KINDS = Object.keys(KIND_LABEL) as DocumentKind[];
 export function PatientDocuments({ patientId }: { patientId: number }) {
   const session = useSession();
   const admin = isAdmin(session?.role);
-  const today = clinicDateString(new Date(), "Asia/Aden");
+  const clinicZone = useClinicTimeZone();
+  const today = clinicDateString(new Date(), clinicZone);
 
   const [documents, setDocuments] = useState<PatientDocument[]>([]);
   const [ready, setReady] = useState(true);

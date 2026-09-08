@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader, StatCard as Stat } from "@/components/PageHeader";
-import { useClinicName } from "@/components/SettingsProvider";
+import { useClinicName, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDate } from "@/lib/reminders";
 import { toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
@@ -57,7 +57,8 @@ const DUE_STYLE: Record<OrthoDue, string> = {
 
 export default function OrthoFollowUpPage() {
   const clinicName = useClinicName();
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const [cases, setCases] = useState<FollowUp[]>([]);
   const [filter, setFilter] = useState<OrthoFilter>("overdue");
   const [loading, setLoading] = useState(true);

@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join,resolve,sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,7 @@ import { hashPassword } from '../lib/auth.ts';
 import { addDays, clinicDateString } from '../lib/schedule.ts';
 import { PROVISIONAL_PRICES } from '../lib/provisionalPrices.ts';
 import { LAB_WORK_CATALOG } from '../lib/labWorkCatalog.ts';
+import { CLINIC_ZONE_FALLBACK } from '../lib/clinicZone.ts';
 const original=process.env.DATABASE_URL;if(!original)throw Error('DATABASE_URL required');
 const name=`http_check_${Date.now()}`;const target=new URL(original);target.pathname=`/${name}`;
 const admin=new Client(pgConnection(original));await admin.connect();await admin.query(`CREATE DATABASE ${name}`);
@@ -261,7 +263,7 @@ try {
    * جديد ويُنتظر البحث ويُختار من المتشابهين — والطابور خلفه.
    */
   const arrivalPatient=await db.createPatient({fullName:'مريض الموعد',phone:'770334455',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:null,note:null});
-  const arrivalDay=clinicDateString(new Date(),process.env.CLINIC_TIME_ZONE||'Asia/Aden');
+  const arrivalDay=clinicDateString(new Date(),process.env.CLINIC_TIME_ZONE || CLINIC_ZONE_FALLBACK);
   const booking=await db.createAppointment({patientId:arrivalPatient.id,date:arrivalDay,time:'09:00',durationMinutes:30,note:null});
   check('the day list is readable by anyone with a session — reception runs the queue',
     (await request(`/api/appointments?date=${arrivalDay}`,reception)).status===200);
@@ -579,7 +581,7 @@ try {
     items:[{serviceId:orthoService.id,doctorId:doctorParty.id,description:'تركيب تقويم',quantity:1,unitPriceMinor:100000}]});
   const wearShift=await db.openShift({openedBy:'shots',opening:{YER:0,SAR:0,USD:0}});
   await db.recordPayment({patientId:wearPatient.id,invoiceId:null,kind:'payment',amountMinor:50000,currency:'YER',baseCurrency:'YER',exchangeRate:1,method:'cash',note:null,createdBy:'shots'});
-  const wearDay=clinicDateString(new Date(),process.env.CLINIC_TIME_ZONE||'Asia/Aden');
+  const wearDay=clinicDateString(new Date(),process.env.CLINIC_TIME_ZONE || CLINIC_ZONE_FALLBACK);
   const wearReport=await (await request(`/api/finance/commissions?from=${wearDay}&to=${wearDay}`,a)).json();
   const wearRow=wearReport.rows.find(one=>one.doctorId===doctorParty.id);
   check('the screen says the material rule it computed on',wearReport.deductsMaterialCost===true);
@@ -728,7 +730,7 @@ try {
    * واحد — وهو الشرط الذي كُتب البند لأجله. وقسمةُ الثواني على ٨٦٤٠٠ كانت
    * تعطيها صفرًا فتُسقط ذكرها.
    */
-  const zone=process.env.CLINIC_TIME_ZONE||'Asia/Aden';
+  const zone=process.env.CLINIC_TIME_ZONE || CLINIC_ZONE_FALLBACK;
   await db.getPool().query(
     `INSERT INTO cashier_shifts (opened_by, opened_at)
      VALUES ('admin', ((((NOW() AT TIME ZONE $1)::date - 1) + TIME '23:59:59') AT TIME ZONE $1))`,[zone]);
@@ -1121,6 +1123,51 @@ try {
   // ── التثبيت على الجهاز: ملفاته تُطلب قبل الدخول وبلا كوكي ──
   const manifest=await request('/manifest.webmanifest');
   check('manifest served without a session — the browser asks for it before anyone logs in',manifest.status===200);
+
+  /*
+   * ── كلُّ شاشةٍ تُفتح فعلًا ──
+   *
+   * أُضيف هذا بعد عطبٍ مرّ من ثلاث بوّابات: `tsc` نظيف، و٧٨٠ اختبارًا تمرّ،
+   * و`next build` ينجح — **وشاشةٌ لا تُفتح**. فنداءُ خُطّافٍ في نطاق الوحدة
+   * صحيحٌ نحويًّا ويُبنى، ثمّ يسقط عند أوّل تصيير.
+   *
+   * والقائمة **تُشتقّ من المجلّد لا تُكتب بيد**: شاشةٌ تُضاف غدًا تُفحص بلا أن
+   * يتذكّرها أحد. ومن يكتبها بيده ينسى الجديدة — وهي بالضبط الأرجحُ عطبًا.
+   *
+   * وذواتُ المُعرّفات (`[id]`) تُستثنى: تحتاج رقمًا حقيقيًّا، ومسارُها مفحوصٌ
+   * في مواضعه من هذه الرحلة.
+   */
+  const screens=[];
+  const walkScreens=(dir,route)=>{
+    for(const entry of readdirSync(dir,{withFileTypes:true})){
+      if(entry.isDirectory()){
+        if(entry.name.startsWith('[')||entry.name==='api') continue;
+        // مجموعات المسارات `(name)` لا تظهر في العنوان.
+        const next=entry.name.startsWith('(')?route:`${route}/${entry.name}`;
+        walkScreens(join(dir,entry.name),next);
+      } else if(entry.name==='page.tsx') screens.push(route||'/');
+    }
+  };
+  walkScreens(fileURLToPath(new URL('../app',import.meta.url)),'');
+  /*
+   * والدخول والتنصيب والبوّابة والحجز والعرض لها فحوصها الخاصّة — هذه لشاشات
+   * الموظّفين. و`/print/ceph-compare` وثيقةٌ لا شاشة: تُطلب بمعاملات دراستين،
+   * وبلا معاملات تردّ ٤٠٤ بحقّ — وهي مفحوصةٌ في موضعها من هذه الرحلة.
+   */
+  const staffScreens=screens
+    .filter(one=>!['/login','/setup','/portal','/book','/display'].includes(one))
+    .filter(one=>!one.startsWith('/print/'))
+    .sort();
+  check('the walk really found the clinic screens — an empty list would pass vacuously',
+    staffScreens.length>=15&&staffScreens.includes('/'),`${staffScreens.length}`);
+  const broken=[];
+  for(const route of staffScreens){
+    const page=await request(route,a);
+    if(page.status!==200) broken.push(`${route} → ${page.status}`);
+  }
+  check('**every clinic screen actually renders** — a build that succeeds is not a page that opens',
+    broken.length===0,broken.join(' · '));
+
   const manifestBody=await manifest.json();
   check('manifest names the icons Android asks for',['192x192','512x512'].every(size=>manifestBody.icons.some(icon=>icon.sizes===size))&&manifestBody.icons.some(icon=>icon.purpose==='maskable'));
   check('manifest opens the app full screen at the day screen',manifestBody.display==='standalone'&&manifestBody.start_url==='/'&&manifestBody.dir==='rtl');

@@ -2,6 +2,7 @@
 
 import { createContext, useContext } from "react";
 import { SETTING_DEFAULTS, chairCount, type SettingsMap } from "@/lib/settings";
+import { CLINIC_ZONE_FALLBACK } from "@/lib/clinicZone";
 
 /**
  * الإعدادات في متناول كل صفحة بلا طلب شبكة.
@@ -12,11 +13,30 @@ import { SETTING_DEFAULTS, chairCount, type SettingsMap } from "@/lib/settings";
  */
 const SettingsContext = createContext<Partial<SettingsMap>>({});
 
-export function SettingsProvider({ value, children }: {
+/**
+ * منطقةُ توقيت العيادة كما ضُبطت في النشر.
+ *
+ * وهي ليست «إعدادًا» يُحرّره المالك بل ضبطُ نشر، فلها سياقُها لا مفتاحٌ في
+ * جدول الإعدادات. والتخطيط الجذري يمرّرها من `CLINIC_TIME_ZONE` نفسها التي
+ * يحسب بها الخادم — فلا ينحرف ما تراه الشاشة عمّا يحسبه الخادم.
+ */
+const ClinicZoneContext = createContext<string>(CLINIC_ZONE_FALLBACK);
+
+export function SettingsProvider({ value, timeZone, children }: {
   value: Partial<SettingsMap>;
+  timeZone?: string;
   children: React.ReactNode;
 }) {
-  return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
+  return (
+    <ClinicZoneContext.Provider value={timeZone || CLINIC_ZONE_FALLBACK}>
+      <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
+    </ClinicZoneContext.Provider>
+  );
+}
+
+/** منطقةُ توقيت العيادة — تُقرأ ولا تُكتب حرفيًّا في شاشة. */
+export function useClinicTimeZone(): string {
+  return useContext(ClinicZoneContext);
 }
 
 export function useSettings(): Partial<SettingsMap> {

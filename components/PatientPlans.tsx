@@ -16,6 +16,7 @@ import { useSetting } from "./SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import { canHandleMoney } from "@/lib/roles";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * خطط علاج المريض.
@@ -368,7 +369,8 @@ function NewPlanForm({ patientId, base, busy, mode, onSaved, onError }: {
   onSaved: () => void; onError: (message: string | null) => void;
 }) {
   const clinical = mode === "clinical";
-  const today = clinicDateString(new Date(), "Asia/Aden");
+  const clinicZone = useClinicTimeZone();
+  const today = clinicDateString(new Date(), clinicZone);
   const [title, setTitle] = useState(clinical ? "خطة علاج ترميمي" : "تقويم ثابت — فكّان");
   const [total, setTotal] = useState("");
   const [count, setCount] = useState("12");
@@ -604,7 +606,8 @@ function ConsentForm({ plan, base, onDone, onError }: {
   plan: Plan; base: Currency; onDone: () => void; onError: (message: string | null) => void;
 }) {
   const session=useSession();
-  const today = clinicDateString(new Date(), "Asia/Aden");
+  const clinicZone = useClinicTimeZone();
+  const today = clinicDateString(new Date(), clinicZone);
   const [note, setNote] = useState("توقيع ورقي محفوظ بالملف");
   const [split, setSplit] = useState(false);
   const [count, setCount] = useState("6");

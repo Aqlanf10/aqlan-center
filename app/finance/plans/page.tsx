@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { installmentReminderText, type PlanStatus } from "@/lib/plans";
-import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { useClinicName, useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import { PageHeader } from "@/components/PageHeader";
@@ -39,7 +39,8 @@ export default function PlansPage() {
   const baseSetting = useSetting("finance.base_currency");
   const clinicName = useClinicName();
   const clinicPhone = useSetting("clinic.phone");
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const [plans, setPlans] = useState<Plan[]>([]);
   const [base, setBase] = useState<Currency>(isCurrency(baseSetting) ? baseSetting : "YER");

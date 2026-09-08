@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney, isCurrency, type Currency } from "@/lib/money";
-import { useSetting } from "@/components/SettingsProvider";
+import { useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 
@@ -31,7 +31,8 @@ interface CommissionRow {
 
 export default function CommissionsPage() {
   const baseSetting = useSetting("finance.base_currency");
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const monthStart = `${today.slice(0, 7)}-01`;
 
   const [base, setBase] = useState<Currency>(isCurrency(baseSetting) ? baseSetting : "YER");

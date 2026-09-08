@@ -11,7 +11,7 @@ import {
   type Visit,
   type WaitLevel,
 } from "@/lib/flow";
-import { useChairCount, useClinicName, useSetting } from "@/components/SettingsProvider";
+import { useChairCount, useClinicName, useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { clinicDateString, clinicTimeString, sessionAfterWeeks, type Appointment } from "@/lib/schedule";
 import { expectedArrivals, isLate } from "@/lib/arrivals";
 import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
@@ -36,8 +36,6 @@ interface PatientMatch {
  * دقيقة: اكتب اسمًا، اضغط «وصل»، ثم اضغط كرسيًا. لا قوائم ولا إعدادات ولا تدريب.
  */
 
-/** توقيت العيادة — كبقيّة الشاشات، ومنه «اليوم» و«الآن». */
-const CLINIC_TZ = "Asia/Aden";
 
 /**
  * تاريخ اليوم بتوقيت العيادة.
@@ -50,8 +48,8 @@ const CLINIC_TZ = "Asia/Aden";
  * منتصف الليل يعرض مواعيد أمس ويحجز لغدٍ في السطر نفسه. فوُحِّدا على توقيت
  * العيادة، وهو ما تفعله كل شاشةٍ أخرى في البرنامج.
  */
-function localToday(): string {
-  return clinicDateString(new Date(), CLINIC_TZ);
+function localToday(clinicZone: string): string {
+  return clinicDateString(new Date(), clinicZone);
 }
 
 /**
@@ -108,6 +106,7 @@ export default function FlowBoard() {
   const [nextPhone, setNextPhone] = useState("");
   const [nextBooked, setNextBooked] = useState<{ link: string | null; whenText: string } | null>(null);
   const inFlight = useRef(false);
+  const clinicZone = useClinicTimeZone();
   /*
    * مواعيدُ اليوم — **وكانت الشاشة لا تعرفها إطلاقًا.**
    *
@@ -134,7 +133,7 @@ export default function FlowBoard() {
        * أخرى كان سيطلب مواعيد يومٍ آخر ويعرض قائمةً فارغة بلا سبب ظاهر.
        */
       try {
-        const day = clinicDateString(new Date(), CLINIC_TZ);
+        const day = clinicDateString(new Date(), clinicZone);
         const booked = await fetch(`/api/appointments?date=${day}`, { cache: "no-store" });
         if (!booked.ok) throw new Error("تعذّر تحميل مواعيد اليوم.");
         setAppointments((await booked.json()) as Appointment[]);
@@ -177,7 +176,8 @@ export default function FlowBoard() {
    * معروضًا بعد جلوسه على الكرسي، ولا شيء يكشف ذلك إلّا عينُ من يقرأ.
    */
   const expected = useMemo(
-    () => expectedArrivals(appointments, clinicTimeString(now, CLINIC_TZ)), [appointments, now]);
+    () => expectedArrivals(appointments, clinicTimeString(now, clinicZone)),
+    [appointments, now, clinicZone]);
 
   const waiting = useMemo(() => waitingRows(visits, now), [visits, now]);
   const chairs = useMemo(() => chairRows(CHAIR_COUNT, visits, now), [visits, now]);
@@ -279,7 +279,7 @@ export default function FlowBoard() {
     setJustFinished(visit);
     setNextPhone(visit.patientPhone ?? "");
     // أربعة أسابيع هي دورة متابعة التقويم المعتادة، وهي الاختيار الأكثر تكرارًا.
-    setNextDate(sessionAfterWeeks(localToday(), 4));
+    setNextDate(sessionAfterWeeks(localToday(clinicZone), 4));
     setNextTime("10:00");
     setNextDuration(30);
   }, [act]);
@@ -450,7 +450,7 @@ export default function FlowBoard() {
           <h2 className="text-sm font-bold">الجلسة القادمة لـ {justFinished.patientName}</h2>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {FOLLOW_UP_WEEKS.map((option) => {
-              const candidate = sessionAfterWeeks(localToday(), option.weeks);
+              const candidate = sessionAfterWeeks(localToday(clinicZone), option.weeks);
               return (
                 <button
                   key={option.weeks}

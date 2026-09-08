@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CURRENCIES, CURRENCY_LABEL, formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { EXPENSE_CATEGORIES, EXPENSE_CATEGORY_LABEL, type ExpenseCategory } from "@/lib/expenses";
-import { useSetting } from "@/components/SettingsProvider";
+import { useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import { PageHeader } from "@/components/PageHeader";
@@ -34,7 +34,8 @@ interface Summary {
 export default function FinanceReportsPage() {
   const baseSetting = useSetting("finance.base_currency");
   const base: Currency = isCurrency(baseSetting) ? baseSetting : "YER";
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const monthStart = `${today.slice(0, 7)}-01`;
 
   const [from, setFrom] = useState(today);

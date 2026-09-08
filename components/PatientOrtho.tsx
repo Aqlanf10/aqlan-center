@@ -10,6 +10,7 @@ import {
 } from "@/lib/ortho";
 import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * ملفّ التقويم.
@@ -60,7 +61,8 @@ function daysText(days: number): string {
 }
 
 export function PatientOrtho({ patientId }: { patientId: number }) {
-  const today = clinicDateString(new Date(), "Asia/Aden");
+  const clinicZone = useClinicTimeZone();
+  const today = clinicDateString(new Date(), clinicZone);
   const [cases, setCases] = useState<OrthoCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

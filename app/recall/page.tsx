@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { useClinicName, useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import {
@@ -36,7 +36,8 @@ export default function RecallPage() {
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
 
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const load = useCallback(async (targetWeeks: number, showSpinner = false) => {
     if (showSpinner) setLoading(true);
