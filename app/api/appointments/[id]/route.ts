@@ -42,6 +42,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       if (!updated) return NextResponse.json({ message: "الموعد غير موجود." }, { status: 404 });
       return NextResponse.json(updated);
     }
+    /*
+     * إغلاقُ موعدٍ مضى: حضر صاحبُه ولم يُسجَّل وصولُه.
+     *
+     * **ولا تُفتح له زيارةٌ بأثرٍ رجعيّ.** فـ`arrive` تُنشئ صفًّا في لوحة اليوم،
+     * وزيارةٌ تُفتح اليوم عن عملٍ وقع الأسبوع الماضي تدخل تقرير اليوم وتُحسب في
+     * عمولة يومه — فيُصلَح دفترٌ بإفساد آخر. وهذا يُغلق الموعد وحده.
+     */
+    if (action === "done") {
+      const updated = await setAppointmentStatus(id, "done");
+      if (!updated) return NextResponse.json({ message: "الموعد غير موجود." }, { status: 404 });
+      return NextResponse.json(updated);
+    }
     return NextResponse.json({ message: "إجراء غير معروف." }, { status: 400 });
   } catch {
     return NextResponse.json({ message: "تعذّر تنفيذ الإجراء. أعد المحاولة." }, { status: 500 });

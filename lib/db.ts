@@ -1818,6 +1818,32 @@ const APPOINTMENT_SELECT = `
          a.patient_confirmed_at
     FROM appointments a JOIN patients p ON p.id = a.patient_id`;
 
+/**
+ * المواعيد التي مضت ولم يُفصل فيها — لشاشة المتابعة.
+ *
+ * وهي الثغرة التي يتراكم فيها الغياب: موعدٌ يمرّ يومُه ولا يُسجَّل وصولُ صاحبه
+ * ولا غيابُه يبقى `booked` أبدًا — ليس في قائمة اليوم (تاريخُه مضى)، ولا في
+ * `listMissedAppointments` (تختار `no_show` وحدها). فلا يُتّصل بصاحبه، ولا
+ * يُعدّ غيابُه في تقرير.
+ *
+ * والحدُّ الأدنى للتاريخ يمنع مسحًا لا نهاية له على قاعدةٍ تكبر: من مضى على
+ * موعده أكثرُ من ذلك لم يعد استدعاؤه متابعةً بل مبيعات، وقرارُه للمالك في
+ * تقريرٍ لا في طابور عمل اليوم.
+ */
+export async function listOpenAppointments(
+  today: string, sinceDate: string, limit = 200,
+): Promise<Appointment[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<AppointmentRow>(
+    `${APPOINTMENT_SELECT} WHERE a.status = 'booked'
+        AND a.scheduled_date < $1::date AND a.scheduled_date >= $2::date
+      ORDER BY a.scheduled_date ASC, a.scheduled_time ASC
+      LIMIT $3`,
+    [today, sinceDate, limit],
+  );
+  return rows.map(toAppointment);
+}
+
 export async function listAppointmentsByDate(date: string): Promise<Appointment[]> {
   await ensureSchema();
   const { rows } = await getPool().query<AppointmentRow>(

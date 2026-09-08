@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import {
+  CLINIC_TIME_ZONE,
   listLapsedPatients,
   listMissedAppointments,
+  listOpenAppointments,
   markAppointmentFollowedUp,
   markPatientRecalled,
 } from "@/lib/db";
+import { openAppointments, OPEN_LOOKBACK_DAYS } from "@/lib/openAppointments";
 import { LAPSE_OPTIONS } from "@/lib/recall";
+import { addDays, clinicDateString } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -20,11 +24,20 @@ export async function GET(request: Request) {
   const weeks = (LAPSE_OPTIONS as readonly number[]).includes(requested) ? requested : 6;
 
   try {
-    const [missed, lapsed] = await Promise.all([
+    /*
+     * و«اليوم» بتوقيت العيادة لا بتوقيت الخادم.
+     *
+     * فموعدُ الأمس يصير «معلّقًا» بعد منتصف ليل تعز لا بعد منتصف ليل غرينتش —
+     * وبينهما ثلاث ساعات يظهر فيها موعدُ اليوم كأنّه فات.
+     */
+    const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
+    const [missed, lapsed, stale] = await Promise.all([
       listMissedAppointments(),
       listLapsedPatients(weeks),
+      listOpenAppointments(today, addDays(today, -OPEN_LOOKBACK_DAYS)),
     ]);
-    return NextResponse.json({ missed, lapsed, weeks });
+    // والتصفية والترتيب في المنطق الخالص — لا يُكرَّران في SQL وفي الشاشة.
+    return NextResponse.json({ missed, lapsed, weeks, open: openAppointments(stale, today) });
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل قائمة المتابعة." }, { status: 500 });
   }

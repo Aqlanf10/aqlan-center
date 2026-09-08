@@ -300,6 +300,71 @@ try {
   check('and the board did not grow again',
     (await (await request('/api/visits',a)).json()).length===visitsAfter.length);
 
+  /*
+   * ── مواعيد مضت ولم تُغلَق ──
+   *
+   * مشكلة المالك الثانية «تراكم المواعيد». وموعدٌ يمرّ يومُه ولا يُسجَّل وصولُ
+   * صاحبه ولا غيابُه يبقى `booked` **أبدًا**: ليس في قائمة اليوم (تاريخُه مضى)،
+   * وليس في المتغيّبين (تختار `no_show` وحدها) — فلا يُتّصل بصاحبه ولا يُعدّ
+   * غيابُه. وهو بعينه ما خافه المالك: «بدي تتشوه سمعتنا أنه ما في اهتمام».
+   */
+  const stalePatient=await db.createPatient({fullName:'مريض الموعد المعلّق',phone:'770665544',altPhone:null,gender:'female',birthYear:1988,address:null,medicalAlert:null,note:null});
+  const staleDay=addDays(arrivalDay,-5);
+  const staleBooking=await db.createAppointment({patientId:stalePatient.id,date:staleDay,time:'11:00',durationMinutes:30,note:null});
+  const recallFeed=async cookie=>(await (await request('/api/recall',cookie)).json());
+
+  // **وقبل الإصلاح كان لا يظهر في شيء** — والفحص يُثبت أنّه يظهر الآن.
+  const feedBefore=await recallFeed(a);
+  check('a booking whose day passed shows as undecided',
+    feedBefore.open.some(one=>one.appointmentId===staleBooking.id));
+  check('and it says how long it has been waiting for a decision',
+    feedBefore.open.find(one=>one.appointmentId===staleBooking.id)?.daysAgo===5,
+    `${feedBefore.open.find(one=>one.appointmentId===staleBooking.id)?.daysAgo}`);
+  /*
+   * **ولا يظهر في المتغيّبين بعد** — وهذا هو العطب الذي يُصلحه هذا القسم.
+   *
+   * فما دام معلّقًا لا يدخل قائمة الاتصال، ولو ظهر فيها لكان النظام قد **زعم**
+   * غيابًا لا يعرفه.
+   */
+  check('**and it is not called a no-show yet — nobody has decided that**',
+    !feedBefore.missed.some(one=>one.id===staleBooking.id));
+  // وموعدُ اليوم ليس معلّقًا: يومُه لم ينتهِ وصاحبُه قد يصل بعد ساعة.
+  check("and today's own booking is not listed as undecided",
+    !feedBefore.open.some(one=>one.scheduledDate===arrivalDay));
+
+  const close=(cookie,id,action)=>fetch(base+`/api/appointments/${id}`,{method:'PATCH',headers:{cookie,'content-type':'application/json',origin:base},body:JSON.stringify({action})});
+  check('closing it is denied without a session',(await close('',staleBooking.id,'no_show')).status===401);
+
+  /*
+   * **و«لم يحضر» تُدخله قائمة الاتصال** — وهذا هو ربط الحلقة كلِّه.
+   */
+  const visitsBeforeClose=(await (await request('/api/visits',a)).json()).length;
+  check('the reception decides he did not come',(await close(reception,staleBooking.id,'no_show')).status===200);
+  const feedAfter=await recallFeed(a);
+  check('**so he enters the call list** — which is the whole point',
+    feedAfter.missed.some(one=>one.id===staleBooking.id));
+  check('and he leaves the undecided list',
+    !feedAfter.open.some(one=>one.appointmentId===staleBooking.id));
+
+  /*
+   * **و«حضر ولم يُسجَّل» لا تفتح زيارةً بأثرٍ رجعيّ.**
+   *
+   * فزيارةٌ تُفتح اليوم عن عملٍ وقع الأسبوع الماضي تدخل تقرير اليوم وتُحسب في
+   * عمولة يومه — فيُصلَح دفترٌ بإفساد آخر.
+   */
+  const other=await db.createAppointment({patientId:stalePatient.id,date:addDays(arrivalDay,-3),time:'12:00',durationMinutes:30,note:null});
+  check('the reception decides he did come but was not recorded',
+    (await close(reception,other.id,'done')).status===200);
+  check('**and no visit is opened for a day that has passed**',
+    (await (await request('/api/visits',a)).json()).length===visitsBeforeClose,
+    `${visitsBeforeClose}`);
+  const feedFinal=await recallFeed(a);
+  check('and it leaves the undecided list without entering the call list',
+    !feedFinal.open.some(one=>one.appointmentId===other.id)
+    &&!feedFinal.missed.some(one=>one.id===other.id));
+  check('an unknown action is still refused',
+    (await close(a,other.id,'لا إجراء')).status===400);
+
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
 
