@@ -116,6 +116,8 @@ export default function FlowBoard() {
    * المواعيد، لكنّها في شاشةٍ أخرى — فتنتقل الاستقبال بين شاشتين في أزحم لحظة.
    */
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  /** أتعذّر آخرُ تحديثٍ للمواعيد؟ — فتُعرَض القائمة القديمة موسومةً لا مُفرَّغة. */
+  const [arrivalsError, setArrivalsError] = useState(false);
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
@@ -134,8 +136,22 @@ export default function FlowBoard() {
       try {
         const day = clinicDateString(new Date(), CLINIC_TZ);
         const booked = await fetch(`/api/appointments?date=${day}`, { cache: "no-store" });
-        setAppointments(booked.ok ? ((await booked.json()) as Appointment[]) : []);
-      } catch { setAppointments([]); }
+        if (!booked.ok) throw new Error("تعذّر تحميل مواعيد اليوم.");
+        setAppointments((await booked.json()) as Appointment[]);
+        setArrivalsError(false);
+      } catch {
+        /*
+         * **وفشلُ التحميل يُقال ولا يُفرَّغ.**
+         *
+         * كان يُكتب مصفوفةً فارغة، والقسم يختفي عند الفراغ — فتقرأ الاستقبال
+         * «لا أحد يُنتظَر اليوم» وعشرةٌ منتظَرون. وهو عطلٌ صامت بأسوأ صوره:
+         * الشاشة تبدو سليمة وتقول عكس الحقيقة.
+         *
+         * فتبقى آخرُ قائمةٍ نجحت — وهي أقرب إلى الصواب من الفراغ — ويُقال فوقها
+         * إنّها قديمة، فيُعرَف أنّها لا تُحدَّث ولا يُبنى عليها قرارُ إغلاق.
+         */
+        setArrivalsError(true);
+      }
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
@@ -651,11 +667,18 @@ export default function FlowBoard() {
         * ويختفي القسم كلُّه حين لا أحد يُنتظَر: عنوانٌ فوق فراغٍ في شاشةٍ مزدحمة
         * يأخذ سطرًا ولا يقول شيئًا.
         */}
-      {expected.length > 0 ? (
+      {expected.length > 0 || arrivalsError ? (
         <section className="mb-5" aria-label="مُنتظَرون اليوم">
           <h2 className="mb-2 text-sm font-bold">
             مُنتظَرون اليوم ({expected.length})
           </h2>
+          {/* والتحذير فوق القائمة لا تحتها: من يقرأ الأسماء يقرأ أوّلًا أنّها قديمة. */}
+          {arrivalsError ? (
+            <p role="status" className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-900">
+              تعذّر تحديث مواعيد اليوم — هذه آخر قائمة وصلت، وقد لا تكون كاملة.
+              {expected.length === 0 ? " ولا تعني أنّ اليوم بلا مواعيد." : ""}
+            </p>
+          ) : null}
           <ul className="space-y-2">
             {expected.map((one) => (
               <li key={one.appointmentId}
