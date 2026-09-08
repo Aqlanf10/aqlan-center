@@ -61,6 +61,23 @@ export function clinicDateString(now: Date, timeZone: string): string {
 }
 
 /**
+ * ساعةُ العيادة الآن — `HH:MM` بتوقيتها لا بتوقيت الخادم.
+ *
+ * وهي أختُ `clinicDateString` وللسبب نفسه: الخادم بـUTC واليمن UTC+3، فالتاسعة
+ * والنصف مساءً بغرينتش هي الثانية عشرة والنصف بعد منتصف الليل في تعز. وحسابُ
+ * التأخّر عن موعدٍ بساعة الخادم يقول عن مريضٍ في موعده إنّه تأخّر ثلاث ساعات.
+ *
+ * و`hourCycle: "h23"` صراحةً: الافتراض في بعض اللغات نظامُ ١٢ ساعة، فتخرج
+ * «09:00» للتاسعة صباحًا ومساءً معًا — والمقارنة بينهما وبين وقت الموعد نصًّا
+ * تجعل موعدَ السابعة مساءً يبدو ماضيًا منذ الصباح.
+ */
+export function clinicTimeString(now: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(now);
+}
+
+/**
  * يضيف أيامًا إلى تاريخ YYYY-MM-DD بحساب تقويمي بحت.
  *
  * الحساب بـ`Date.UTC` لا بتاريخ محلي: الجمع المحلي عبر حدود التوقيت الصيفي يعيد

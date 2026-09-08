@@ -253,6 +253,51 @@ try {
   check('**and today carries exactly one price**',sameDay.length===1&&sameDay[0].id===replacedBody.id);
   check('replacing what starts today is refused with what to do — an end before a start is no answer',
     (await request('/api/lab/prices',a,{partyId:lab.id,serviceId:svcId,cost:'34000',effectiveFrom:todayText,replace:true},{origin:base})).status===409);
+  /*
+   * ── مُنتظَرو اليوم على شاشة العمليات ──
+   *
+   * شكوى المالك الأولى المكتوبة هي **الزحمة**. وشاشةُ العمليات كانت لا تعرف
+   * مواعيد اليوم إطلاقًا: مريضٌ حجز قبل شهرٍ يقف أمام الاستقبال فيُكتب اسمُه من
+   * جديد ويُنتظر البحث ويُختار من المتشابهين — والطابور خلفه.
+   */
+  const arrivalPatient=await db.createPatient({fullName:'مريض الموعد',phone:'770334455',altPhone:null,gender:'male',birthYear:1990,address:null,medicalAlert:null,note:null});
+  const arrivalDay=clinicDateString(new Date(),process.env.CLINIC_TIME_ZONE||'Asia/Aden');
+  const booking=await db.createAppointment({patientId:arrivalPatient.id,date:arrivalDay,time:'09:00',durationMinutes:30,note:null});
+  check('the day list is readable by anyone with a session — reception runs the queue',
+    (await request(`/api/appointments?date=${arrivalDay}`,reception)).status===200);
+  const dayList=async cookie=>(await (await request(`/api/appointments?date=${arrivalDay}`,cookie)).json());
+  check('the booked patient shows on today\'s list before arriving',
+    (await dayList(a)).some(one=>one.id===booking.id&&one.status==='booked'));
+
+  const arrive=(cookie,id)=>fetch(base+`/api/appointments/${id}`,{method:'PATCH',headers:{cookie,'content-type':'application/json',origin:base},body:JSON.stringify({action:'arrive'})});
+  check('marking arrival is denied without a session',(await arrive('',booking.id)).status===401);
+  const visitsBefore=(await (await request('/api/visits',a)).json()).length;
+  check('**one press opens his row on the board**',(await arrive(reception,booking.id)).status===200);
+  const visitsAfter=await (await request('/api/visits',a)).json();
+  check('and the board really grew by exactly one',visitsAfter.length===visitsBefore+1,
+    `${visitsBefore} → ${visitsAfter.length}`);
+  /*
+   * **والصفُّ مربوطٌ بملفّه لا باسمٍ مكتوب.**
+   *
+   * وهذا هو الفرق كلُّه: صفٌّ بلا `patientId` لا يفتح ملفًّا ولا يُنتج فاتورةً
+   * على حساب المريض، فيصير اسمًا على شاشةٍ ثم يضيع.
+   */
+  const openedRow=visitsAfter.find(one=>one.patientId===arrivalPatient.id);
+  check('**and it carries his file, not just his name**',Boolean(openedRow));
+
+  /*
+   * **ومن وصل يسقط من المنتظَرين وحده** — القائمة مشتقّة من حالة الموعد.
+   *
+   * ولو كانت تُصان بيدٍ لبقي مريضٌ معروضًا بعد جلوسه على الكرسي.
+   */
+  check('and he leaves the awaited list on his own — it is derived, not maintained',
+    (await dayList(a)).find(one=>one.id===booking.id)?.status==='arrived');
+  // وضغطتان متسرّعتان لا تفتحان صفّين: الشرط في UPDATE نفسه.
+  check('a second press opens no second row — the guard is in the statement',
+    (await arrive(reception,booking.id)).status===409);
+  check('and the board did not grow again',
+    (await (await request('/api/visits',a)).json()).length===visitsAfter.length);
+
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
 
