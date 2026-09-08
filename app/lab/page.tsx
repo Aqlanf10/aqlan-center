@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useClinicName, useSetting } from "@/components/SettingsProvider";
+import { useClinicName, useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { CURRENCIES, CURRENCY_LABEL, isCurrency, type Currency } from "@/lib/money";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
@@ -54,7 +54,8 @@ export default function LabPage() {
 
   // اليوم بتوقيت العيادة لا بـUTC: بعد التاسعة مساءً بغرينتش يكون التاريخ في تعز قد
   // انتقل، فيُحسب عمل يستحق غدًا كأنه متأخر — أو العكس.
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<Patient[]>([]);

@@ -6,6 +6,7 @@ import { friendlyDateLong } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
 import { PageHeader } from "@/components/PageHeader";
 import { financeLinks } from "@/components/financeLinks";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * إعادة تقييم النقد الأجنبي.
@@ -44,7 +45,8 @@ export default function FxPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const asOf = clinicDateString(new Date(), "Asia/Aden");
+      const clinicZone = useClinicTimeZone();
+      const asOf = clinicDateString(new Date(), clinicZone);
       const response = await fetch(`/api/finance/fx?asOf=${asOf}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");

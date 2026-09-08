@@ -10,7 +10,7 @@ import {
   parseAmount,
   type Currency,
 } from "@/lib/money";
-import { useSetting } from "@/components/SettingsProvider";
+import { useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import {
   EXPENSE_CATEGORIES,
   EXPENSE_CATEGORY_LABEL,
@@ -81,7 +81,8 @@ const emptyAmounts = (): Record<Currency, string> => ({ YER: "", SAR: "", USD: "
 export default function FinancePage() {
   const baseSetting = useSetting("finance.base_currency");
   const base: Currency = isCurrency(baseSetting) ? baseSetting : "YER";
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const [feed, setFeed] = useState<Feed | null>(null);
   const [loading, setLoading] = useState(true);

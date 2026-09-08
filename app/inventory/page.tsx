@@ -25,6 +25,7 @@ import {
   type MovementKind,
   type StockStatus,
 } from "@/lib/inventory";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * المخزون.
@@ -87,7 +88,8 @@ export default function InventoryPage() {
 
   // اليوم بتوقيت العيادة: دالّةٌ تقرأ ساعة الخادم تُنهي صلاحية دفعةٍ قبل أوانها كل
   // مساء — اليمن UTC+3.
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const [items, setItems] = useState<Item[]>([]);
   const [filter, setFilter] = useState<InventoryFilter>("attention");

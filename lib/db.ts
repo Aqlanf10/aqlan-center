@@ -1,4 +1,5 @@
 import { pgConnection } from "./pgConnection";
+import { CLINIC_ZONE_FALLBACK } from "./clinicZone";
 import { Pool, type PoolClient } from "pg";
 import { toWhatsAppNumber } from "./reminders";
 import type { Visit, VisitStatus } from "./flow";
@@ -1179,7 +1180,7 @@ export async function listTodayVisits(): Promise<Visit[]> {
   return rows.map(toVisit);
 }
 
-export const CLINIC_TIME_ZONE = process.env.CLINIC_TIME_ZONE || "Asia/Aden";
+export const CLINIC_TIME_ZONE = process.env.CLINIC_TIME_ZONE || CLINIC_ZONE_FALLBACK;
 
 /**
  * زيارات يوم بعينه بتوقيت العيادة — للتقرير.

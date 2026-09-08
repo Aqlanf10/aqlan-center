@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney, isCurrency, type Currency } from "@/lib/money";
-import { useSetting } from "@/components/SettingsProvider";
+import { useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import type { Account, AccountBalance, BalanceSheet, IncomeStatement } from "@/lib/accounting";
@@ -42,7 +42,8 @@ const SOURCE_LABEL: Record<string, string> = {
 
 export default function AccountingPage() {
   const baseSetting = useSetting("finance.base_currency");
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const monthStart = `${today.slice(0, 7)}-01`;
 
   const [from, setFrom] = useState(monthStart);

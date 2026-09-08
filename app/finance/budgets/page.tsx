@@ -7,6 +7,7 @@ import { monthOf, type BudgetLevel, type BudgetLine } from "@/lib/budget";
 import { EXPENSE_CATEGORIES, EXPENSE_CATEGORY_LABEL, type ExpenseCategory } from "@/lib/expenses";
 import { formatMoney, isCurrency, type Currency } from "@/lib/money";
 import { clinicDateString } from "@/lib/schedule";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * ميزانيّات بنود المصروف — **سقفٌ يُقارَن به، لا يمنع**.
@@ -27,7 +28,8 @@ const TONE: Record<BudgetLevel, { card: string; chip: string; label: string }> =
 };
 
 export default function BudgetsPage() {
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const [month, setMonth] = useState(() => monthOf(today));
   const [lines, setLines] = useState<BudgetLine[]>([]);
   const [base, setBase] = useState<Currency>("YER");

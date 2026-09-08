@@ -16,6 +16,7 @@ import { Prescriptions } from "@/components/Prescriptions";
 import { PatientIntake } from "@/components/PatientIntake";
 import { PatientOrtho } from "@/components/PatientOrtho";
 import { PortalInviteRow } from "@/components/PortalInviteRow";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * ملف المريض.
@@ -60,7 +61,8 @@ const TABS: [Tab, string][] = [
 
 export default function PatientFilePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const [file, setFile] = useState<PatientFile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

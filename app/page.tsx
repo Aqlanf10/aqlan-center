@@ -11,7 +11,7 @@ import {
   type Visit,
   type WaitLevel,
 } from "@/lib/flow";
-import { useChairCount, useClinicName, useSetting } from "@/components/SettingsProvider";
+import { useChairCount, useClinicName, useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { clinicDateString, clinicTimeString, sessionAfterWeeks, type Appointment } from "@/lib/schedule";
 import { expectedArrivals, isLate } from "@/lib/arrivals";
 import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
@@ -37,7 +37,8 @@ interface PatientMatch {
  */
 
 /** توقيت العيادة — كبقيّة الشاشات، ومنه «اليوم» و«الآن». */
-const CLINIC_TZ = "Asia/Aden";
+const clinicZone = useClinicTimeZone();
+const CLINIC_TZ = clinicZone;
 
 /**
  * تاريخ اليوم بتوقيت العيادة.

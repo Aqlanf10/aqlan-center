@@ -9,6 +9,7 @@ import {
   LAB_CATEGORIES, LAB_CATEGORY_LABEL, priceOn,
   type LabCategory, type LabPrice, type LabService,
 } from "@/lib/labCatalog";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * أعمال المختبر وأسعارها.
@@ -25,7 +26,8 @@ import {
 interface Party { id: number; name: string }
 
 export default function LabSettingsPage() {
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const [services, setServices] = useState<LabService[]>([]);
   const [labs, setLabs] = useState<Party[]>([]);

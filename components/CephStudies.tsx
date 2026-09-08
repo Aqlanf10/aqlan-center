@@ -12,6 +12,7 @@ import {
 } from "@/lib/cephStudy";
 import { CHANGE_LABEL, type ChangeDirection, type Comparison } from "@/lib/cephCompare";
 import { formatMeasurement, say, type Bilingual } from "@/lib/ceph";
+import { useClinicTimeZone } from "@/components/SettingsProvider";
 
 /**
  * الدراسات السيفالومترية في ملف المريض — **موضع الترابط بين الوحدتين**.
@@ -55,7 +56,8 @@ const STATUS_STYLE: Record<StudyStatus, string> = {
 export function CephStudies({ patientId }: { patientId: number }) {
   const session = useSession();
   const clinical = isAdmin(session?.role) || session?.role === "doctor";
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
 
   const [studies, setStudies] = useState<Study[]>([]);
   const [images, setImages] = useState<ImageDocument[]>([]);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useClinicName } from "@/components/SettingsProvider";
+import { useClinicName, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong } from "@/lib/reminders";
 import { addDays, clinicDateString, type DayLoad } from "@/lib/schedule";
 import { appointmentsCountText, minutesText, reportText, shortMinutes, type DayReport } from "@/lib/report";
@@ -30,7 +30,8 @@ interface ReportFeed {
 
 export default function ReportPage() {
   const clinicName = useClinicName();
-  const today = useMemo(() => clinicDateString(new Date(), "Asia/Aden"), []);
+  const clinicZone = useClinicTimeZone();
+  const today = useMemo(() => clinicDateString(new Date(), clinicZone), [clinicZone]);
   const [date, setDate] = useState(today);
   const [feed, setFeed] = useState<ReportFeed | null>(null);
   const [loading, setLoading] = useState(true);
