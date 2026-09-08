@@ -12,7 +12,8 @@ import {
   type WaitLevel,
 } from "@/lib/flow";
 import { useChairCount, useClinicName, useSetting } from "@/components/SettingsProvider";
-import { sessionAfterWeeks } from "@/lib/schedule";
+import { clinicDateString, clinicTimeString, sessionAfterWeeks, type Appointment } from "@/lib/schedule";
+import { expectedArrivals, isLate } from "@/lib/arrivals";
 import { friendlyDate, friendlyTime, toWhatsAppNumber } from "@/lib/reminders";
 import { confirmationText } from "@/lib/booking";
 import { minutesText, shortMinutes } from "@/lib/report";
@@ -35,10 +36,22 @@ interface PatientMatch {
  * دقيقة: اكتب اسمًا، اضغط «وصل»، ثم اضغط كرسيًا. لا قوائم ولا إعدادات ولا تدريب.
  */
 
-/** تاريخ اليوم من ساعة الجهاز — والجهاز في العيادة، فتوقيته توقيت العيادة. */
+/** توقيت العيادة — كبقيّة الشاشات، ومنه «اليوم» و«الآن». */
+const CLINIC_TZ = "Asia/Aden";
+
+/**
+ * تاريخ اليوم بتوقيت العيادة.
+ *
+ * كان يُقرأ من ساعة الجهاز بحجّة أنّ الجهاز في العيادة. وذلك صحيحٌ لجهاز
+ * الاستقبال وحده: المالك يفتح الشاشة من سفره، فيرى «اليوم» بتوقيت بلدٍ آخر.
+ *
+ * **والأهمّ أنّ الشاشة صار فيها مفهومان لليوم** حين أُضيف قسم المنتظَرين: هذا
+ * يسأل الخادم عن مواعيد يومٍ، وذاك يقترح تاريخ الجلسة القادمة — واختلافُهما عند
+ * منتصف الليل يعرض مواعيد أمس ويحجز لغدٍ في السطر نفسه. فوُحِّدا على توقيت
+ * العيادة، وهو ما تفعله كل شاشةٍ أخرى في البرنامج.
+ */
 function localToday(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return clinicDateString(new Date(), CLINIC_TZ);
 }
 
 /**
@@ -95,6 +108,14 @@ export default function FlowBoard() {
   const [nextPhone, setNextPhone] = useState("");
   const [nextBooked, setNextBooked] = useState<{ link: string | null; whenText: string } | null>(null);
   const inFlight = useRef(false);
+  /*
+   * مواعيدُ اليوم — **وكانت الشاشة لا تعرفها إطلاقًا.**
+   *
+   * فمريضٌ حجز قبل شهرٍ يقف أمام الاستقبال، فيُكتب اسمُه من جديد ويُنتظر البحث
+   * ويُختار من المتشابهين والطابور خلفه. والقدرة موجودة في الخادم منذ بُنيت
+   * المواعيد، لكنّها في شاشةٍ أخرى — فتنتقل الاستقبال بين شاشتين في أزحم لحظة.
+   */
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
@@ -103,6 +124,18 @@ export default function FlowBoard() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message ?? "تعذّر التحميل.");
       setVisits(payload as Visit[]);
+      /*
+       * ومواعيدُ اليوم تُطلب مع اللوحة في الدورة نفسها.
+       *
+       * وفشلُها لا يُسقط اللوحة: الطابور هو عمل الشاشة، والمنتظَرون عونٌ عليه.
+       * وتاريخُ اليوم بتوقيت العيادة لا بتوقيت المتصفّح — جهازٌ ضُبط على منطقةٍ
+       * أخرى كان سيطلب مواعيد يومٍ آخر ويعرض قائمةً فارغة بلا سبب ظاهر.
+       */
+      try {
+        const day = clinicDateString(new Date(), CLINIC_TZ);
+        const booked = await fetch(`/api/appointments?date=${day}`, { cache: "no-store" });
+        setAppointments(booked.ok ? ((await booked.json()) as Appointment[]) : []);
+      } catch { setAppointments([]); }
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "تعذّر التحميل.");
@@ -120,6 +153,15 @@ export default function FlowBoard() {
     const poll = setInterval(() => { void load(false); }, REFRESH_MS);
     return () => { clearInterval(tick); clearInterval(poll); };
   }, [load]);
+
+  /*
+   * والمنتظَرون مشتقّون من حالة المواعيد لا محفوظين.
+   *
+   * فمن وصل تنقلب حالتُه فيسقط من هنا وحده. ولو كانت قائمةً تُصان لبقي مريضٌ
+   * معروضًا بعد جلوسه على الكرسي، ولا شيء يكشف ذلك إلّا عينُ من يقرأ.
+   */
+  const expected = useMemo(
+    () => expectedArrivals(appointments, clinicTimeString(now, CLINIC_TZ)), [appointments, now]);
 
   const waiting = useMemo(() => waitingRows(visits, now), [visits, now]);
   const chairs = useMemo(() => chairRows(CHAIR_COUNT, visits, now), [visits, now]);
@@ -225,6 +267,22 @@ export default function FlowBoard() {
     setNextTime("10:00");
     setNextDuration(30);
   }, [act]);
+
+  /**
+   * «حضر» — نقرةٌ واحدة تفتح صفَّه في اللوحة.
+   *
+   * والخادم يفعلها في معاملةٍ واحدة: يقلب حالة الموعد إلى `arrived` **بشرط أنّها
+   * ما زالت `booked`** ثمّ يُنشئ الزيارة مربوطةً بالمريض وبموعده. فضغطتان
+   * متسرّعتان لا تُنشئان صفّين، والقائمة تُخلي صفَّه وحدها لأنّها مشتقّة من الحالة.
+   */
+  const markArrived = useCallback((appointmentId: number) => act(() => fetch(
+    `/api/appointments/${appointmentId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "arrive" }),
+    },
+  )), [act]);
 
   const bookNextSession = useCallback(async () => {
     if (!justFinished || inFlight.current) return;
@@ -579,6 +637,71 @@ export default function FlowBoard() {
                 </li>
               );
             })}
+          </ul>
+        </section>
+      ) : null}
+
+      {/*
+        * ── مُنتظَرون اليوم ──
+        *
+        * وموضعُه **فوق قائمة الانتظار** مقصود: المريض يصل أوّلًا ثم ينتظر، فترتيب
+        * الشاشة يتبع ترتيب يومه. وفوق الكراسي كان سيدفع الطابور — وهو عملُ الشاشة —
+        * إلى أسفل الصفحة.
+        *
+        * ويختفي القسم كلُّه حين لا أحد يُنتظَر: عنوانٌ فوق فراغٍ في شاشةٍ مزدحمة
+        * يأخذ سطرًا ولا يقول شيئًا.
+        */}
+      {expected.length > 0 ? (
+        <section className="mb-5" aria-label="مُنتظَرون اليوم">
+          <h2 className="mb-2 text-sm font-bold">
+            مُنتظَرون اليوم ({expected.length})
+          </h2>
+          <ul className="space-y-2">
+            {expected.map((one) => (
+              <li key={one.appointmentId}
+                className={`rounded-2xl border p-3 ${isLate(one) ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-extrabold ${isLate(one) ? "bg-amber-200 text-amber-900" : "bg-slate-100 text-slate-600"}`}
+                    dir="ltr">
+                    {one.scheduledTime}
+                  </span>
+                  <div className="min-w-[9rem] flex-1">
+                    <a href={`/patients/${one.patientId}`}
+                      className="block truncate text-base font-extrabold underline decoration-slate-300 underline-offset-4">
+                      {one.patientName}
+                    </a>
+                    <p className="text-xs text-slate-500">
+                      {/* والتأخّر يُقال بالدقائق لا بلونٍ وحده: لونٌ بلا رقم لا يُقرَّر عليه اتصال. */}
+                      {isLate(one) ? `تأخّر ${shortMinutes(one.lateMinutes)}` : "في موعده"}
+                      {/* وتأكيدُ البوّابة وعدٌ بالحضور لا حضور — يُعرض ولا يُسجَّل وصولًا. */}
+                      {one.confirmed ? " · أكّد حضوره" : ""}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {/*
+                      * وزرُّ واتساب لمن تأخّر وحده.
+                      *
+                      * فمكالمةٌ لمريضٍ لم يحن موعده بعد إزعاج، وعرضُ الزرّ دائمًا
+                      * يجعله يُضغط سهوًا في الزحمة.
+                      */}
+                    {isLate(one) && toWhatsAppNumber(one.patientPhone) ? (
+                      <a href={`https://wa.me/${toWhatsAppNumber(one.patientPhone)}`}
+                        target="_blank" rel="noopener"
+                        className="rounded-xl border border-emerald-600 px-3 py-2 text-xs font-bold text-emerald-700">
+                        اسأل عنه
+                      </a>
+                    ) : null}
+                    <button
+                      onClick={() => void markArrived(one.appointmentId)}
+                      disabled={busy}
+                      className="rounded-xl bg-brand-blue px-4 py-2 text-xs font-extrabold text-white disabled:opacity-30"
+                    >
+                      حضر
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
           </ul>
         </section>
       ) : null}
