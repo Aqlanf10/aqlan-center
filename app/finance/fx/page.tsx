@@ -36,6 +36,7 @@ interface Report {
 }
 
 export default function FxPage() {
+  const clinicZone = useClinicTimeZone();
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -45,7 +46,6 @@ export default function FxPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const clinicZone = useClinicTimeZone();
       const asOf = clinicDateString(new Date(), clinicZone);
       const response = await fetch(`/api/finance/fx?asOf=${asOf}`, { cache: "no-store" });
       const payload = await response.json();
@@ -57,7 +57,7 @@ export default function FxPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clinicZone]);
 
   useEffect(() => { void load(); }, [load]);
 

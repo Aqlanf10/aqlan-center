@@ -20,8 +20,8 @@ const SOURCE = /\.(ts|tsx|mjs)$/;
  *
  * - `lib/clinicZone.ts`: تعريفُ الاحتياط نفسه.
  * - `scripts/backup.mjs`: يُشغَّل بـ`node` مجرَّدًا (`npm run backup`) فلا يستطيع
- *   استيراد وحدةِ TypeScript. **ولا ينحرف**: يقرأ `CLINIC_TIME_ZONE` نفسها التي
- *   يقرؤها الخادم، والنصُّ فيه احتياطُها لا مصدرٌ ثانٍ.
+ *   استيراد وحدةِ TypeScript — بخلاف بقيّة السكربتات التي تعمل بـ`tsx` فتستورده.
+ *   **ولا ينحرف**: يقرأ `CLINIC_TIME_ZONE` نفسها، والنصُّ فيه احتياطُها.
  */
 const ALLOWED = new Set([join("lib", "clinicZone.ts"), join("scripts", "backup.mjs")]);
 
@@ -36,11 +36,19 @@ function sources(dir: string): string[] {
 }
 
 describe("توقيت العيادة", () => {
-  it("لا يُكتب النصُّ حرفيًّا خارج تعريف الاحتياط", () => {
+  it("لا يُكتب النصُّ حرفيًّا خارج تعريف الاحتياط — بأيّ علامة اقتباس", () => {
     const offenders = ROOTS
       .flatMap((root) => sources(root))
       .filter((path) => !ALLOWED.has(path))
-      .filter((path) => readFileSync(path, "utf8").includes(`"${CLINIC_ZONE_FALLBACK}"`));
+      /*
+       * **وبأيّ علامة اقتباس.**
+       *
+       * كان الفحص يبحث عن المزدوجة وحدها، فمرّ `'Asia/Aden'` في
+       * `scripts/verify-executive.mjs` وهو داخل جذرٍ ممسوح — حارسٌ يُطمئن
+       * ولا يحرس، وهو أسوأ من لا حارس.
+       */
+      .filter((path) => new RegExp(`['"\`]${CLINIC_ZONE_FALLBACK}['"\`]`)
+        .test(readFileSync(path, "utf8")));
     expect(offenders).toEqual([]);
   });
 

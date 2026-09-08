@@ -6,6 +6,7 @@ import { executiveKpis, chairOccupancy } from '../lib/executive.ts';
 import { patientBalance } from '../lib/money.ts';
 import { hashPassword } from '../lib/auth.ts';
 import { clinicDateString } from '../lib/schedule.ts';
+import { CLINIC_ZONE_FALLBACK } from '../lib/clinicZone.ts';
 
 /**
  * هل غرفة القيادة تقرأ من الدفاتر فعلًا؟
@@ -45,7 +46,7 @@ const check = (label, ok, extra = '') => {
 
 // اليوم الحقيقي بتوقيت العيادة: القيود تُؤرَّخ بـNOW()، وفترةٌ ثابتة في الماضي
 // تجعل ميزان «الفترة» فارغًا فتبدو اللوحة صفرًا وهي سليمة.
-const today = clinicDateString(new Date(), process.env.CLINIC_TIME_ZONE ?? 'Asia/Aden');
+const today = clinicDateString(new Date(), process.env.CLINIC_TIME_ZONE || CLINIC_ZONE_FALLBACK);
 const operational = {
   arrived: 0, done: 0, stillOpen: 0, noShow: 0, newPatients: 0,
   orthoActive: 0, orthoOverdue: 0, inventoryAlerts: 0, labLate: 0,
