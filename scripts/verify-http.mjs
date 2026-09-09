@@ -365,6 +365,43 @@ try {
   check('an unknown action is still refused',
     (await close(a,other.id,'لا إجراء')).status===400);
 
+  /*
+   * **ونافذةُ المعلّقات ونافذةُ المتغيّبين واحدة.**
+   *
+   * كانت المعلّقات تُقرأ إلى ستّين يومًا والمتغيّبون إلى ثلاثين. فمن قُرِّر
+   * غيابُه وموعده قبل خمسة وثلاثين يومًا كان يخرج من المعلّقات **ولا يدخل قائمة
+   * الاتصال** — يختفي تمامًا، وهو نقيضُ ما بُني هذا القسم له.
+   */
+  const farBooking=await db.createAppointment({patientId:stalePatient.id,date:addDays(arrivalDay,-35),time:'09:30',durationMinutes:30,note:null});
+  check('a booking older than the old missed window still shows as undecided',
+    (await recallFeed(a)).open.some(one=>one.appointmentId===farBooking.id));
+  check('the reception decides he did not come',(await close(reception,farBooking.id,'no_show')).status===200);
+  const farFeed=await recallFeed(a);
+  check('**and he really lands in the call list — he does not vanish between two windows**',
+    farFeed.missed.some(one=>one.id===farBooking.id));
+  check('and he is gone from the undecided list',
+    !farFeed.open.some(one=>one.appointmentId===farBooking.id));
+
+  /*
+   * **و«حضر» لا تُغلق إلّا موعدًا مضى وما زال محجوزًا.**
+   *
+   * فالشاشة تبقى مفتوحةً ساعةً: تُقرّر موظّفةٌ غيابَه من جهاز، ويضغط آخرُ «حضر»
+   * من جهازٍ ثانٍ على قائمةٍ قديمة. والشرط في `UPDATE` نفسه يجعل الثانية تفشل.
+   */
+  check('closing what someone already decided is refused, not overwritten',
+    (await close(a,farBooking.id,'done')).status===409);
+  const stillMissed=await recallFeed(a);
+  check('**and the first decision stands** — he is still in the call list',
+    stillMissed.missed.some(one=>one.id===farBooking.id));
+  // ولا يُغلق موعدٌ لم يحن: «حضر» عن يومٍ لم يأتِ زعمٌ لا تصحيح.
+  const future=await db.createAppointment({patientId:stalePatient.id,date:addDays(arrivalDay,7),time:'10:00',durationMinutes:30,note:null});
+  check('and a booking whose day has not come cannot be closed as attended',
+    (await close(a,future.id,'done')).status===409);
+  check('and it is untouched — still booked for its day',
+    (await (await request(`/api/appointments?date=${addDays(arrivalDay,7)}`,a)).json())
+      .find(one=>one.id===future.id)?.status==='booked');
+
+
   check('a service id that is not in the catalogue is refused',
     (await request('/api/lab',a,{patientId:labPatient.id,labName:'مختبر الأسعار',serviceId:999999,sentDate:'2026-09-01',dueDate:'2026-09-11'},{origin:base})).status===400);
 

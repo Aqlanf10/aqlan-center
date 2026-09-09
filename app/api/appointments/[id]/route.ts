@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { arriveAppointment, markReminderSent, setAppointmentStatus } from "@/lib/db";
+import { CLINIC_TIME_ZONE, arriveAppointment, closePastBooking, markReminderSent, setAppointmentStatus } from "@/lib/db";
+import { clinicDateString } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -50,8 +51,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
      * عمولة يومه — فيُصلَح دفترٌ بإفساد آخر. وهذا يُغلق الموعد وحده.
      */
     if (action === "done") {
-      const updated = await setAppointmentStatus(id, "done");
-      if (!updated) return NextResponse.json({ message: "الموعد غير موجود." }, { status: 404 });
+      const updated = await closePastBooking(id, clinicDateString(new Date(), CLINIC_TIME_ZONE));
+      // ٤٠٩ لا ٤٠٤: الموعد موجود، وحالتُه أو تاريخُه هما ما يمنع — والرسالة تقول ذلك.
+      if (!updated) {
+        return NextResponse.json(
+          { message: "لا يُغلق إلّا موعدٌ مضى وما زال محجوزًا — راجع القائمة، فقد قرّر فيه غيرُك." },
+          { status: 409 },
+        );
+      }
       return NextResponse.json(updated);
     }
     return NextResponse.json({ message: "إجراء غير معروف." }, { status: 400 });

@@ -2117,6 +2117,33 @@ export async function createAppointment(input: {
   return full[0] ? toAppointment(full[0]) : null;
 }
 
+/**
+ * يُغلق موعدًا مضى وبقي محجوزًا — «حضر ولم يُسجَّل».
+ *
+ * **والشرطان في `UPDATE` نفسه لا في فحصٍ قبله.** فالشاشة قد تكون مفتوحةً منذ
+ * ساعة: تُقرّر موظّفةٌ غيابَه من جهاز، ويضغط آخرُ «حضر» من جهازٍ ثانٍ على
+ * قائمةٍ قديمة — فيُكتب فوق قرارٍ اتُّخذ. والشرط في الجملة يجعل الثانية تفشل
+ * لا تُصحّح.
+ *
+ * **ولا يُغلق موعدٌ لم يحن بعد**: «حضر» عن يومٍ لم يأتِ زعمٌ لا تصحيح.
+ *
+ * **ولا موعدٌ وصل صاحبُه**: له صفٌّ مفتوح في اللوحة، وإغلاقُه هنا يترك زيارةً
+ * حيّة معلّقةً بموعدٍ مكتمل.
+ */
+export async function closePastBooking(
+  id: number, today: string,
+): Promise<Appointment | null> {
+  await ensureSchema();
+  const { rowCount } = await getPool().query(
+    `UPDATE appointments SET status = 'done'
+      WHERE id = $1 AND status = 'booked' AND scheduled_date < $2::date`,
+    [id, today],
+  );
+  if (!rowCount) return null;
+  const { rows } = await getPool().query<AppointmentRow>(`${APPOINTMENT_SELECT} WHERE a.id = $1`, [id]);
+  return rows[0] ? toAppointment(rows[0]) : null;
+}
+
 export async function setAppointmentStatus(
   id: number,
   status: AppointmentStatus,
@@ -2686,7 +2713,7 @@ import type { RecallRow } from "./recall";
  * موعد فائت بلا مكالمة هو المريض الذي يفهم أن العيادة لم تلاحظ غيابه. والمدى محدود
  * بشهر: الاتصال بمن تغيّب قبل ثلاثة أشهر ليس متابعة غياب — إنه استدعاء، وله قائمته.
  */
-export async function listMissedAppointments(): Promise<RecallRow[]> {
+export async function listMissedAppointments(sinceDate: string): Promise<RecallRow[]> {
   await ensureSchema();
   const { rows } = await getPool().query<{
     id: number; patient_id: number; full_name: string; phone: string | null;
@@ -2696,9 +2723,12 @@ export async function listMissedAppointments(): Promise<RecallRow[]> {
        FROM appointments a JOIN patients p ON p.id = a.patient_id
       WHERE a.status = 'no_show'
         AND a.follow_up_at IS NULL
-        AND a.scheduled_date > CURRENT_DATE - INTERVAL '30 days'
+        -- والنافذة نفسها التي تُقرأ بها المعلّقات: نافذتان مختلفتان تجعلان من
+        -- قُرِّر غيابُه خارج الأضيق يخرج من هناك ولا يدخل هنا — فيختفي.
+        AND a.scheduled_date >= $1::date
       ORDER BY a.scheduled_date ASC
       LIMIT 100`,
+    [sinceDate],
   );
   return rows.map((row) => ({
     kind: "missed" as const,

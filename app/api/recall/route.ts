@@ -7,7 +7,7 @@ import {
   markAppointmentFollowedUp,
   markPatientRecalled,
 } from "@/lib/db";
-import { openAppointments, OPEN_LOOKBACK_DAYS } from "@/lib/openAppointments";
+import { FOLLOW_UP_LOOKBACK_DAYS, openAppointments } from "@/lib/openAppointments";
 import { LAPSE_OPTIONS } from "@/lib/recall";
 import { addDays, clinicDateString } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
@@ -31,10 +31,17 @@ export async function GET(request: Request) {
      * وبينهما ثلاث ساعات يظهر فيها موعدُ اليوم كأنّه فات.
      */
     const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
+    /*
+     * **ونافذةٌ واحدة للطابورين.**
+     *
+     * فمن قرّرت الاستقبال غيابَه يخرج من المعلّقات إلى قائمة الاتصال — ولو كانت
+     * نافذةُ المتغيّبين أضيق لخرج من الأولى ولم يدخل الثانية، فيختفي تمامًا.
+     */
+    const since = addDays(today, -FOLLOW_UP_LOOKBACK_DAYS);
     const [missed, lapsed, stale] = await Promise.all([
-      listMissedAppointments(),
+      listMissedAppointments(since),
       listLapsedPatients(weeks),
-      listOpenAppointments(today, addDays(today, -OPEN_LOOKBACK_DAYS)),
+      listOpenAppointments(today, since),
     ]);
     // والتصفية والترتيب في المنطق الخالص — لا يُكرَّران في SQL وفي الشاشة.
     return NextResponse.json({ missed, lapsed, weeks, open: openAppointments(stale, today) });
