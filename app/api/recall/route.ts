@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import {
+  CLINIC_TIME_ZONE,
   listLapsedPatients,
   listMissedAppointments,
+  listOpenAppointments,
   markAppointmentFollowedUp,
   markPatientRecalled,
 } from "@/lib/db";
+import { FOLLOW_UP_LOOKBACK_DAYS, openAppointments } from "@/lib/openAppointments";
 import { LAPSE_OPTIONS } from "@/lib/recall";
+import { addDays, clinicDateString } from "@/lib/schedule";
 import { requireSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -20,11 +24,27 @@ export async function GET(request: Request) {
   const weeks = (LAPSE_OPTIONS as readonly number[]).includes(requested) ? requested : 6;
 
   try {
-    const [missed, lapsed] = await Promise.all([
-      listMissedAppointments(),
+    /*
+     * و«اليوم» بتوقيت العيادة لا بتوقيت الخادم.
+     *
+     * فموعدُ الأمس يصير «معلّقًا» بعد منتصف ليل تعز لا بعد منتصف ليل غرينتش —
+     * وبينهما ثلاث ساعات يظهر فيها موعدُ اليوم كأنّه فات.
+     */
+    const today = clinicDateString(new Date(), CLINIC_TIME_ZONE);
+    /*
+     * **ونافذةٌ واحدة للطابورين.**
+     *
+     * فمن قرّرت الاستقبال غيابَه يخرج من المعلّقات إلى قائمة الاتصال — ولو كانت
+     * نافذةُ المتغيّبين أضيق لخرج من الأولى ولم يدخل الثانية، فيختفي تمامًا.
+     */
+    const since = addDays(today, -FOLLOW_UP_LOOKBACK_DAYS);
+    const [missed, lapsed, stale] = await Promise.all([
+      listMissedAppointments(since),
       listLapsedPatients(weeks),
+      listOpenAppointments(today, since),
     ]);
-    return NextResponse.json({ missed, lapsed, weeks });
+    // والتصفية والترتيب في المنطق الخالص — لا يُكرَّران في SQL وفي الشاشة.
+    return NextResponse.json({ missed, lapsed, weeks, open: openAppointments(stale, today) });
   } catch {
     return NextResponse.json({ message: "تعذّر تحميل قائمة المتابعة." }, { status: 500 });
   }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useClinicName, useSetting, useClinicTimeZone } from "@/components/SettingsProvider";
 import { friendlyDateLong, toWhatsAppNumber } from "@/lib/reminders";
 import { clinicDateString } from "@/lib/schedule";
+import type { OpenAppointment } from "@/lib/openAppointments";
 import {
   LAPSE_LABEL,
   LAPSE_OPTIONS,
@@ -24,12 +25,16 @@ import { PageHeader } from "@/components/PageHeader";
  * وكل متابعة تُسجَّل، فلا يُتصل بأحد مرتين ولا يُنسى أحد.
  */
 
-interface RecallFeed { missed: RecallRow[]; lapsed: RecallRow[]; weeks: number }
+interface RecallFeed {
+  missed: RecallRow[]; lapsed: RecallRow[]; weeks: number;
+  /** مواعيدُ مضت ولم يُفصل فيها — تُنتظر قرارًا لا اتصالًا. */
+  open: OpenAppointment[];
+}
 
 export default function RecallPage() {
   const clinicName = useClinicName();
   const clinicPhone = useSetting("clinic.phone");
-  const [feed, setFeed] = useState<RecallFeed>({ missed: [], lapsed: [], weeks: 6 });
+  const [feed, setFeed] = useState<RecallFeed>({ missed: [], lapsed: [], weeks: 6, open: [] });
   const [weeks, setWeeks] = useState<LapseWeeks>(6);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +83,36 @@ export default function RecallPage() {
     }
   }, [load, weeks]);
 
+  /**
+   * يُغلق موعدًا معلّقًا بقرار المستعمِل — **ولا يُخمّن النظام**.
+   *
+   * فهو لا يعرف أحضر المريض ونُسي تسجيله أم تغيّب؛ يعرف أنّ أحدًا لم يقرّر.
+   * و«لم يحضر» تُدخله قائمةَ المتغيّبين فوقها، فيُتّصل به. و«حضر» تُغلقه بلا
+   * اتصال — ولا تُنشئ زيارةً بأثرٍ رجعيّ: يومُها مضى، وزيارةٌ تُفتح اليوم عن
+   * عملٍ وقع الأسبوع الماضي تُفسد تقرير اليوم وعمولةَ يومه.
+   */
+  const closeOpen = useCallback(async (appointmentId: number, action: "arrive" | "no_show") => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/appointments/${appointmentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: action === "arrive" ? "done" : "no_show" }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) setError(payload?.message ?? "تعذّر الإغلاق.");
+      else setError(null);
+      await load(weeks);
+    } catch {
+      setError("تعذّر الاتصال بالخادم.");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }, [load, weeks]);
+
   const total = feed.missed.length + feed.lapsed.length;
 
   return (
@@ -95,6 +130,57 @@ export default function RecallPage() {
         <p className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">جارٍ التحميل…</p>
       ) : (
         <>
+          {/*
+            * ── مواعيد لم تُغلَق ──
+            *
+            * وموضعُها **فوق المتغيّبين** لأنّها تسبقهم: موعدٌ معلّق لا يدخل قائمة
+            * المتغيّبين حتى يُقال إنّه غياب. فما دام معلّقًا لا يُتّصل بصاحبه أبدًا.
+            */}
+          {feed.open.length > 0 ? (
+            <section className="mb-6" aria-label="مواعيد لم تُغلَق">
+              <h2 className="mb-1 text-sm font-bold">
+                مواعيد مضت ولم تُغلَق ({feed.open.length})
+              </h2>
+              <p className="mb-2 text-[11px] font-bold leading-5 text-slate-600">
+                مضى يومُها ولم يُسجَّل وصولُ صاحبها ولا غيابُه. <span className="text-amber-800">وما دامت
+                معلّقة لا يدخل صاحبها قائمة المتغيّبين ولا يتّصل به أحد.</span> والنظام لا يعرف
+                أيّهما وقع — فقرِّر أنت.
+              </p>
+              <ul className="space-y-2">
+                {feed.open.map((row) => (
+                  <li key={`open-${row.appointmentId}`} className="rounded-2xl border border-slate-300 bg-white p-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-extrabold text-slate-700">
+                        {row.daysAgo === 1 ? "منذ يوم" : `منذ ${row.daysAgo} يومًا`}
+                      </span>
+                      <div className="min-w-[9rem] flex-1">
+                        <a href={`/patients/${row.patientId}`}
+                          className="block truncate text-base font-extrabold underline decoration-slate-300 underline-offset-4">
+                          {row.patientName}
+                        </a>
+                        <p className="text-[11px] text-slate-500">
+                          موعد {friendlyDateLong(row.scheduledDate)} · <span dir="ltr">{row.scheduledTime}</span>
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 gap-1.5">
+                        <button type="button" disabled={busy}
+                          onClick={() => void closeOpen(row.appointmentId, "arrive")}
+                          className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-navy-800 disabled:opacity-40">
+                          حضر ولم يُسجَّل
+                        </button>
+                        <button type="button" disabled={busy}
+                          onClick={() => void closeOpen(row.appointmentId, "no_show")}
+                          className="rounded-xl bg-amber-600 px-3 py-2 text-xs font-extrabold text-white disabled:opacity-40">
+                          لم يحضر
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           <section className="mb-6" aria-label="متغيّبون">
             <h2 className="mb-2 text-sm font-bold">
               لم يحضروا مواعيدهم ({feed.missed.length})
